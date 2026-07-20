@@ -1,0 +1,11 @@
+:root { color: #1f1830; background: #f5f2fa; font-family: ui-rounded, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+main { width: min(600px, calc(100% - 32px)); margin: 0 auto; padding: 72px 0; text-align: center; }
+.eyebrow { color: #7557c8; font-size: .78rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+h1 { margin: 8px 0; font-size: clamp(2.8rem, 12vw, 5rem); letter-spacing: -.08em; }
+#status, #waiting { min-height: 1.5em; color: #675c78; }
+.choices { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 36px 0 18px; }
+.choices button { min-height: 136px; border: 2px solid #dbd2ef; border-radius: 18px; background: white; color: #241c38; cursor: pointer; font-size: 3rem; }
+.choices span { display: block; margin-top: 7px; font-size: 1rem; font-weight: 800; }.choices button:hover:not(:disabled) { border-color: #7557c8; transform: translateY(-2px); }.choices button:disabled { opacity: .48; cursor: wait; }
+#result { margin: 24px 0; padding: 16px; border-radius: 12px; background: #e7ddff; font-weight: 700; line-height: 1.6; }.hint { margin-top: 54px; font-size: .85rem; }

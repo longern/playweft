@@ -1,0 +1,12 @@
+{
+  "name": "@playweft/runtime-lua",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@playweft/game-protocol": "file:../game-protocol",
+    "@playweft/runtime-core": "file:../runtime-core",
+    "wasmoon": "1.16.0"
+  }
+}

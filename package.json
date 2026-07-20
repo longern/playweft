@@ -1,0 +1,24 @@
+{
+  "name": "playweft",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "postinstall": "patch-package",
+    "check": "npm run check --workspace @playweft/worker && npm run check --workspace @playweft/web && npm run check --workspace @playweft/rps-demo",
+    "dev:worker": "npm run dev --workspace @playweft/worker --",
+    "dev:web": "npm run dev --workspace @playweft/web",
+    "dev:rps": "npm run dev --workspace @playweft/rps-demo",
+    "build:web": "npm run build --workspace @playweft/web",
+    "build:rps": "npm run build --workspace @playweft/rps-demo",
+    "deploy:platform": "npm run build:web && npm run deploy --workspace @playweft/worker",
+    "deploy:worker": "npm run deploy:platform"
+  },
+  "devDependencies": {
+    "patch-package": "8.0.1"
+  }
+}
