@@ -1,13 +1,26 @@
 import { DurableObject } from "cloudflare:workers";
-import { assertJson, assertJsonSize, JsonValidationError, type JsonValue, type RoomLobby, type RoomPlayer, type RoomSnapshot } from "@playweft/game-protocol";
+import {
+  assertJson,
+  assertJsonSize,
+  JsonValidationError,
+  type JsonValue,
+  type RoomLobby,
+  type RoomPlayer,
+  type RoomSnapshot,
+} from "@playweft/game-protocol";
 import { GameRuntimeError, type GameRuntime } from "@playweft/runtime-core";
 import type { Env } from "./env";
-import { createRuntime, isRuntimeKind, type RuntimeKind } from "./runtime-registry";
+import {
+  createRuntime,
+  isRuntimeKind,
+  type RuntimeKind,
+} from "./runtime-registry";
 
 const MAX_ACTION_BYTES = 8 * 1024;
 const MAX_PLAYER_ID_LENGTH = 64;
 const MAX_STATE_BYTES = 64 * 1024;
 const ROOM_IDLE_TTL_MS = 60 * 60 * 1_000;
+const HOST_OFFLINE_TIMEOUT_MS = 45_000;
 const MAX_PLAYERS = 32;
 
 interface RoomConfig {
@@ -36,6 +49,7 @@ interface SocketAttachment {
 interface RoomMember {
   actorId: string;
   joinedAt: number;
+  lastSeenAt?: number;
   seat?: number;
   ready?: boolean;
 }
@@ -55,7 +69,11 @@ class RoomHttpError extends Error {
  * resulting state before accepting the next action.
  */
 export class GameRoom extends DurableObject<Env> {
-  private runtime?: { kind: RuntimeKind; scriptHash: string; engine: GameRuntime };
+  private runtime?: {
+    kind: RuntimeKind;
+    scriptHash: string;
+    engine: GameRuntime;
+  };
   private tail: Promise<void> = Promise.resolve();
 
   async fetch(request: Request): Promise<Response> {
@@ -66,10 +84,18 @@ export class GameRoom extends DurableObject<Env> {
           return Response.json(await this.enqueue(() => this.create(request)));
         case "GET /launch":
           return Response.json(await this.enqueue(() => this.launch()));
+        case "PUT /game":
+          return Response.json(
+            await this.enqueue(() => this.changeGame(request)),
+          );
         case "GET /state":
-          return Response.json(await this.enqueue(() => this.stateFor(request)));
+          return Response.json(
+            await this.enqueue(() => this.stateFor(request)),
+          );
         case "PUT /initialize":
-          return Response.json(await this.enqueue(() => this.initialize(request)));
+          return Response.json(
+            await this.enqueue(() => this.initialize(request)),
+          );
         case "POST /join":
           return Response.json(await this.enqueue(() => this.join(request)));
         case "POST /start":
@@ -79,11 +105,23 @@ export class GameRoom extends DurableObject<Env> {
         case "POST /seat":
           return Response.json(await this.enqueue(() => this.setSeat(request)));
         case "POST /ready":
-          return Response.json(await this.enqueue(() => this.setReady(request)));
+          return Response.json(
+            await this.enqueue(() => this.setReady(request)),
+          );
         case "POST /kick":
           return Response.json(await this.enqueue(() => this.kick(request)));
+        case "POST /transfer-host":
+          return Response.json(
+            await this.enqueue(() => this.transferHost(request)),
+          );
+        case "POST /return-to-room":
+          return Response.json(
+            await this.enqueue(() => this.returnToRoom(request)),
+          );
         case "POST /actions":
-          return Response.json(await this.enqueue(() => this.applyAction(request)));
+          return Response.json(
+            await this.enqueue(() => this.applyAction(request)),
+          );
         case "GET /connect":
           return this.connectWebSocket(request);
         default:
@@ -103,6 +141,7 @@ export class GameRoom extends DurableObject<Env> {
       await this.ctx.storage.deleteAll();
       return;
     }
+    await this.transferOfflineHost();
     if (this.ctx.getWebSockets().length > 0) {
       await this.touch();
       return;
@@ -113,24 +152,41 @@ export class GameRoom extends DurableObject<Env> {
       await this.ctx.storage.deleteAll();
       return;
     }
-    await this.ctx.storage.setAlarm(expiresAt);
+    await this.scheduleAlarm(expiresAt);
   }
 
-  async webSocketMessage(webSocket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+  async webSocketMessage(
+    webSocket: WebSocket,
+    message: string | ArrayBuffer,
+  ): Promise<void> {
     try {
-      if (typeof message !== "string") throw new RoomHttpError(400, "messages must be JSON text");
+      if (typeof message !== "string")
+        throw new RoomHttpError(400, "messages must be JSON text");
       const input = parseJson(message);
-      if (!isRecord(input) || input.type !== "action") {
-        throw new RoomHttpError(400, "expected { type: 'action', action }");
+      const attachment =
+        webSocket.deserializeAttachment() as SocketAttachment | null;
+      if (!attachment) throw new RoomHttpError(401, "socket has no identity");
+      if (isRecord(input) && input.type === "heartbeat") {
+        await this.enqueue(() => this.noteMemberSeen(attachment.playerId));
+        return;
       }
-      const attachment = webSocket.deserializeAttachment() as SocketAttachment | null;
-      await this.enqueue(() => this.applyActionInput({
-        playerId: attachment?.playerId ?? "",
-        actorId: attachment?.actorId ?? "anonymous",
-        action: input.action,
-      }));
+      if (!isRecord(input) || input.type !== "action") {
+        throw new RoomHttpError(
+          400,
+          "expected { type: 'heartbeat' } or { type: 'action', action }",
+        );
+      }
+      await this.enqueue(() =>
+        this.applyActionInput({
+          playerId: attachment.playerId,
+          actorId: attachment.actorId,
+          action: input.action,
+        }),
+      );
     } catch (error) {
-      webSocket.send(JSON.stringify({ type: "error", error: errorMessage(error) }));
+      webSocket.send(
+        JSON.stringify({ type: "error", error: errorMessage(error) }),
+      );
     }
   }
 
@@ -160,11 +216,46 @@ export class GameRoom extends DurableObject<Env> {
     return { gameUrl };
   }
 
+  private async changeGame(request: Request): Promise<RoomLaunch> {
+    await this.launch();
+    const playerId = this.playerId(request);
+    if (playerId !== (await this.ownerPlayerId()))
+      throw new RoomHttpError(403, "only the room host can change the game");
+    if ((await this.phase()) !== "lobby")
+      throw new RoomHttpError(
+        409,
+        "the game cannot be changed after it starts",
+      );
+    const input = await parseRequestJson(request);
+    if (!isRecord(input) || typeof input.gameUrl !== "string")
+      throw new RoomHttpError(400, "expected { gameUrl }");
+    const gameUrl = normalizeGameUrl(input.gameUrl);
+
+    this.disposeRuntime();
+    await this.ctx.storage.put({ gameUrl, phase: "lobby" });
+    await this.ctx.storage.delete([
+      "runtime",
+      "script",
+      "scriptHash",
+      "minPlayers",
+      "maxPlayers",
+      "randomSeed",
+      "state",
+      "version",
+    ]);
+    await this.touch();
+    this.broadcast({ type: "game_changed", gameUrl });
+    return { gameUrl };
+  }
+
   private async initialize(request: Request): Promise<RoomLobby> {
     await this.launch();
     const input = await parseRequestJson(request);
     if (!isRecord(input) || typeof input.script !== "string") {
-      throw new RoomHttpError(400, "expected { runtime?: 'lua', script, minPlayers, maxPlayers }");
+      throw new RoomHttpError(
+        400,
+        "expected { runtime?: 'lua', script, minPlayers, maxPlayers }",
+      );
     }
 
     const runtime = input.runtime ?? "lua";
@@ -174,13 +265,21 @@ export class GameRoom extends DurableObject<Env> {
 
     const minPlayers = validatePlayerLimit(input.minPlayers, "minPlayers");
     const maxPlayers = validatePlayerLimit(input.maxPlayers, "maxPlayers");
-    if (minPlayers > maxPlayers) throw new RoomHttpError(400, "minPlayers must not exceed maxPlayers");
+    if (minPlayers > maxPlayers)
+      throw new RoomHttpError(400, "minPlayers must not exceed maxPlayers");
 
     const scriptHash = await hash(input.script);
     const existing = await this.storedConfig();
     if (existing) {
-      if (existing.scriptHash !== scriptHash || existing.minPlayers !== minPlayers || existing.maxPlayers !== maxPlayers) {
-        throw new RoomHttpError(409, "room is already initialized with a different game configuration");
+      if (
+        existing.scriptHash !== scriptHash ||
+        existing.minPlayers !== minPlayers ||
+        existing.maxPlayers !== maxPlayers
+      ) {
+        throw new RoomHttpError(
+          409,
+          "room is already initialized with a different game configuration",
+        );
       }
       return this.lobby();
     }
@@ -206,7 +305,9 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private async join(request: Request): Promise<RoomLobby & { selfId: string }> {
+  private async join(
+    request: Request,
+  ): Promise<RoomLobby & { selfId: string }> {
     await this.launch();
     const config = await this.config();
     const playerId = this.playerId(request);
@@ -214,35 +315,75 @@ export class GameRoom extends DurableObject<Env> {
     const members = await this.members();
     const existing = members[playerId];
     if (!existing) {
-      if (phase === "playing") throw new RoomHttpError(403, "the game has already started");
-      const occupiedSeats = new Set(Object.values(members).map((member) => member.seat).filter((seat): seat is number => typeof seat === "number"));
-      const seat = Array.from({ length: config.maxPlayers }, (_, index) => index + 1).find((number) => !occupiedSeats.has(number));
-      members[playerId] = { actorId: await this.actorId(request), joinedAt: Date.now(), seat, ready: false };
+      if (phase === "playing")
+        throw new RoomHttpError(403, "the game has already started");
+      const occupiedSeats = new Set(
+        Object.values(members)
+          .map((member) => member.seat)
+          .filter((seat): seat is number => typeof seat === "number"),
+      );
+      const seat = Array.from(
+        { length: config.maxPlayers },
+        (_, index) => index + 1,
+      ).find((number) => !occupiedSeats.has(number));
+      members[playerId] = {
+        actorId: await this.actorId(request),
+        joinedAt: Date.now(),
+        lastSeenAt: Date.now(),
+        seat,
+        ready: false,
+      };
       await this.ctx.storage.put("members", members);
       await this.touch();
       this.broadcast(await this.lobby());
     }
-    return { ...await this.lobby(), selfId: members[playerId]!.actorId };
+    return { ...(await this.lobby()), selfId: members[playerId]!.actorId };
   }
 
   private async start(request: Request): Promise<RoomSnapshot> {
     await this.launch();
     const playerId = this.playerId(request);
-    if (playerId !== await this.ownerPlayerId()) throw new RoomHttpError(403, "only the room host can start the game");
-    if (await this.phase() !== "lobby") throw new RoomHttpError(409, "the game has already started");
+    if (playerId !== (await this.ownerPlayerId()))
+      throw new RoomHttpError(403, "only the room host can start the game");
+    if ((await this.phase()) !== "lobby")
+      throw new RoomHttpError(409, "the game has already started");
 
-    const [config, members] = await Promise.all([this.config(), this.members()]);
-    const players = Object.values(members).filter((member) => member.seat !== undefined).sort((a, b) => a.seat! - b.seat!).map((member) => member.actorId);
-    if (players.length < config.minPlayers) throw new RoomHttpError(409, `waiting for at least ${config.minPlayers} players`);
+    const [config, members] = await Promise.all([
+      this.config(),
+      this.members(),
+    ]);
+    const players = Object.values(members)
+      .filter((member) => member.seat !== undefined)
+      .sort((a, b) => a.seat! - b.seat!)
+      .map((member) => member.actorId);
+    if (players.length < config.minPlayers)
+      throw new RoomHttpError(
+        409,
+        `waiting for at least ${config.minPlayers} players`,
+      );
     const ownerPlayerId = await this.ownerPlayerId();
-    if (Object.entries(members).some(([id, member]) => id !== ownerPlayerId && member.seat !== undefined && !member.ready)) {
+    if (
+      Object.entries(members).some(
+        ([id, member]) =>
+          id !== ownerPlayerId && member.seat !== undefined && !member.ready,
+      )
+    ) {
       throw new RoomHttpError(409, "waiting for all players to get ready");
     }
     const engine = await this.engine(config);
     const state = engine.setup({ players, randomSeed: config.randomSeed });
     assertJsonSize(state, "initial state", MAX_STATE_BYTES);
-    const snapshot: RoomSnapshot = { type: "snapshot", state, version: 0, scriptHash: config.scriptHash };
-    await this.ctx.storage.put<JsonValue>({ phase: "playing", state, version: 0 });
+    const snapshot: RoomSnapshot = {
+      type: "snapshot",
+      state,
+      version: 0,
+      scriptHash: config.scriptHash,
+    };
+    await this.ctx.storage.put<JsonValue>({
+      phase: "playing",
+      state,
+      version: 0,
+    });
     await this.touch();
     this.broadcast(snapshot);
     return snapshot;
@@ -251,28 +392,114 @@ export class GameRoom extends DurableObject<Env> {
   private async kick(request: Request): Promise<RoomLobby> {
     await this.launch();
     const playerId = this.playerId(request);
-    if (playerId !== await this.ownerPlayerId()) throw new RoomHttpError(403, "only the room host can remove players");
-    if (await this.phase() !== "lobby") throw new RoomHttpError(409, "players cannot be removed after the game starts");
+    if (playerId !== (await this.ownerPlayerId()))
+      throw new RoomHttpError(403, "only the room host can remove players");
+    if ((await this.phase()) !== "lobby")
+      throw new RoomHttpError(
+        409,
+        "players cannot be removed after the game starts",
+      );
     const input = await parseRequestJson(request);
-    if (!isRecord(input) || typeof input.playerId !== "string") throw new RoomHttpError(400, "expected { playerId }");
+    if (!isRecord(input) || typeof input.playerId !== "string")
+      throw new RoomHttpError(400, "expected { playerId }");
 
     const members = await this.members();
-    const target = Object.entries(members).find(([, member]) => member.actorId === input.playerId);
+    const target = Object.entries(members).find(
+      ([, member]) => member.actorId === input.playerId,
+    );
     if (!target) throw new RoomHttpError(404, "player is not in this room");
-    if (target[0] === playerId) throw new RoomHttpError(409, "the room host cannot remove themselves");
+    if (target[0] === playerId)
+      throw new RoomHttpError(409, "the room host cannot remove themselves");
     delete members[target[0]];
     await this.ctx.storage.put("members", members);
     await this.touch();
     for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment() as SocketAttachment | null;
+      const attachment =
+        socket.deserializeAttachment() as SocketAttachment | null;
       if (attachment?.playerId !== target[0]) continue;
       try {
-        socket.send(JSON.stringify({ type: "error", error: "you were removed from the room" }));
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "you were removed from the room",
+          }),
+        );
         socket.close(4003, "removed from room");
       } catch {
         // The peer may have disconnected while the host was removing them.
       }
     }
+    const lobby = await this.lobby();
+    this.broadcast(lobby);
+    return lobby;
+  }
+
+  private async transferHost(request: Request): Promise<RoomLobby> {
+    await this.launch();
+    const playerId = this.playerId(request);
+    if (playerId !== (await this.ownerPlayerId()))
+      throw new RoomHttpError(403, "only the room host can transfer ownership");
+    if ((await this.phase()) !== "lobby")
+      throw new RoomHttpError(
+        409,
+        "room ownership cannot be transferred after the game starts",
+      );
+    const input = await parseRequestJson(request);
+    if (!isRecord(input) || typeof input.playerId !== "string")
+      throw new RoomHttpError(400, "expected { playerId }");
+
+    const members = await this.members();
+    const target = Object.entries(members).find(
+      ([, member]) => member.actorId === input.playerId,
+    );
+    if (!target) throw new RoomHttpError(404, "player is not in this room");
+    if (target[0] === playerId)
+      throw new RoomHttpError(409, "the room host already owns this room");
+    if (target[1].seat === undefined)
+      throw new RoomHttpError(409, "the new room host must be seated");
+
+    target[1].ready = false;
+    await this.ctx.storage.put({ ownerPlayerId: target[0], members });
+    await this.touch();
+    const lobby = await this.lobby();
+    this.broadcast(lobby);
+    return lobby;
+  }
+
+  private async returnToRoom(request: Request): Promise<RoomLobby> {
+    await this.launch();
+    const playerId = this.playerId(request);
+    if (playerId !== (await this.ownerPlayerId())) {
+      throw new RoomHttpError(
+        403,
+        "only the room host can return the room to the lobby",
+      );
+    }
+    if ((await this.phase()) !== "playing") {
+      throw new RoomHttpError(409, "the room is already in the lobby");
+    }
+
+    const [config, room] = await Promise.all([this.config(), this.roomState()]);
+    const engine = await this.engine(config);
+    const allowed = engine.returnToRoom(room.state, {
+      playerId: await this.memberActorId(playerId),
+      version: room.version,
+    });
+    if (!allowed) {
+      throw new RoomHttpError(
+        409,
+        "the game does not allow returning to the room yet",
+      );
+    }
+
+    const members = await this.members();
+    for (const [memberId, member] of Object.entries(members)) {
+      if (memberId !== playerId) member.ready = false;
+    }
+    this.disposeRuntime();
+    await this.ctx.storage.put({ phase: "lobby", members });
+    await this.ctx.storage.delete(["state", "version"]);
+    await this.touch();
     const lobby = await this.lobby();
     this.broadcast(lobby);
     return lobby;
@@ -297,12 +524,21 @@ export class GameRoom extends DurableObject<Env> {
 
     const [config, room] = await Promise.all([this.config(), this.roomState()]);
     const engine = await this.engine(config);
-    const result = engine.playerLeft(room.state, { playerId: member.actorId, version: room.version });
+    const result = engine.playerLeft(room.state, {
+      playerId: member.actorId,
+      version: room.version,
+    });
     const version = room.version + 1;
     delete members[playerId];
     await this.ctx.storage.put({ state: result.state, version, members });
     await this.touch();
-    const snapshot: RoomSnapshot = { type: "snapshot", state: result.state, events: result.events, version, scriptHash: config.scriptHash };
+    const snapshot: RoomSnapshot = {
+      type: "snapshot",
+      state: result.state,
+      events: result.events,
+      version,
+      scriptHash: config.scriptHash,
+    };
     this.broadcast(snapshot);
     this.closePlayerSockets(playerId);
     return snapshot;
@@ -310,21 +546,41 @@ export class GameRoom extends DurableObject<Env> {
 
   private async setSeat(request: Request): Promise<RoomLobby> {
     await this.launch();
-    if (await this.phase() !== "lobby") throw new RoomHttpError(409, "seats cannot be changed after the game starts");
+    if ((await this.phase()) !== "lobby")
+      throw new RoomHttpError(
+        409,
+        "seats cannot be changed after the game starts",
+      );
     const input = await parseRequestJson(request);
-    if (!isRecord(input) || (input.seat !== null && (!Number.isInteger(input.seat) || typeof input.seat !== "number"))) {
+    if (
+      !isRecord(input) ||
+      (input.seat !== null &&
+        (!Number.isInteger(input.seat) || typeof input.seat !== "number"))
+    ) {
       throw new RoomHttpError(400, "expected { seat: number | null }");
     }
     const playerId = this.playerId(request);
-    const [config, members, ownerPlayerId] = await Promise.all([this.config(), this.members(), this.ownerPlayerId()]);
+    const [config, members, ownerPlayerId] = await Promise.all([
+      this.config(),
+      this.members(),
+      this.ownerPlayerId(),
+    ]);
     const member = members[playerId];
-    if (!member) throw new RoomHttpError(403, "join the room before choosing a seat");
+    if (!member)
+      throw new RoomHttpError(403, "join the room before choosing a seat");
     if (input.seat === null) {
-      if (playerId === ownerPlayerId) throw new RoomHttpError(409, "the room host must keep a seat");
+      if (playerId === ownerPlayerId)
+        throw new RoomHttpError(409, "the room host must keep a seat");
       member.seat = undefined;
     } else {
-      if (input.seat < 1 || input.seat > config.maxPlayers) throw new RoomHttpError(400, "seat is outside this room");
-      if (Object.entries(members).some(([id, candidate]) => id !== playerId && candidate.seat === input.seat)) throw new RoomHttpError(409, "that seat is already taken");
+      if (input.seat < 1 || input.seat > config.maxPlayers)
+        throw new RoomHttpError(400, "seat is outside this room");
+      if (
+        Object.entries(members).some(
+          ([id, candidate]) => id !== playerId && candidate.seat === input.seat,
+        )
+      )
+        throw new RoomHttpError(409, "that seat is already taken");
       member.seat = input.seat;
     }
     member.ready = false;
@@ -337,14 +593,24 @@ export class GameRoom extends DurableObject<Env> {
 
   private async setReady(request: Request): Promise<RoomLobby> {
     await this.launch();
-    if (await this.phase() !== "lobby") throw new RoomHttpError(409, "readiness cannot be changed after the game starts");
+    if ((await this.phase()) !== "lobby")
+      throw new RoomHttpError(
+        409,
+        "readiness cannot be changed after the game starts",
+      );
     const input = await parseRequestJson(request);
-    if (!isRecord(input) || typeof input.ready !== "boolean") throw new RoomHttpError(400, "expected { ready: boolean }");
+    if (!isRecord(input) || typeof input.ready !== "boolean")
+      throw new RoomHttpError(400, "expected { ready: boolean }");
     const playerId = this.playerId(request);
-    const [members, ownerPlayerId] = await Promise.all([this.members(), this.ownerPlayerId()]);
+    const [members, ownerPlayerId] = await Promise.all([
+      this.members(),
+      this.ownerPlayerId(),
+    ]);
     const member = members[playerId];
-    if (!member?.seat) throw new RoomHttpError(409, "spectators cannot get ready");
-    if (playerId === ownerPlayerId) throw new RoomHttpError(409, "the room host does not need to get ready");
+    if (!member?.seat)
+      throw new RoomHttpError(409, "spectators cannot get ready");
+    if (playerId === ownerPlayerId)
+      throw new RoomHttpError(409, "the room host does not need to get ready");
     member.ready = input.ready;
     await this.ctx.storage.put("members", members);
     await this.touch();
@@ -360,15 +626,27 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(400, "expected { action }");
     }
     const playerId = this.playerId(request);
-    return this.applyActionInput({ playerId, actorId: await this.memberActorId(playerId), action: input.action });
+    return this.applyActionInput({
+      playerId,
+      actorId: await this.memberActorId(playerId),
+      action: input.action,
+    });
   }
 
-  private async applyActionInput(input: { playerId: string; actorId: string; action: unknown }): Promise<object> {
+  private async applyActionInput(input: {
+    playerId: string;
+    actorId: string;
+    action: unknown;
+  }): Promise<object> {
     if (!input.actorId || input.actorId.length > MAX_PLAYER_ID_LENGTH) {
-      throw new RoomHttpError(400, `actorId must be 1-${MAX_PLAYER_ID_LENGTH} characters`);
+      throw new RoomHttpError(
+        400,
+        `actorId must be 1-${MAX_PLAYER_ID_LENGTH} characters`,
+      );
     }
-    if (await this.phase() !== "playing") throw new RoomHttpError(409, "the game has not started");
-    if (await this.memberActorId(input.playerId) !== input.actorId) {
+    if ((await this.phase()) !== "playing")
+      throw new RoomHttpError(409, "the game has not started");
+    if ((await this.memberActorId(input.playerId)) !== input.actorId) {
       throw new RoomHttpError(403, "player is not in this game");
     }
     assertJson(input.action, "action");
@@ -398,12 +676,18 @@ export class GameRoom extends DurableObject<Env> {
 
   private async snapshot(): Promise<RoomSnapshot> {
     const [config, room] = await Promise.all([this.config(), this.roomState()]);
-    return { type: "snapshot", state: room.state, version: room.version, scriptHash: config.scriptHash };
+    return {
+      type: "snapshot",
+      state: room.state,
+      version: room.version,
+      scriptHash: config.scriptHash,
+    };
   }
 
   private async stateFor(request: Request): Promise<RoomSnapshot> {
     await this.memberActorId(this.playerId(request));
-    if (await this.phase() !== "playing") throw new RoomHttpError(409, "the game has not started");
+    if ((await this.phase()) !== "playing")
+      throw new RoomHttpError(409, "the game has not started");
     return this.snapshot();
   }
 
@@ -414,7 +698,12 @@ export class GameRoom extends DurableObject<Env> {
     const attachment = await this.enqueue(async () => {
       await this.launch();
       const playerId = this.playerId(request);
-      return { playerId, actorId: await this.memberActorId(playerId) } satisfies SocketAttachment;
+      const attachment = {
+        playerId,
+        actorId: await this.memberActorId(playerId),
+      } satisfies SocketAttachment;
+      await this.noteMemberSeen(playerId);
+      return attachment;
     });
 
     const pair = new WebSocketPair();
@@ -422,26 +711,46 @@ export class GameRoom extends DurableObject<Env> {
     const server = pair[1];
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server);
-    this.ctx.waitUntil(this.enqueue(async () => {
-      try {
-        server.send(JSON.stringify((await this.phase()) === "playing" ? await this.snapshot() : await this.lobby()));
-      } catch (error) {
-        server.send(JSON.stringify({ type: "error", error: errorMessage(error) }));
-      }
-    }));
+    this.ctx.waitUntil(
+      this.enqueue(async () => {
+        try {
+          server.send(
+            JSON.stringify(
+              (await this.phase()) === "playing"
+                ? await this.snapshot()
+                : await this.lobby(),
+            ),
+          );
+        } catch (error) {
+          server.send(
+            JSON.stringify({ type: "error", error: errorMessage(error) }),
+          );
+        }
+      }),
+    );
     return new Response(null, { status: 101, webSocket: client });
   }
 
   private async config(): Promise<RoomConfig> {
     const config = await this.storedConfig();
     if (!config) {
-      throw new RoomHttpError(409, "room has no valid game runtime; initialize it first");
+      throw new RoomHttpError(
+        409,
+        "room has no valid game runtime; initialize it first",
+      );
     }
     return config;
   }
 
   private async storedConfig(): Promise<RoomConfig | undefined> {
-    const [runtime, script, scriptHash, minPlayers, maxPlayers, storedRandomSeed] = await Promise.all([
+    const [
+      runtime,
+      script,
+      scriptHash,
+      minPlayers,
+      maxPlayers,
+      storedRandomSeed,
+    ] = await Promise.all([
       this.ctx.storage.get<string>("runtime"),
       this.ctx.storage.get<string>("script"),
       this.ctx.storage.get<string>("scriptHash"),
@@ -449,9 +758,27 @@ export class GameRoom extends DurableObject<Env> {
       this.ctx.storage.get<number>("maxPlayers"),
       this.ctx.storage.get<number>("randomSeed"),
     ]);
-    if (runtime === undefined && script === undefined && scriptHash === undefined && minPlayers === undefined && maxPlayers === undefined) return undefined;
-    if (!runtime || !isRuntimeKind(runtime) || !script || !scriptHash || !isPlayerLimit(minPlayers) || !isPlayerLimit(maxPlayers) || minPlayers > maxPlayers) {
-      throw new RoomHttpError(500, "room has invalid persisted game configuration");
+    if (
+      runtime === undefined &&
+      script === undefined &&
+      scriptHash === undefined &&
+      minPlayers === undefined &&
+      maxPlayers === undefined
+    )
+      return undefined;
+    if (
+      !runtime ||
+      !isRuntimeKind(runtime) ||
+      !script ||
+      !scriptHash ||
+      !isPlayerLimit(minPlayers) ||
+      !isPlayerLimit(maxPlayers) ||
+      minPlayers > maxPlayers
+    ) {
+      throw new RoomHttpError(
+        500,
+        "room has invalid persisted game configuration",
+      );
     }
     if (storedRandomSeed !== undefined && !isRandomSeed(storedRandomSeed)) {
       throw new RoomHttpError(500, "room has invalid persisted random seed");
@@ -459,7 +786,8 @@ export class GameRoom extends DurableObject<Env> {
     // Rooms created before randomSeed was introduced get a seed on their first
     // post-upgrade read, preserving a stable value for every later setup call.
     const randomSeed = storedRandomSeed ?? secureRandomSeed();
-    if (storedRandomSeed === undefined) await this.ctx.storage.put("randomSeed", randomSeed);
+    if (storedRandomSeed === undefined)
+      await this.ctx.storage.put("randomSeed", randomSeed);
     return { runtime, script, scriptHash, minPlayers, maxPlayers, randomSeed };
   }
 
@@ -469,16 +797,27 @@ export class GameRoom extends DurableObject<Env> {
       this.ctx.storage.get<number>("version"),
     ]);
     if (state === undefined || version === undefined) {
-      throw new RoomHttpError(409, "room has no persisted state; initialize it first");
+      throw new RoomHttpError(
+        409,
+        "room has no persisted state; initialize it first",
+      );
     }
     return { state, version };
   }
 
   private async engine(config: RoomConfig): Promise<GameRuntime> {
-    if (this.runtime?.kind === config.runtime && this.runtime.scriptHash === config.scriptHash) return this.runtime.engine;
+    if (
+      this.runtime?.kind === config.runtime &&
+      this.runtime.scriptHash === config.scriptHash
+    )
+      return this.runtime.engine;
     this.disposeRuntime();
     const engine = await createRuntime(config.runtime, config.script);
-    this.runtime = { kind: config.runtime, scriptHash: config.scriptHash, engine };
+    this.runtime = {
+      kind: config.runtime,
+      scriptHash: config.scriptHash,
+      engine,
+    };
     return engine;
   }
 
@@ -490,7 +829,58 @@ export class GameRoom extends DurableObject<Env> {
   private async touch(): Promise<void> {
     const now = Date.now();
     await this.ctx.storage.put("lastActivity", now);
-    await this.ctx.storage.setAlarm(now + ROOM_IDLE_TTL_MS);
+    await this.transferOfflineHost();
+    await this.scheduleAlarm(now + ROOM_IDLE_TTL_MS);
+  }
+
+  private async noteMemberSeen(playerId: string): Promise<void> {
+    const members = await this.members();
+    const member = members[playerId];
+    if (!member) return;
+    member.lastSeenAt = Date.now();
+    await this.ctx.storage.put("members", members);
+    await this.transferOfflineHost(members);
+    await this.scheduleAlarm();
+  }
+
+  private async transferOfflineHost(
+    knownMembers?: Record<string, RoomMember>,
+  ): Promise<void> {
+    const [ownerPlayerId, members] = await Promise.all([
+      this.ownerPlayerId(),
+      knownMembers ?? this.members(),
+    ]);
+    const owner = members[ownerPlayerId];
+    if (!owner || Date.now() - (owner.lastSeenAt ?? owner.joinedAt) < HOST_OFFLINE_TIMEOUT_MS)
+      return;
+
+    const nextOwner = Object.entries(members)
+      .filter(([, member]) =>
+        member.seat !== undefined &&
+        Date.now() - (member.lastSeenAt ?? member.joinedAt) < HOST_OFFLINE_TIMEOUT_MS,
+      )
+      .sort(([, left], [, right]) => left.joinedAt - right.joinedAt)[0];
+    if (!nextOwner || nextOwner[0] === ownerPlayerId) return;
+
+    nextOwner[1].ready = false;
+    await this.ctx.storage.put({ ownerPlayerId: nextOwner[0], members });
+    this.broadcast(await this.lobby());
+  }
+
+  private async scheduleAlarm(fallbackAt?: number): Promise<void> {
+    const [members, ownerPlayerId, lastActivity] = await Promise.all([
+      this.members(),
+      this.ownerPlayerId(),
+      this.ctx.storage.get<number>("lastActivity"),
+    ]);
+    const owner = members[ownerPlayerId];
+    const ownerLastSeenAt = owner?.lastSeenAt ?? owner?.joinedAt;
+    const presenceCheckAt =
+      ownerLastSeenAt && Date.now() - ownerLastSeenAt < HOST_OFFLINE_TIMEOUT_MS
+        ? ownerLastSeenAt + HOST_OFFLINE_TIMEOUT_MS
+        : Number.POSITIVE_INFINITY;
+    const idleExpiryAt = fallbackAt ?? (lastActivity ?? Date.now()) + ROOM_IDLE_TTL_MS;
+    await this.ctx.storage.setAlarm(Math.min(presenceCheckAt, idleExpiryAt));
   }
 
   private broadcast(message: object): void {
@@ -506,7 +896,8 @@ export class GameRoom extends DurableObject<Env> {
 
   private closePlayerSockets(playerId: string): void {
     for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment() as SocketAttachment | null;
+      const attachment =
+        socket.deserializeAttachment() as SocketAttachment | null;
       if (attachment?.playerId !== playerId) continue;
       try {
         socket.close(4001, "left room");
@@ -526,9 +917,12 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private handleError(error: unknown): Response {
-    if (error instanceof RoomHttpError) return this.jsonError(error.status, error.message);
-    if (error instanceof JsonValidationError) return this.jsonError(422, error.message);
-    if (error instanceof GameRuntimeError) return this.jsonError(422, error.message);
+    if (error instanceof RoomHttpError)
+      return this.jsonError(error.status, error.message);
+    if (error instanceof JsonValidationError)
+      return this.jsonError(422, error.message);
+    if (error instanceof GameRuntimeError)
+      return this.jsonError(422, error.message);
     console.error("room request failed", error);
     return this.jsonError(500, "internal room error");
   }
@@ -547,7 +941,8 @@ export class GameRoom extends DurableObject<Env> {
 
   private async actorId(request: Request): Promise<string> {
     const playerId = this.playerId(request);
-    const actors = (await this.ctx.storage.get<Record<string, string>>("actors")) ?? {};
+    const actors =
+      (await this.ctx.storage.get<Record<string, string>>("actors")) ?? {};
     const existing = actors[playerId];
     if (existing) return existing;
 
@@ -558,7 +953,9 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private async members(): Promise<Record<string, RoomMember>> {
-    return (await this.ctx.storage.get<Record<string, RoomMember>>("members")) ?? {};
+    return (
+      (await this.ctx.storage.get<Record<string, RoomMember>>("members")) ?? {}
+    );
   }
 
   private async memberActorId(playerId: string): Promise<string> {
@@ -574,8 +971,9 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private async phase(): Promise<"lobby" | "playing"> {
-    const phase = await this.ctx.storage.get<string>("phase") ?? "lobby";
-    if (phase !== "lobby" && phase !== "playing") throw new RoomHttpError(500, "room has invalid phase");
+    const phase = (await this.ctx.storage.get<string>("phase")) ?? "lobby";
+    if (phase !== "lobby" && phase !== "playing")
+      throw new RoomHttpError(500, "room has invalid phase");
     return phase;
   }
 
@@ -589,7 +987,11 @@ export class GameRoom extends DurableObject<Env> {
     const players: RoomPlayer[] = Object.values(members)
       .filter((member) => member.seat !== undefined)
       .sort((left, right) => left.seat! - right.seat!)
-      .map((member) => ({ id: member.actorId, seat: member.seat!, ready: member.ready === true }));
+      .map((member) => ({
+        id: member.actorId,
+        seat: member.seat!,
+        ready: member.ready === true,
+      }));
     const spectators = Object.values(members)
       .filter((member) => member.seat === undefined)
       .sort((left, right) => left.joinedAt - right.joinedAt)
@@ -613,21 +1015,36 @@ function normalizeGameUrl(value: string): string {
   } catch {
     throw new RoomHttpError(400, "gameUrl must be an absolute URL");
   }
-  const isLocalHttp = url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+  const isLocalHttp =
+    url.protocol === "http:" &&
+    (url.hostname === "localhost" || url.hostname === "127.0.0.1");
   if (url.protocol !== "https:" && !isLocalHttp) {
-    throw new RoomHttpError(400, "gameUrl must use HTTPS (or localhost HTTP during development)");
+    throw new RoomHttpError(
+      400,
+      "gameUrl must use HTTPS (or localhost HTTP during development)",
+    );
   }
-  if (url.username || url.password) throw new RoomHttpError(400, "gameUrl must not include credentials");
+  if (url.username || url.password)
+    throw new RoomHttpError(400, "gameUrl must not include credentials");
   return url.toString();
 }
 
 function validatePlayerLimit(value: unknown, label: string): number {
-  if (!isPlayerLimit(value)) throw new RoomHttpError(400, `${label} must be an integer from 1 to ${MAX_PLAYERS}`);
+  if (!isPlayerLimit(value))
+    throw new RoomHttpError(
+      400,
+      `${label} must be an integer from 1 to ${MAX_PLAYERS}`,
+    );
   return value;
 }
 
 function isPlayerLimit(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_PLAYERS;
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_PLAYERS
+  );
 }
 
 function secureRandomSeed(): number {
@@ -638,7 +1055,12 @@ function secureRandomSeed(): number {
 }
 
 function isRandomSeed(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 0xffff_ffff;
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 0xffff_ffff
+  );
 }
 
 async function parseRequestJson(request: Request): Promise<unknown> {
@@ -668,5 +1090,7 @@ function errorMessage(error: unknown): string {
 async function hash(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return [...new Uint8Array(digest)]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
 }

@@ -65,7 +65,7 @@ window.addEventListener("message", (event) => {
   // Optional local-history metadata.
   gamePort.postMessage({
     type: "descriptor",
-    descriptor: { name: "My Game", icon: "/icon.svg" },
+    descriptor: { name: "My Game", icon: "/icon.svg", helpUrl: "/help.html" },
   });
 
   // Required room configuration. This compiles the Lua source but does not
@@ -82,8 +82,8 @@ window.addEventListener("message", (event) => {
 });
 ```
 
-`descriptor` is optional. `name` must contain 1–100 characters. `icon` must be
-a relative URL or an absolute URL hosted on the game's own origin.
+`descriptor` is optional. `name` must contain 1–100 characters. `icon` and
+`helpUrl` must be relative URLs or absolute URLs hosted on the game's own origin.
 
 `initialize` is required. `minPlayers` and `maxPlayers` must be integers from
 1 to 32, with `minPlayers <= maxPlayers`. The room atomically fixes the Lua
@@ -181,6 +181,19 @@ events needed to let remaining players continue or show that the game ended.
 function on_player_left(state, context)
   state.disconnected = context.playerId
   return { state = state, events = { { type = "player_left", player = context.playerId } } }
+end
+```
+
+When the room host selects **Return to room**, the platform asks the game
+runtime whether the current session may be dissolved. Implement the optional
+`on_return_to_room(state, context)` callback and return `true` to allow the
+room to return to its lobby. Returning `false`, or omitting the callback,
+keeps the game running. The callback receives `{ playerId, version }`; it does
+not modify game state.
+
+```lua
+function on_return_to_room(state, context)
+  return state.lastResult ~= nil
 end
 ```
 

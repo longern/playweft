@@ -1,6 +1,11 @@
 import { GameRoom } from "./room";
 import type { Env } from "./env";
-import { issueGuestSession, PlatformSessionError, requirePlatformOrigin, requirePlatformSession } from "./platform-session";
+import {
+  issueGuestSession,
+  PlatformSessionError,
+  requirePlatformOrigin,
+  requirePlatformSession,
+} from "./platform-session";
 
 export { GameRoom };
 export type { Env };
@@ -18,9 +23,10 @@ export default {
         const roomId = crypto.randomUUID();
         const forwarded = new Request(new URL("/create", request.url), request);
         forwarded.headers.set("X-Playweft-Player-Id", session.sub);
-        const response = await env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
+        const response =
+          await env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
         if (!response.ok) return response;
-        const launch = await response.json() as { gameUrl: string };
+        const launch = (await response.json()) as { gameUrl: string };
         return Response.json({ roomId, gameUrl: launch.gameUrl });
       }
       if (request.method === "GET" && url.pathname === "/") {
@@ -37,6 +43,9 @@ export default {
             seat: "POST /api/rooms/:roomId/seat",
             ready: "POST /api/rooms/:roomId/ready",
             kick: "POST /api/rooms/:roomId/kick",
+            transferHost: "POST /api/rooms/:roomId/transfer-host",
+            changeGame: "PUT /api/rooms/:roomId/game",
+            returnToRoom: "POST /api/rooms/:roomId/return-to-room",
             state: "GET /api/rooms/:roomId/state",
             action: "POST /api/rooms/:roomId/actions",
             connect: "GET /api/rooms/:roomId/connect (WebSocket)",
@@ -44,12 +53,18 @@ export default {
         });
       }
 
-      const match = /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/(launch|initialize|join|start|leave|seat|ready|kick|state|actions|connect)$/.exec(url.pathname);
+      const match =
+        /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/(game|launch|initialize|join|start|leave|seat|ready|kick|transfer-host|return-to-room|state|actions|connect)$/.exec(
+          url.pathname,
+        );
       if (!match) return Response.json({ error: "not found" }, { status: 404 });
 
       const roomId = match[1]!;
       const endpoint = match[2]!;
-      const forwarded = new Request(new URL(`/${endpoint}`, request.url), request);
+      const forwarded = new Request(
+        new URL(`/${endpoint}`, request.url),
+        request,
+      );
       // These are authenticated, read-only requests. Browsers are allowed to
       // omit (or vary) Origin on a same-origin GET, so enforcing Origin here
       // makes a freshly redirected room fail before its iframe can load.
@@ -62,7 +77,11 @@ export default {
       forwarded.headers.set("X-Playweft-Player-Id", session.sub);
       return env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
     } catch (error) {
-      if (error instanceof PlatformSessionError) return Response.json({ error: error.message }, { status: error.status });
+      if (error instanceof PlatformSessionError)
+        return Response.json(
+          { error: error.message },
+          { status: error.status },
+        );
       console.error("worker request failed", error);
       return Response.json({ error: "internal worker error" }, { status: 500 });
     }

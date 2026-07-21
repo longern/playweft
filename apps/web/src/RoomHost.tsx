@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Armchair, Check, Crown, MoreHorizontal, Plus } from "lucide-react";
 import {
   connectRoom,
+  changeRoomGame,
   createGuestSession,
   getRoomLaunch,
   initializeRoom,
@@ -12,6 +13,8 @@ import {
   setRoomSeat,
   sendAction,
   startRoom,
+  transferRoomHost,
+  returnRoomToLobby,
   type RoomInitialization,
   type RoomJoin,
   type RoomLobby,
@@ -20,11 +23,16 @@ import {
 import ErrorToast from "./ErrorToast";
 import Dialog from "./Dialog";
 import InviteDialog from "./InviteDialog";
+import Menu from "./Menu";
+import ChangeGameDialog from "./ChangeGameDialog";
+
+const MAX_RECONNECT_ATTEMPTS = 5;
 
 export interface RecentGame {
   url: string;
   name: string;
   icon?: string;
+  helpUrl?: string;
   pinned?: boolean;
 }
 
@@ -49,6 +57,7 @@ export default function RoomHost({
   const bridgePort = useRef<MessagePort | undefined>(undefined);
   const phaseRef = useRef<"lobby" | "playing">("lobby");
   const [gameUrl, setGameUrl] = useState<string>();
+  const [gameRevision, setGameRevision] = useState(0);
   const [gameName, setGameName] = useState("Game room");
   const [lobby, setLobby] = useState<RoomLobby>();
   const [selfId, setSelfId] = useState<string>();
@@ -63,6 +72,11 @@ export default function RoomHost({
   const [playerMenuId, setPlayerMenuId] = useState<string>();
   const [playerMenuClosing, setPlayerMenuClosing] = useState(false);
   const [spectatorHintOpen, setSpectatorHintOpen] = useState(false);
+  const [lobbyMenuOpen, setLobbyMenuOpen] = useState(false);
+  const [lobbyMenuAnchor, setLobbyMenuAnchor] = useState<HTMLButtonElement>();
+  const [gameHelpHref, setGameHelpHref] = useState<string>();
+  const [gameHelpOpen, setGameHelpOpen] = useState(false);
+  const [changeGameOpen, setChangeGameOpen] = useState(false);
 
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
@@ -70,10 +84,9 @@ export default function RoomHost({
   const selfPlayer = lobby?.players.find((player) => player.id === selfId);
   const isSpectating = Boolean(selfId && lobby && !selfPlayer);
   const firstOpenSeat = lobby
-    ? Array.from(
-        { length: lobby.maxPlayers },
-        (_, index) => index + 1,
-      ).find((seat) => !lobby.players.some((player) => player.seat === seat))
+    ? Array.from({ length: lobby.maxPlayers }, (_, index) => index + 1).find(
+        (seat) => !lobby.players.some((player) => player.seat === seat),
+      )
     : undefined;
   const canStart = Boolean(
     lobby &&
@@ -115,6 +128,9 @@ export default function RoomHost({
   useEffect(() => {
     if (!gameUrl) return;
     let socket: WebSocket | undefined;
+    let heartbeatTimer: number | undefined;
+    let reconnectTimer: number | undefined;
+    let reconnectAttempts = 0;
     let closed = false;
     let roomInitializing = false;
     let joined = false;
@@ -150,16 +166,40 @@ export default function RoomHost({
     };
 
     const connect = () => {
+      window.clearTimeout(reconnectTimer);
+      window.clearInterval(heartbeatTimer);
       socket?.close();
-      socket = connectRoom(roomId);
-      socket.onmessage = (event) => {
+      const nextSocket = connectRoom(roomId);
+      let receivedServerSignal = false;
+      socket = nextSocket;
+      nextSocket.onopen = () => {
+        const heartbeat = () => {
+          if (nextSocket.readyState === WebSocket.OPEN)
+            nextSocket.send(JSON.stringify({ type: "heartbeat" }));
+        };
+        heartbeat();
+        heartbeatTimer = window.setInterval(heartbeat, 15_000);
+      };
+      nextSocket.onmessage = (event) => {
         const payload = JSON.parse(event.data as string) as
           | RoomSnapshot
           | RoomLobby
+          | { type: "game_changed"; gameUrl: string }
           | { type: "error"; error: string };
         if (payload.type === "error") {
           setError(payload.error);
           reportBridgeError("ROOM_ERROR", payload.error);
+          return;
+        }
+        receivedServerSignal = true;
+        reconnectAttempts = 0;
+        setError(undefined);
+        if (payload.type === "game_changed") {
+          setLobby(undefined);
+          setGameHelpHref(undefined);
+          setGameHelpOpen(false);
+          setGameUrl(payload.gameUrl);
+          setGameRevision((revision) => revision + 1);
         } else if (payload.type === "lobby") {
           setLobby(payload);
         } else {
@@ -169,13 +209,28 @@ export default function RoomHost({
           );
         }
       };
-      socket.onerror = () => {
+      nextSocket.onerror = () => {
         setError("Live connection to the platform failed");
         if (!entryComplete) onEntryFailed();
         reportBridgeError(
           "REALTIME_CONNECTION_FAILED",
           "Live connection to the platform failed",
         );
+      };
+      nextSocket.onclose = () => {
+        window.clearInterval(heartbeatTimer);
+        if (closed || socket !== nextSocket) return;
+        if (receivedServerSignal) reconnectAttempts = 0;
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+          const error = "Live connection could not be restored";
+          setError(error);
+          reportBridgeError("REALTIME_CONNECTION_FAILED", error);
+          return;
+        }
+        reconnectAttempts += 1;
+        if (!closed) {
+          reconnectTimer = window.setTimeout(connect, 2_000);
+        }
       };
     };
 
@@ -200,6 +255,7 @@ export default function RoomHost({
           const game = descriptor(data.descriptor, gameOrigin, gameUrl);
           if (!game) return;
           setGameName(game.name);
+          setGameHelpHref(game.helpUrl);
           onGameDiscovered(game);
           metadataReady = true;
           window.clearTimeout(metadataFallback);
@@ -266,6 +322,8 @@ export default function RoomHost({
     window.addEventListener("message", onWindowMessage);
     return () => {
       closed = true;
+      window.clearTimeout(reconnectTimer);
+      window.clearInterval(heartbeatTimer);
       socket?.close();
       bridgePort.current?.close();
       bridgePort.current = undefined;
@@ -273,6 +331,7 @@ export default function RoomHost({
       window.removeEventListener("message", onWindowMessage);
     };
   }, [
+    gameRevision,
     gameUrl,
     onEntryFailed,
     onEntryReady,
@@ -313,6 +372,35 @@ export default function RoomHost({
     try {
       const nextLobby = await kickPlayer(roomId, playerId);
       setLobby(nextLobby);
+    } catch (reason) {
+      setError(message(reason));
+    }
+  };
+
+  const transferHost = async (playerId: string) => {
+    try {
+      setError(undefined);
+      setLobby(await transferRoomHost(roomId, playerId));
+    } catch (reason) {
+      setError(message(reason));
+    }
+  };
+
+  const returnToRoom = async () => {
+    try {
+      setError(undefined);
+      setLobby(await returnRoomToLobby(roomId));
+      setGameMenuOpen(false);
+    } catch (reason) {
+      setError(message(reason));
+    }
+  };
+
+  const changeGame = async (url: string) => {
+    try {
+      setError(undefined);
+      setChangeGameOpen(false);
+      await changeRoomGame(roomId, url);
     } catch (reason) {
       setError(message(reason));
     }
@@ -401,14 +489,39 @@ export default function RoomHost({
           <span className="room-mobile-game-name" title={gameName}>
             {gameName}
           </span>
-          <span className="room-mobile-topbar-spacer" aria-hidden="true" />
+          <button
+            className="lobby-options lobby-options-mobile"
+            type="button"
+            aria-label="Room options"
+            aria-expanded={lobbyMenuOpen}
+            onClick={(event) => {
+              setLobbyMenuAnchor(event.currentTarget);
+              setLobbyMenuOpen(true);
+            }}
+          >
+            <MoreHorizontal aria-hidden="true" />
+          </button>
         </header>
       )}
       <main className="room-host">
         {phase === "lobby" && (
           <>
             <header className="room-hero">
-              <h1>{gameName}</h1>
+              <div className="room-hero-heading">
+                <h1>{gameName}</h1>
+                <button
+                  className="lobby-options lobby-options-desktop"
+                  type="button"
+                  aria-label="Room options"
+                  aria-expanded={lobbyMenuOpen}
+                  onClick={(event) => {
+                    setLobbyMenuAnchor(event.currentTarget);
+                    setLobbyMenuOpen(true);
+                  }}
+                >
+                  <MoreHorizontal aria-hidden="true" />
+                </button>
+              </div>
             </header>
             <section className="lobby-panel" aria-live="polite">
               <div className="lobby-heading">
@@ -522,7 +635,21 @@ export default function RoomHost({
                               <button
                                 type="button"
                                 role="menuitem"
-                                onClick={() => closePlayerMenu(() => void kick(player.id))}
+                                onClick={() =>
+                                  closePlayerMenu(
+                                    () => void transferHost(player.id),
+                                  )
+                                }
+                              >
+                                Make host
+                              </button>
+                              <button
+                                className="player-menu-remove"
+                                type="button"
+                                role="menuitem"
+                                onClick={() =>
+                                  closePlayerMenu(() => void kick(player.id))
+                                }
                               >
                                 Remove
                               </button>
@@ -620,6 +747,7 @@ export default function RoomHost({
         )}
         {gameUrl && (
           <iframe
+            key={gameRevision}
             className="game-frame"
             ref={iframe}
             title={gameName}
@@ -664,10 +792,60 @@ export default function RoomHost({
             },
           ]}
         >
-          <p className="leave-dialog-copy">
-            The game will be notified that you left.
-          </p>
+          <p className="leave-dialog-copy">Your game progress may be lost.</p>
         </Dialog>
+      )}
+      {gameHelpOpen && gameHelpHref && (
+        <Dialog
+          title="Game help"
+          size="large"
+          onDismiss={() => setGameHelpOpen(false)}
+        >
+          <iframe
+            className="game-help-frame"
+            title={`${gameName} help`}
+            src={gameHelpHref}
+          />
+        </Dialog>
+      )}
+      {changeGameOpen && (
+        <ChangeGameDialog
+          onClose={() => setChangeGameOpen(false)}
+          onSubmit={(url) => void changeGame(url)}
+        />
+      )}
+      {phase === "lobby" && lobbyMenuOpen && lobbyMenuAnchor && (
+        <Menu
+          ariaLabel="Room options"
+          anchor={lobbyMenuAnchor}
+          className="lobby-menu"
+          onClose={() => setLobbyMenuOpen(false)}
+        >
+          {gameHelpHref && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setLobbyMenuOpen(false);
+                setGameHelpOpen(true);
+              }}
+            >
+              Game help
+            </button>
+          )}
+          {isOwner && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setLobbyMenuOpen(false);
+                setChangeGameOpen(true);
+              }}
+            >
+              Change game
+            </button>
+          )}
+        </Menu>
       )}
       {phase === "playing" && (
         <>
@@ -683,6 +861,15 @@ export default function RoomHost({
                 className={`game-menu ${gameMenuClosing ? "game-menu-closing" : ""}`}
                 role="menu"
               >
+                {isOwner && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void returnToRoom()}
+                  >
+                    Return to room
+                  </button>
+                )}
                 <button
                   type="button"
                   role="menuitem"
@@ -772,6 +959,7 @@ function descriptor(
   )
     return undefined;
   let icon: string | undefined;
+  let helpUrl: string | undefined;
   if (typeof input.icon === "string") {
     try {
       const resolved = new URL(input.icon, gameUrl);
@@ -780,7 +968,15 @@ function descriptor(
       // Icon metadata is optional.
     }
   }
-  return { url: gameUrl, name: input.name, icon };
+  if (typeof input.helpUrl === "string") {
+    try {
+      const resolved = new URL(input.helpUrl, gameUrl);
+      if (resolved.origin === gameOrigin) helpUrl = resolved.toString();
+    } catch {
+      // Help metadata is optional.
+    }
+  }
+  return { url: gameUrl, name: input.name, icon, helpUrl };
 }
 
 function message(reason: unknown): string {

@@ -60,3 +60,7 @@ function on_action(state, action, context)
   state.choices = {}
   return { state = state, events = { { type = "revealed", result = state.lastResult } } }
 end
+
+function on_return_to_room(state, context)
+  return true
+end

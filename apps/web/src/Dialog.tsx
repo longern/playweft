@@ -11,9 +11,16 @@ interface DialogProps {
   children: ReactNode;
   onDismiss(): void;
   actions?: DialogAction[];
+  size?: "default" | "large";
 }
 
-export default function Dialog({ title, children, onDismiss, actions }: DialogProps) {
+export default function Dialog({
+  title,
+  children,
+  onDismiss,
+  actions,
+  size = "default",
+}: DialogProps) {
   const [closing, setClosing] = useState(false);
   const afterClose = useRef<(() => void) | undefined>(undefined);
 
@@ -36,17 +43,49 @@ export default function Dialog({ title, children, onDismiss, actions }: DialogPr
     return () => window.clearTimeout(timeout);
   }, [closing, onDismiss]);
 
-  return <div className={`dialog-layer ${closing ? "dialog-closing" : ""}`} role="presentation">
-    <button className="dialog-backdrop" type="button" aria-label={`Close ${title} dialog`} onClick={() => close()} />
-    <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
-      <header className="dialog-header">
-        <h2 id="dialog-title">{title}</h2>
-        <button type="button" onClick={() => close()} aria-label={`Close ${title} dialog`}>×</button>
-      </header>
-      <div className="dialog-content">{children}</div>
-      {actions && <footer className="dialog-actions">
-        {actions.map((action) => <button key={action.label} className={`dialog-action${action.variant ? ` dialog-action-${action.variant}` : ""}`} type="button" onClick={() => close(action.onSelect)}>{action.label}</button>)}
-      </footer>}
-    </section>
-  </div>;
+  return (
+    <div
+      className={`dialog-layer ${closing ? "dialog-closing" : ""}`}
+      role="presentation"
+    >
+      <button
+        className="dialog-backdrop"
+        type="button"
+        aria-label={`Close ${title} dialog`}
+        onClick={() => close()}
+      />
+      <section
+        className={`dialog dialog-${size}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dialog-title"
+      >
+        <header className="dialog-header">
+          <h2 id="dialog-title">{title}</h2>
+          <button
+            type="button"
+            onClick={() => close()}
+            aria-label={`Close ${title} dialog`}
+          >
+            ×
+          </button>
+        </header>
+        <div className="dialog-content">{children}</div>
+        {actions && (
+          <footer className="dialog-actions">
+            {actions.map((action) => (
+              <button
+                key={action.label}
+                className={`dialog-action${action.variant ? ` dialog-action-${action.variant}` : ""}`}
+                type="button"
+                onClick={() => close(action.onSelect)}
+              >
+                {action.label}
+              </button>
+            ))}
+          </footer>
+        )}
+      </section>
+    </div>
+  );
 }

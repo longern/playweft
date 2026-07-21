@@ -72,6 +72,12 @@ return function(kind, state, action, context)
     end
     return on_player_left(state, context)
   end
+  if kind == "return_to_room" then
+    if on_return_to_room == nil then
+      return false
+    end
+    return on_return_to_room(state, context)
+  end
   return on_action(state, action, context)
 end
 `;
@@ -275,6 +281,12 @@ export class LuaGameRuntime implements GameRuntime {
     return this.resultFor("player_left", state, null, context, "on_player_left");
   }
 
+  returnToRoom(state: JsonValue, context: JsonValue): boolean {
+    const result = this.invoke("return_to_room", state, null, context)[0];
+    if (typeof result !== "boolean") throw new LuaScriptError("on_return_to_room must return true or false");
+    return result;
+  }
+
   private resultFor(kind: "action" | "player_left", state: JsonValue, action: JsonValue, context: JsonValue, handler: string): GameActionResult {
     const result = this.invoke(kind, state, action, context)[0];
     if (!isPlainObject(result) || !("state" in result)) {
@@ -297,7 +309,7 @@ export class LuaGameRuntime implements GameRuntime {
     this.global.close();
   }
 
-  private invoke(kind: "setup" | "action" | "player_left", state: JsonValue, action: JsonValue, context: JsonValue): JsonValue[] {
+  private invoke(kind: "setup" | "action" | "player_left" | "return_to_room", state: JsonValue, action: JsonValue, context: JsonValue): JsonValue[] {
     const base = this.global.getTop();
     try {
       this.module.lua_rawgeti(this.global.address, LUA_REGISTRY_INDEX, BigInt(this.functionRef));

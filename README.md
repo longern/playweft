@@ -198,6 +198,10 @@ the platform's **Leave game** action during play. It receives `{ playerId,
 version }` and returns `{ state, events }`, allowing the game to continue with
 the remaining players or expose its own ended/disbanded state.
 
+An optional `on_return_to_room(state, context)` callback controls whether the
+room host may end the current session and return every player to the lobby. It
+must return `true` to permit the transition; omitted callbacks deny it.
+
 Values crossing the Lua boundary must be JSON-compatible: null, booleans,
 finite numbers, strings, arrays, and objects with string keys. `context` for an
 action is `{ playerId, version }`. `setup` receives `{ players, randomSeed }`
