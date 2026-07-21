@@ -16,6 +16,7 @@ interface RoomConfig {
   scriptHash: string;
   minPlayers: number;
   maxPlayers: number;
+  randomSeed: number;
 }
 
 interface RoomLaunch {
@@ -35,6 +36,8 @@ interface SocketAttachment {
 interface RoomMember {
   actorId: string;
   joinedAt: number;
+  seat?: number;
+  ready?: boolean;
 }
 
 class RoomHttpError extends Error {
@@ -71,6 +74,12 @@ export class GameRoom extends DurableObject<Env> {
           return Response.json(await this.enqueue(() => this.join(request)));
         case "POST /start":
           return Response.json(await this.enqueue(() => this.start(request)));
+        case "POST /leave":
+          return Response.json(await this.enqueue(() => this.leave(request)));
+        case "POST /seat":
+          return Response.json(await this.enqueue(() => this.setSeat(request)));
+        case "POST /ready":
+          return Response.json(await this.enqueue(() => this.setReady(request)));
         case "POST /kick":
           return Response.json(await this.enqueue(() => this.kick(request)));
         case "POST /actions":
@@ -186,6 +195,7 @@ export class GameRoom extends DurableObject<Env> {
         scriptHash,
         minPlayers,
         maxPlayers,
+        randomSeed: secureRandomSeed(),
       });
       await this.touch();
       return this.lobby();
@@ -205,8 +215,9 @@ export class GameRoom extends DurableObject<Env> {
     const existing = members[playerId];
     if (!existing) {
       if (phase === "playing") throw new RoomHttpError(403, "the game has already started");
-      if (Object.keys(members).length >= config.maxPlayers) throw new RoomHttpError(409, "the room is full");
-      members[playerId] = { actorId: await this.actorId(request), joinedAt: Date.now() };
+      const occupiedSeats = new Set(Object.values(members).map((member) => member.seat).filter((seat): seat is number => typeof seat === "number"));
+      const seat = Array.from({ length: config.maxPlayers }, (_, index) => index + 1).find((number) => !occupiedSeats.has(number));
+      members[playerId] = { actorId: await this.actorId(request), joinedAt: Date.now(), seat, ready: false };
       await this.ctx.storage.put("members", members);
       await this.touch();
       this.broadcast(await this.lobby());
@@ -221,10 +232,14 @@ export class GameRoom extends DurableObject<Env> {
     if (await this.phase() !== "lobby") throw new RoomHttpError(409, "the game has already started");
 
     const [config, members] = await Promise.all([this.config(), this.members()]);
-    const players = Object.values(members).sort((a, b) => a.joinedAt - b.joinedAt).map((member) => member.actorId);
+    const players = Object.values(members).filter((member) => member.seat !== undefined).sort((a, b) => a.seat! - b.seat!).map((member) => member.actorId);
     if (players.length < config.minPlayers) throw new RoomHttpError(409, `waiting for at least ${config.minPlayers} players`);
+    const ownerPlayerId = await this.ownerPlayerId();
+    if (Object.entries(members).some(([id, member]) => id !== ownerPlayerId && member.seat !== undefined && !member.ready)) {
+      throw new RoomHttpError(409, "waiting for all players to get ready");
+    }
     const engine = await this.engine(config);
-    const state = engine.setup({ players });
+    const state = engine.setup({ players, randomSeed: config.randomSeed });
     assertJsonSize(state, "initial state", MAX_STATE_BYTES);
     const snapshot: RoomSnapshot = { type: "snapshot", state, version: 0, scriptHash: config.scriptHash };
     await this.ctx.storage.put<JsonValue>({ phase: "playing", state, version: 0 });
@@ -258,6 +273,81 @@ export class GameRoom extends DurableObject<Env> {
         // The peer may have disconnected while the host was removing them.
       }
     }
+    const lobby = await this.lobby();
+    this.broadcast(lobby);
+    return lobby;
+  }
+
+  private async leave(request: Request): Promise<RoomLobby | RoomSnapshot> {
+    await this.launch();
+    const playerId = this.playerId(request);
+    const [phase, members] = await Promise.all([this.phase(), this.members()]);
+    const member = members[playerId];
+    if (!member) throw new RoomHttpError(404, "player is not in this room");
+
+    if (phase === "lobby") {
+      delete members[playerId];
+      await this.ctx.storage.put("members", members);
+      await this.touch();
+      this.closePlayerSockets(playerId);
+      const lobby = await this.lobby();
+      this.broadcast(lobby);
+      return lobby;
+    }
+
+    const [config, room] = await Promise.all([this.config(), this.roomState()]);
+    const engine = await this.engine(config);
+    const result = engine.playerLeft(room.state, { playerId: member.actorId, version: room.version });
+    const version = room.version + 1;
+    delete members[playerId];
+    await this.ctx.storage.put({ state: result.state, version, members });
+    await this.touch();
+    const snapshot: RoomSnapshot = { type: "snapshot", state: result.state, events: result.events, version, scriptHash: config.scriptHash };
+    this.broadcast(snapshot);
+    this.closePlayerSockets(playerId);
+    return snapshot;
+  }
+
+  private async setSeat(request: Request): Promise<RoomLobby> {
+    await this.launch();
+    if (await this.phase() !== "lobby") throw new RoomHttpError(409, "seats cannot be changed after the game starts");
+    const input = await parseRequestJson(request);
+    if (!isRecord(input) || (input.seat !== null && (!Number.isInteger(input.seat) || typeof input.seat !== "number"))) {
+      throw new RoomHttpError(400, "expected { seat: number | null }");
+    }
+    const playerId = this.playerId(request);
+    const [config, members, ownerPlayerId] = await Promise.all([this.config(), this.members(), this.ownerPlayerId()]);
+    const member = members[playerId];
+    if (!member) throw new RoomHttpError(403, "join the room before choosing a seat");
+    if (input.seat === null) {
+      if (playerId === ownerPlayerId) throw new RoomHttpError(409, "the room host must keep a seat");
+      member.seat = undefined;
+    } else {
+      if (input.seat < 1 || input.seat > config.maxPlayers) throw new RoomHttpError(400, "seat is outside this room");
+      if (Object.entries(members).some(([id, candidate]) => id !== playerId && candidate.seat === input.seat)) throw new RoomHttpError(409, "that seat is already taken");
+      member.seat = input.seat;
+    }
+    member.ready = false;
+    await this.ctx.storage.put("members", members);
+    await this.touch();
+    const lobby = await this.lobby();
+    this.broadcast(lobby);
+    return lobby;
+  }
+
+  private async setReady(request: Request): Promise<RoomLobby> {
+    await this.launch();
+    if (await this.phase() !== "lobby") throw new RoomHttpError(409, "readiness cannot be changed after the game starts");
+    const input = await parseRequestJson(request);
+    if (!isRecord(input) || typeof input.ready !== "boolean") throw new RoomHttpError(400, "expected { ready: boolean }");
+    const playerId = this.playerId(request);
+    const [members, ownerPlayerId] = await Promise.all([this.members(), this.ownerPlayerId()]);
+    const member = members[playerId];
+    if (!member?.seat) throw new RoomHttpError(409, "spectators cannot get ready");
+    if (playerId === ownerPlayerId) throw new RoomHttpError(409, "the room host does not need to get ready");
+    member.ready = input.ready;
+    await this.ctx.storage.put("members", members);
+    await this.touch();
     const lobby = await this.lobby();
     this.broadcast(lobby);
     return lobby;
@@ -351,18 +441,26 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private async storedConfig(): Promise<RoomConfig | undefined> {
-    const [runtime, script, scriptHash, minPlayers, maxPlayers] = await Promise.all([
+    const [runtime, script, scriptHash, minPlayers, maxPlayers, storedRandomSeed] = await Promise.all([
       this.ctx.storage.get<string>("runtime"),
       this.ctx.storage.get<string>("script"),
       this.ctx.storage.get<string>("scriptHash"),
       this.ctx.storage.get<number>("minPlayers"),
       this.ctx.storage.get<number>("maxPlayers"),
+      this.ctx.storage.get<number>("randomSeed"),
     ]);
     if (runtime === undefined && script === undefined && scriptHash === undefined && minPlayers === undefined && maxPlayers === undefined) return undefined;
     if (!runtime || !isRuntimeKind(runtime) || !script || !scriptHash || !isPlayerLimit(minPlayers) || !isPlayerLimit(maxPlayers) || minPlayers > maxPlayers) {
       throw new RoomHttpError(500, "room has invalid persisted game configuration");
     }
-    return { runtime, script, scriptHash, minPlayers, maxPlayers };
+    if (storedRandomSeed !== undefined && !isRandomSeed(storedRandomSeed)) {
+      throw new RoomHttpError(500, "room has invalid persisted random seed");
+    }
+    // Rooms created before randomSeed was introduced get a seed on their first
+    // post-upgrade read, preserving a stable value for every later setup call.
+    const randomSeed = storedRandomSeed ?? secureRandomSeed();
+    if (storedRandomSeed === undefined) await this.ctx.storage.put("randomSeed", randomSeed);
+    return { runtime, script, scriptHash, minPlayers, maxPlayers, randomSeed };
   }
 
   private async roomState(): Promise<RoomState> {
@@ -402,6 +500,18 @@ export class GameRoom extends DurableObject<Env> {
         socket.send(serialized);
       } catch {
         // A peer may close between getWebSockets() and send().
+      }
+    }
+  }
+
+  private closePlayerSockets(playerId: string): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as SocketAttachment | null;
+      if (attachment?.playerId !== playerId) continue;
+      try {
+        socket.close(4001, "left room");
+      } catch {
+        // The peer may already be disconnected.
       }
     }
   }
@@ -477,12 +587,18 @@ export class GameRoom extends DurableObject<Env> {
       this.ownerPlayerId(),
     ]);
     const players: RoomPlayer[] = Object.values(members)
+      .filter((member) => member.seat !== undefined)
+      .sort((left, right) => left.seat! - right.seat!)
+      .map((member) => ({ id: member.actorId, seat: member.seat!, ready: member.ready === true }));
+    const spectators = Object.values(members)
+      .filter((member) => member.seat === undefined)
       .sort((left, right) => left.joinedAt - right.joinedAt)
       .map((member) => ({ id: member.actorId }));
     return {
       type: "lobby",
       phase,
       players,
+      spectators,
       ownerId: members[ownerPlayerId]?.actorId ?? "",
       minPlayers: config.minPlayers,
       maxPlayers: config.maxPlayers,
@@ -512,6 +628,17 @@ function validatePlayerLimit(value: unknown, label: string): number {
 
 function isPlayerLimit(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_PLAYERS;
+}
+
+function secureRandomSeed(): number {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  // Avoid zero so games can safely use xorshift-style PRNGs as well as LCGs.
+  return values[0] || 1;
+}
+
+function isRandomSeed(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 0xffff_ffff;
 }
 
 async function parseRequestJson(request: Request): Promise<unknown> {

@@ -15,6 +15,7 @@ export interface GameActionResult {
 export interface GameRuntime {
   setup(context: JsonValue): JsonValue;
   applyAction(state: JsonValue, action: JsonValue, context: JsonValue): GameActionResult;
+  playerLeft(state: JsonValue, context: JsonValue): GameActionResult;
   dispose(): void;
 }
 

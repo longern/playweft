@@ -8,6 +8,8 @@ const buttons = [...document.querySelectorAll("[data-choice]")];
 let port;
 let state;
 let hasChosen = false;
+let playerId;
+let latestVersion = -1;
 const announceBridgeReady = () => window.parent.postMessage({ type: "playweft:bridge-ready", version: 1 }, "*");
 const bridgeProbe = window.setInterval(announceBridgeReady, 500);
 
@@ -38,8 +40,15 @@ function choose(choice) {
 
 function onPlatformMessage(event) {
   const payload = event.data;
+  if (payload.type === "ready") {
+    playerId = payload.playerId;
+    status.textContent = "Waiting for the host to start the game…";
+    return;
+  }
   if (payload.type === "error") return showError(payload.error);
   if (payload.type !== "state") return;
+  if (typeof payload.version === "number" && payload.version <= latestVersion) return;
+  if (typeof payload.version === "number") latestVersion = payload.version;
   state = payload.state;
   status.textContent = "Game started";
   if (state.choices && Object.keys(state.choices).length === 0) hasChosen = false;

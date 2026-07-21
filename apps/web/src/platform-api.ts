@@ -56,6 +56,31 @@ export function startRoom(roomId: string): Promise<RoomSnapshot> {
   }).then(responseJson<RoomSnapshot>);
 }
 
+export function leaveRoom(roomId: string): Promise<RoomLobby | RoomSnapshot> {
+  return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/leave`), {
+    method: "POST",
+    credentials: "same-origin",
+  }).then(responseJson<RoomLobby | RoomSnapshot>);
+}
+
+export function setRoomSeat(roomId: string, seat: number | null): Promise<RoomLobby> {
+  return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/seat`), {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ seat }),
+  }).then(responseJson<RoomLobby>);
+}
+
+export function setPlayerReady(roomId: string, ready: boolean): Promise<RoomLobby> {
+  return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/ready`), {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ready }),
+  }).then(responseJson<RoomLobby>);
+}
+
 export function kickPlayer(roomId: string, playerId: string): Promise<RoomLobby> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/kick`), {
     method: "POST",

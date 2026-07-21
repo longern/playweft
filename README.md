@@ -71,9 +71,11 @@ requests remain usable in browsers that omit `Origin` for a same-origin GET.
 | `POST /api/rooms` | Create a random room with `{ gameUrl }`; the URL is the only launch metadata persisted for that room. |
 | `GET /api/rooms/:roomId/launch` | Read the game's entry URL for the invitation page. |
 | `PUT /api/rooms/:roomId/initialize` | Atomically install `{ runtime?: "lua", script, minPlayers, maxPlayers }`; repeating the same complete configuration is safe. |
-| `POST /api/rooms/:roomId/join` | Join the platform-owned lobby. The room creator is the host; a full or already-started room rejects new players. |
+| `POST /api/rooms/:roomId/join` | Join the platform-owned lobby. The room creator is the host; when every seat is taken, new arrivals join as spectators. |
+| `POST /api/rooms/:roomId/seat` | Choose an empty numbered seat with `{ seat }`, or leave a seat to spectate with `{ seat: null }`. The host keeps their seat. |
+| `POST /api/rooms/:roomId/ready` | Set a seated non-host player's readiness with `{ ready }`. |
 | `POST /api/rooms/:roomId/kick` | Room-host-only lobby action with `{ playerId }`. |
-| `POST /api/rooms/:roomId/start` | Room-host-only action; locks the roster and calls Lua `setup({ players })`. |
+| `POST /api/rooms/:roomId/start` | Room-host-only action; requires the minimum seated players and every seated non-host player ready, then locks the roster and calls Lua `setup({ players })`. |
 | `POST /api/platform/guest` | Platform-only demo bootstrap; sets an HttpOnly guest session. |
 | `GET /api/rooms/:roomId/state` | Read persisted state; requires a platform session. |
 | `POST /api/rooms/:roomId/actions` | Submit `{ action }`; player identity comes from the platform session. |
@@ -176,7 +178,8 @@ changes.
 ```lua
 function setup(context)
   -- context.players is the platform-locked anonymous roster.
-  return { score = 0, players = context.players }
+  -- context.randomSeed is a cryptographically generated, stable integer for this room.
+  return { score = 0, players = context.players, seed = context.randomSeed }
 end
 
 function on_action(state, action, context)
@@ -190,10 +193,17 @@ function on_action(state, action, context)
 end
 ```
 
+An optional `on_player_left(state, context)` callback runs when a player uses
+the platform's **Leave game** action during play. It receives `{ playerId,
+version }` and returns `{ state, events }`, allowing the game to continue with
+the remaining players or expose its own ended/disbanded state.
+
 Values crossing the Lua boundary must be JSON-compatible: null, booleans,
 finite numbers, strings, arrays, and objects with string keys. `context` for an
-action is `{ playerId, version }`. `setup` receives `{ players }` only after
-the room host starts the game.
+action is `{ playerId, version }`. `setup` receives `{ players, randomSeed }`
+only after the room host starts the game. `randomSeed` is generated once by the
+platform and is intended for a deterministic PRNG stored in game state; Lua
+does not expose `math.random`.
 
 ## Runtime boundaries
 

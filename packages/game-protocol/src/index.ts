@@ -45,6 +45,15 @@ export interface RoomSnapshot {
 
 export interface RoomPlayer {
   id: string;
+  /** Optional platform display name. Omit it when the player is anonymous. */
+  name?: string;
+  /** One-based position in the room. Positions remain empty when a player spectates. */
+  seat: number;
+  ready: boolean;
+}
+
+export interface RoomSpectator {
+  id: string;
 }
 
 /** Platform-owned room membership. Game iframes never receive this message. */
@@ -52,6 +61,7 @@ export interface RoomLobby {
   type: "lobby";
   phase: "lobby" | "playing";
   players: RoomPlayer[];
+  spectators: RoomSpectator[];
   ownerId: string;
   minPlayers: number;
   maxPlayers: number;

@@ -4,8 +4,25 @@ Playweft loads your static game page in a cross-site iframe. Your page renders
 the game and sends game intents; Playweft owns the room, anonymous players,
 invite links, WebSocket, Lua execution, and permissions.
 
-You do not need to install an npm package. Do not call the Playweft API
-directly.
+You do not need to install an npm package or call the Playweft API directly.
+The complete integration surface is one browser-native `MessagePort`.
+
+## Protocol at a glance
+
+```text
+game iframe                   Playweft platform
+───────────                   ─────────────────
+bridge-ready       ────────>  validates game origin
+                     <──────  bridge + transferred MessagePort
+descriptor         ────────>
+initialize         ────────>
+                     <──────  ready
+action             ────────>
+                     <──────  state | error
+```
+
+All messages after `bridge` travel through the transferred port. Message names
+and the `version: 1` handshake are part of the protocol.
 
 ## 1. Publish the game page
 
@@ -17,14 +34,15 @@ directly.
 The page must work inside an iframe. It must not depend on third-party cookies,
 a Playweft account, or its own WebSocket service.
 
-## 2. Establish the bridge
+## 2. Establish the bridge and register the game
 
-When the game loads, repeatedly announce that it is ready to its parent
-window. The platform replies with a `MessagePort`. All subsequent communication
-uses that port rather than global `window` messages.
+When the game loads, repeatedly announce that it is ready to its parent window.
+The platform validates the iframe origin and replies with a `MessagePort`.
 
 ```js
 let gamePort;
+let ownPlayerId;
+let latestVersion = -1;
 
 const announceReady = () => {
   window.parent.postMessage({ type: "playweft:bridge-ready", version: 1 }, "*");
@@ -44,12 +62,14 @@ window.addEventListener("message", (event) => {
   gamePort.onmessage = onPlatformMessage;
   gamePort.start();
 
-  // Optional: used only in the platform's local recent-games list.
+  // Optional local-history metadata.
   gamePort.postMessage({
     type: "descriptor",
     descriptor: { name: "My Game", icon: "/icon.svg" },
   });
 
+  // Required room configuration. This compiles the Lua source but does not
+  // start the game.
   gamePort.postMessage({
     type: "initialize",
     initialization: {
@@ -70,25 +90,50 @@ a relative URL or an absolute URL hosted on the game's own origin.
 source, runtime, and player limits. Repeating the exact same configuration is
 safe; submitting a different configuration fails.
 
-## 3. Receive state and submit actions
+## 3. Receive platform messages
 
-The platform does not send game state while the room is in its lobby. Show a
-“waiting for the host to start” message and disable game controls. Once the
-host starts the game, the platform sends Lua state through the port:
+The platform sends one of the following messages through the port.
+
+| Message | Meaning |
+| --- | --- |
+| `{ type: "ready", phase, playerId }` | Registration and lobby join succeeded. `playerId` is this browser's opaque, room-scoped ID. |
+| `{ type: "state", phase: "playing", state, events, version }` | Authoritative game update. `version` only increases; duplicates for the same version are not sent. |
+| `{ type: "error", code, error }` | A protocol or room operation failed. `code` is stable enough for UI branching; `error` is a human-readable explanation. |
 
 ```js
 function onPlatformMessage(event) {
   const message = event.data;
+
+  if (message?.type === "ready") {
+    ownPlayerId = message.playerId;
+    showWaitingForHost();
+    return;
+  }
+
   if (message?.type === "state") {
-    render(message.state);
+    if (message.version <= latestVersion) return;
+    latestVersion = message.version;
+    render(message.state, message.events);
     enableGameControls();
     return;
   }
+
   if (message?.type === "error") {
     showError(message.error);
   }
 }
+```
 
+The game is in the lobby after `ready`; it should not allow gameplay until its
+first `state` message. The platform owns the lobby, host privileges, player
+limits, kicking, and game start.
+
+Current error codes are `INITIALIZATION_REJECTED`, `GAME_NOT_STARTED`,
+`ACTION_REJECTED`, `ROOM_ERROR`, and `REALTIME_CONNECTION_FAILED`.
+
+## 4. Submit an action
+
+```js
 function chooseCard(card) {
   gamePort?.postMessage({
     type: "action",
@@ -98,11 +143,11 @@ function chooseCard(card) {
 ```
 
 An action must be JSON-serializable and no larger than 8 KiB. The platform
-derives player identity from the top-level page's HttpOnly session and maps it
-to an opaque ID within the room. The game page never receives a real identity,
-cookie, access token, or WebSocket URL.
+derives player identity from the top-level page's HttpOnly session; it ignores
+any identity fields in the submitted action. `playerId` from `ready` is useful
+only for rendering this browser's local view.
 
-## 4. Write the Lua game
+## 5. Write the Lua game
 
 Initialization only compiles Lua. `setup(context)` runs only after the host
 starts the game and the player roster is locked:
@@ -110,7 +155,8 @@ starts the game and the player roster is locked:
 ```lua
 function setup(context)
   -- A locked roster of opaque, room-scoped player IDs.
-  return { players = context.players, moves = {} }
+  -- randomSeed is generated once by Playweft for this room.
+  return { players = context.players, seed = context.randomSeed, moves = {} }
 end
 
 function on_action(state, action, context)
@@ -126,8 +172,23 @@ function on_action(state, action, context)
 end
 ```
 
-`setup` receives `{ players }`. `on_action` receives a context of
-`{ playerId, version }`. It must return `{ state, events }`; all returned
+When a player leaves an active game, Playweft calls the optional lifecycle
+handler below before removing that player from the room. It receives the same
+`{ playerId, version }` context as an action. Return the updated state and any
+events needed to let remaining players continue or show that the game ended.
+
+```lua
+function on_player_left(state, context)
+  state.disconnected = context.playerId
+  return { state = state, events = { { type = "player_left", player = context.playerId } } }
+end
+```
+
+`setup` receives `{ players, randomSeed }`. `randomSeed` is a stable,
+cryptographically generated positive 32-bit integer for the room. Store it in
+game state and use a deterministic PRNG when the game needs random outcomes.
+`on_action` receives `{ playerId, version }`. It must return `{ state, events
+}`; both fields are returned to game clients in the next `state` message. All
 values must be JSON-serializable. Lua has no network, file-system, random,
 module-loading, or debug APIs.
 
@@ -137,7 +198,7 @@ module-loading, or debug APIs.
   The platform does not enable CORS for the game page.
 - Do not implement authentication, host privileges, kicking, player limits, or
   starting the game inside the game page. The platform lobby owns these rules.
-- Do not persist a player ID as a long-lived identity. It is valid only within
+- Do not persist `playerId` as a long-lived identity. It is valid only within
   the current room and Lua game.
 - The platform may load the game invisibly in the lobby to collect metadata and
   Lua configuration. Do not allow actual play until the first `state` message.

@@ -1,27 +1,29 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Rock Paper Scissors · Playweft Demo</title>
-    <script type="module" src="/src/main.js"></script>
-  </head>
-  <body>
-    <main>
-      <p class="eyebrow">Playweft static demo</p>
-      <h1>Rock Paper Scissors</h1>
-      <p id="status">Waiting for Playweft to establish the game bridge…</p>
 
-      <section class="choices" aria-label="Choose a move">
-        <button data-choice="rock" disabled>✊<span>Rock</span></button>
-        <button data-choice="paper" disabled>✋<span>Paper</span></button>
-        <button data-choice="scissors" disabled>✌️<span>Scissors</span></button>
-      </section>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rock Paper Scissors · Playweft Demo</title>
+  <script type="module" src="/src/main.js"></script>
+</head>
 
-      <p id="waiting"></p>
-      <section id="result" hidden></section>
+<body>
+  <main>
+    <p class="eyebrow">Playweft static demo</p>
+    <h1>Rock Paper Scissors</h1>
+    <p id="status">Waiting for Playweft to establish the game bridge…</p>
 
-      <p class="hint">This untrusted static game page holds no login data, player ID, or network credential.</p>
-    </main>
-  </body>
+    <section class="choices" aria-label="Choose a move">
+      <button data-choice="rock" disabled>✊<span>Rock</span></button>
+      <button data-choice="paper" disabled>✋<span>Paper</span></button>
+      <button data-choice="scissors" disabled>✌️<span>Scissors</span></button>
+    </section>
+
+    <p id="waiting"></p>
+    <section id="result" hidden></section>
+
+  </main>
+</body>
+
 </html>

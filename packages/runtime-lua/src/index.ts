@@ -66,6 +66,12 @@ return function(kind, state, action, context)
   if kind == "setup" then
     return setup(context)
   end
+  if kind == "player_left" then
+    if on_player_left == nil then
+      return { state = state, events = {} }
+    end
+    return on_player_left(state, context)
+  end
   return on_action(state, action, context)
 end
 `;
@@ -262,19 +268,27 @@ export class LuaGameRuntime implements GameRuntime {
   }
 
   applyAction(state: JsonValue, action: JsonValue, context: JsonValue): GameActionResult {
-    const result = this.invoke("action", state, action, context)[0];
+    return this.resultFor("action", state, action, context, "on_action");
+  }
+
+  playerLeft(state: JsonValue, context: JsonValue): GameActionResult {
+    return this.resultFor("player_left", state, null, context, "on_player_left");
+  }
+
+  private resultFor(kind: "action" | "player_left", state: JsonValue, action: JsonValue, context: JsonValue, handler: string): GameActionResult {
+    const result = this.invoke(kind, state, action, context)[0];
     if (!isPlainObject(result) || !("state" in result)) {
-      throw new LuaScriptError("on_action must return { state = ..., events = {...} }");
+      throw new LuaScriptError(`${handler} must return { state = ..., events = {...} }`);
     }
 
     // Lua has no native distinction between {} and an empty array. In the
     // explicitly array-shaped `events` field, treat an empty table as [].
     const events = isEmptyObject(result.events) ? [] : (result.events ?? []);
     if (!Array.isArray(events)) throw new LuaScriptError("on_action result.events must be an array");
-    assertJson(result.state, "on_action result.state");
-    assertJson(events, "on_action result.events");
-    assertJsonSize(result.state, "on_action result.state", MAX_VALUE_BYTES);
-    assertJsonSize(events, "on_action result.events", 16 * 1024);
+    assertJson(result.state, `${handler} result.state`);
+    assertJson(events, `${handler} result.events`);
+    assertJsonSize(result.state, `${handler} result.state`, MAX_VALUE_BYTES);
+    assertJsonSize(events, `${handler} result.events`, 16 * 1024);
     return { state: result.state, events };
   }
 
@@ -283,7 +297,7 @@ export class LuaGameRuntime implements GameRuntime {
     this.global.close();
   }
 
-  private invoke(kind: "setup" | "action", state: JsonValue, action: JsonValue, context: JsonValue): JsonValue[] {
+  private invoke(kind: "setup" | "action" | "player_left", state: JsonValue, action: JsonValue, context: JsonValue): JsonValue[] {
     const base = this.global.getTop();
     try {
       this.module.lua_rawgeti(this.global.address, LUA_REGISTRY_INDEX, BigInt(this.functionRef));

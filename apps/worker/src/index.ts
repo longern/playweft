@@ -33,6 +33,9 @@ export default {
             initialize: "PUT /api/rooms/:roomId/initialize",
             join: "POST /api/rooms/:roomId/join",
             start: "POST /api/rooms/:roomId/start",
+            leave: "POST /api/rooms/:roomId/leave",
+            seat: "POST /api/rooms/:roomId/seat",
+            ready: "POST /api/rooms/:roomId/ready",
             kick: "POST /api/rooms/:roomId/kick",
             state: "GET /api/rooms/:roomId/state",
             action: "POST /api/rooms/:roomId/actions",
@@ -41,7 +44,7 @@ export default {
         });
       }
 
-      const match = /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/(launch|initialize|join|start|kick|state|actions|connect)$/.exec(url.pathname);
+      const match = /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/(launch|initialize|join|start|leave|seat|ready|kick|state|actions|connect)$/.exec(url.pathname);
       if (!match) return Response.json({ error: "not found" }, { status: 404 });
 
       const roomId = match[1]!;
