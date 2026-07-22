@@ -8,6 +8,7 @@ const buttons = [...document.querySelectorAll("[data-choice]")];
 let port;
 let state;
 let hasChosen = false;
+let pendingActionId;
 let playerId;
 let latestVersion = -1;
 const announceBridgeReady = () => window.parent.postMessage({ type: "playweft:bridge-ready", version: 1 }, "*");
@@ -32,10 +33,15 @@ announceBridgeReady();
 
 function choose(choice) {
   if (!port) return showError("The platform is not connected yet");
-  if (!state || hasChosen) return;
+  if (!state || hasChosen || pendingActionId) return;
+  pendingActionId = crypto.randomUUID();
   hasChosen = true;
   buttons.forEach((button) => { button.disabled = true; });
-  port.postMessage({ type: "action", action: { type: "choose", choice } });
+  port.postMessage({
+    type: "action",
+    requestId: pendingActionId,
+    action: { type: "choose", choice },
+  });
 }
 
 function onPlatformMessage(event) {
@@ -45,7 +51,18 @@ function onPlatformMessage(event) {
     status.textContent = "Waiting for the host to start the game…";
     return;
   }
-  if (payload.type === "error") return showError(payload.error);
+  if (payload.type === "action-result") {
+    if (payload.requestId === pendingActionId) pendingActionId = undefined;
+    return;
+  }
+  if (payload.type === "error") {
+    if (payload.requestId === pendingActionId) {
+      pendingActionId = undefined;
+      hasChosen = false;
+      buttons.forEach((button) => { button.disabled = false; });
+    }
+    return showError(payload.error);
+  }
   if (payload.type !== "state") return;
   if (typeof payload.version === "number" && payload.version <= latestVersion) return;
   if (typeof payload.version === "number") latestVersion = payload.version;

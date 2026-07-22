@@ -6,7 +6,7 @@
 .home {
   width: min(1160px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 0 0 90px;
+  padding: 0 0 32px;
 }
 
 .launch-section {
@@ -81,13 +81,13 @@
 .shelf-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 16px;
 }
 
 .shelf-game {
   flex: 0 0 auto;
-  width: 160px;
-  padding: 8px;
+  width: 176px;
+  padding: 16px;
   border: 0;
   border-radius: 16px;
   background: transparent;
@@ -122,8 +122,7 @@
   object-fit: contain;
 }
 
-.shelf-game-name,
-.shelf-game-meta {
+.shelf-game-name {
   display: block;
   overflow: hidden;
   text-align: center;
@@ -132,20 +131,14 @@
 }
 
 .shelf-game-name {
-  margin-bottom: 3px;
   font-size: 0.875rem;
-  font-weight: 700;
-}
-
-.shelf-game-meta {
-  color: #72777f;
-  font-size: 0.77rem;
+  font-weight: 400;
 }
 
 @media (max-width: 620px) {
   .home {
     width: min(100% - 30px, 1160px);
-    padding-bottom: 64px;
+    padding-bottom: 32px;
   }
 
   .launch-section {
@@ -168,12 +161,17 @@
     margin-top: 32px;
   }
 
+  .shelf-row {
+    gap: 8px;
+  }
+
   .shelf-game {
     width: 108px;
+    padding: 8px;
     text-align: center;
   }
 
   .shelf-art {
-    width: 96px;
+    width: 80px;
   }
 }

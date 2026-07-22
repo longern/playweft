@@ -134,6 +134,13 @@ export function transferRoomHost(
   ).then(responseJson<RoomLobby>);
 }
 
+export function dissolveRoom(roomId: string): Promise<{ dissolved: true }> {
+  return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/dissolve`), {
+    method: "POST",
+    credentials: "same-origin",
+  }).then(responseJson<{ dissolved: true }>);
+}
+
 export function returnRoomToLobby(roomId: string): Promise<RoomLobby> {
   return fetch(
     endpoint(`/api/rooms/${encodeURIComponent(roomId)}/return-to-room`),

@@ -1,35 +1,60 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
+export interface MenuPosition {
+  left: number;
+  top: number;
+}
+
 interface MenuProps {
   ariaLabel: string;
   children: ReactNode;
-  anchor: HTMLElement;
+  anchor?: HTMLElement;
   className?: string;
+  position?: MenuPosition;
   style?: CSSProperties;
   onClose(): void;
 }
 
-export default function Menu({ ariaLabel, children, anchor, className = "", style, onClose }: MenuProps) {
+const MENU_GUTTER = 12;
+
+export default function Menu({ ariaLabel, children, anchor, className = "", position, style, onClose }: MenuProps) {
   const menu = useRef<HTMLDivElement>(null);
   const [closing, setClosing] = useState(false);
-  const [position, setPosition] = useState<CSSProperties>();
+  const [computedPosition, setComputedPosition] = useState<CSSProperties>();
   const close = () => setClosing(true);
 
   useLayoutEffect(() => {
     const element = menu.current;
     if (!element) return;
-    const anchorRect = anchor.getBoundingClientRect();
     const width = element.offsetWidth;
-    const left = Math.max(
-      12,
-      Math.min(anchorRect.right - width, window.innerWidth - width - 12),
-    );
-    setPosition({
-      top: anchorRect.bottom + 8,
+    const height = element.offsetHeight;
+    const maxLeft = window.innerWidth - width - MENU_GUTTER;
+    const maxTop = window.innerHeight - height - MENU_GUTTER;
+
+    if (position) {
+      const left = clamp(position.left, MENU_GUTTER, maxLeft);
+      const top = clamp(position.top, MENU_GUTTER, maxTop);
+      setComputedPosition({
+        left,
+        top,
+        transformOrigin: `${clamp(position.left - left, MENU_GUTTER, width - MENU_GUTTER)}px ${clamp(position.top - top, MENU_GUTTER, height - MENU_GUTTER)}px`,
+      });
+      return;
+    }
+
+    if (!anchor) return;
+    const anchorRect = anchor.getBoundingClientRect();
+    const preferredTop = anchorRect.bottom + 8;
+    const flippedTop = anchorRect.top - height - 8;
+    const opensAbove = preferredTop > maxTop && flippedTop >= MENU_GUTTER;
+    const left = clamp(anchorRect.right - width, MENU_GUTTER, maxLeft);
+    const top = clamp(opensAbove ? flippedTop : preferredTop, MENU_GUTTER, maxTop);
+    setComputedPosition({
+      top,
       left,
-      transformOrigin: `${Math.max(12, Math.min(anchorRect.left + anchorRect.width / 2 - left, width - 12))}px top`,
+      transformOrigin: `${clamp(anchorRect.left + anchorRect.width / 2 - left, MENU_GUTTER, width - MENU_GUTTER)}px ${opensAbove ? "bottom" : "top"}`,
     });
-  }, [anchor]);
+  }, [anchor, position]);
 
   useEffect(() => {
     menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -74,10 +99,14 @@ export default function Menu({ ariaLabel, children, anchor, className = "", styl
         className={`menu ${className} ${closing ? "menu-closing" : ""}`}
         role="menu"
         aria-label={ariaLabel}
-        style={{ ...position, ...style }}
+        style={{ ...computedPosition, ...style }}
       >
         {children}
       </div>
     </>
   );
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, max));
 }

@@ -1,11 +1,31 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { createGuestSession, createRoom } from "./platform-api";
 import RoomHost, { type RecentGame } from "./RoomHost";
-import { FEATURED_GAMES } from "./featured-games";
+import { FEATURED_GAMES, type FeaturedGame } from "./featured-games";
 import ErrorToast from "./ErrorToast";
-import RecentGameMenu from "./RecentGameMenu";
+import GameInfoPanel from "./GameInfoPanel";
+import GameMenu from "./GameMenu";
+import type { MenuPosition } from "./Menu";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
+const FAVORITE_GAMES_KEY = "playweft:favorite-games:v1";
+const MAX_RECENT_GAMES = 8;
+const MAX_FAVORITE_GAMES = 8;
+const DEFAULT_ROOM_ID_FORMAT = "code:4";
+const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+type ShelfGame = RecentGame | FeaturedGame;
+type GameShelfKind = "favorite" | "recent" | "recommended";
+type StoredRecentGame = RecentGame & { pinned?: boolean };
+type RoomIdFormat =
+  | { kind: "uuid" }
+  | { kind: "code" | "digits" | "base64url"; length: number };
 
 export default function App() {
   const [path, setPath] = useState(window.location.pathname);
@@ -49,26 +69,40 @@ export default function App() {
     if (roomId) finishEntry(roomId);
   }, [finishEntry, roomId]);
 
-  const overlayStatus = entryStatus ?? (roomId && settledRoomId !== roomId ? "Loading game" : undefined);
+  const overlayStatus =
+    entryStatus ??
+    (roomId && settledRoomId !== roomId ? "Loading game" : undefined);
 
   if (roomId) {
-    return <>
-      <RoomHost
-        key={roomId}
-        roomId={roomId}
-        onBack={() => navigate("/")}
-        onGameDiscovered={saveRecentGame}
-        onEntryStatus={setEntryStatus}
-        onEntryReady={finishCurrentRoomEntry}
-        onEntryFailed={finishCurrentRoomEntry}
-      />
-      {overlayStatus && <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />}
-    </>;
+    return (
+      <>
+        <RoomHost
+          key={roomId}
+          roomId={roomId}
+          onBack={() => navigate("/")}
+          onGameDiscovered={saveRecentGame}
+          onEntryStatus={setEntryStatus}
+          onEntryReady={finishCurrentRoomEntry}
+          onEntryFailed={finishCurrentRoomEntry}
+        />
+        {overlayStatus && (
+          <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />
+        )}
+      </>
+    );
   }
-  return <>
-    <Home onNavigate={navigate} onBeginEntry={beginEntry} onEntryStatus={setEntryStatus} />
-    {overlayStatus && <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />}
-  </>;
+  return (
+    <>
+      <Home
+        onNavigate={navigate}
+        onBeginEntry={beginEntry}
+        onEntryStatus={setEntryStatus}
+      />
+      {overlayStatus && (
+        <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />
+      )}
+    </>
+  );
 }
 
 interface HomeProps {
@@ -80,16 +114,34 @@ interface HomeProps {
 function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
   const [gameUrl, setGameUrl] = useState("");
   const [recentGames, setRecentGames] = useState(readRecentGames);
+  const [favoriteGames, setFavoriteGames] = useState(readFavoriteGames);
   const [error, setError] = useState<string>();
-  const [recentMenu, setRecentMenu] = useState<{ game: RecentGame; x: number; y: number }>();
+  const [gameMenu, setGameMenu] = useState<{
+    game: ShelfGame;
+    kind: GameShelfKind;
+    position: MenuPosition;
+  }>();
+  const [gameInfo, setGameInfo] = useState<ShelfGame>();
+  const favoriteUrls = useMemo(
+    () => new Set(favoriteGames.map((game) => game.url)),
+    [favoriteGames],
+  );
+  const roomIdInput = roomIdFromInput(gameUrl);
 
   const create = async (url = gameUrl) => {
+    const trimmed = url.trim();
+    const roomId = roomIdFromInput(trimmed);
     const cancelled = onBeginEntry();
     setError(undefined);
     try {
       await createGuestSession();
       if (cancelled()) return;
-      const room = await createRoom(url);
+      if (roomId) {
+        onEntryStatus("Loading game");
+        onNavigate(`/r/${roomId}`);
+        return;
+      }
+      const room = await createRoom(trimmed);
       if (cancelled()) return;
       onEntryStatus("Loading game");
       onNavigate(`/r/${room.roomId}`);
@@ -100,128 +152,348 @@ function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
     }
   };
 
-  const openRecentMenu = (game: RecentGame, event: ReactMouseEvent<HTMLButtonElement>) => {
+  const openGameMenu = (
+    game: ShelfGame,
+    kind: GameShelfKind,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
     event.preventDefault();
     event.currentTarget.focus();
-    const menuWidth = 184;
-    const menuHeight = 92;
-    const gutter = 8;
-    setRecentMenu({
+    setGameMenu({
       game,
-      x: Math.max(gutter, Math.min(event.clientX, window.innerWidth - menuWidth - gutter)),
-      y: Math.max(gutter, Math.min(event.clientY, window.innerHeight - menuHeight - gutter)),
+      kind,
+      position: { left: event.clientX, top: event.clientY },
     });
   };
 
-  const togglePinned = (game: RecentGame) => {
-    setRecentGames((current) => persistRecentGames(current.map((item) => item.url === game.url ? { ...item, pinned: !item.pinned } : item)));
+  const toggleFavorite = (game: ShelfGame) => {
+    setFavoriteGames((current) => {
+      if (current.some((item) => item.url === game.url)) {
+        return persistFavoriteGames(
+          current.filter((item) => item.url !== game.url),
+        );
+      }
+      return persistFavoriteGames([
+        toRecentGame(game),
+        ...current.filter((item) => item.url !== game.url),
+      ]);
+    });
   };
 
-  const deleteRecent = (game: RecentGame) => {
-    setRecentGames((current) => persistRecentGames(current.filter((item) => item.url !== game.url)));
+  const deleteRecent = (game: ShelfGame) => {
+    setRecentGames((current) =>
+      persistRecentGames(current.filter((item) => item.url !== game.url)),
+    );
   };
 
   return (
     <div className="site-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Playweft home"><span className="brand-mark"><i /><i /><i /></span><span>playweft</span></a>
+        <a className="brand" href="/" aria-label="Playweft home">
+          <span className="brand-mark">
+            <i />
+            <i />
+            <i />
+          </span>
+          <span>playweft</span>
+        </a>
         <span className="topbar-label">Play games together</span>
       </header>
       <main className="home">
-        <section className="launch-section" id="new-room" aria-labelledby="launch-title">
-          <h1 id="launch-title" className="sr-only">Create a room</h1>
-          <form className="launch-form" onSubmit={(event) => { event.preventDefault(); void create(); }}>
-            <label className="sr-only" htmlFor="game-url">Game URL</label>
-            <div className="url-input"><span className="url-icon" aria-hidden="true">⌁</span><input id="game-url" type="url" required placeholder="Paste a static game URL" value={gameUrl} onChange={(event) => setGameUrl(event.target.value)} /></div>
-            <button className="button primary" disabled={!gameUrl} type="submit">Create room</button>
+        <section
+          className="launch-section"
+          id="new-room"
+          aria-labelledby="launch-title"
+        >
+          <h1 id="launch-title" className="sr-only">
+            Create a room
+          </h1>
+          <form
+            className="launch-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void create();
+            }}
+          >
+            <label className="sr-only" htmlFor="game-url">
+              Game URL or room code
+            </label>
+            <div className="url-input">
+              <span className="url-icon" aria-hidden="true">
+                ⌁
+              </span>
+              <input
+                id="game-url"
+                type="text"
+                required
+                placeholder="Paste a static game URL or room code"
+                value={gameUrl}
+                onChange={(event) => setGameUrl(event.target.value)}
+              />
+            </div>
+            <button
+              className="button primary"
+              disabled={!gameUrl.trim()}
+              type="submit"
+            >
+              {roomIdInput ? "Join room" : "Create room"}
+            </button>
           </form>
         </section>
 
-        {recentGames.length > 0 && <GameShelf title="Recently played" games={recentGames} onSelect={(url) => void create(url)} onContextMenu={openRecentMenu} recent />}
-        <GameShelf title="Recommended" games={FEATURED_GAMES} onSelect={(url) => void create(url)} />
+        {favoriteGames.length > 0 && (
+          <GameShelf
+            title="Favorites"
+            kind="favorite"
+            games={favoriteGames}
+            onSelect={(url) => void create(url)}
+            onContextMenu={openGameMenu}
+          />
+        )}
+        {recentGames.length > 0 && (
+          <GameShelf
+            title="Recently played"
+            kind="recent"
+            games={recentGames}
+            onSelect={(url) => void create(url)}
+            onContextMenu={openGameMenu}
+          />
+        )}
+        <GameShelf
+          title="Recommended"
+          kind="recommended"
+          games={FEATURED_GAMES}
+          onSelect={(url) => void create(url)}
+          onContextMenu={openGameMenu}
+        />
       </main>
-      {error && <ErrorToast message={error} onDismiss={() => setError(undefined)} />}
-      {recentMenu && <RecentGameMenu
-        key={`${recentMenu.game.url}:${recentMenu.x}:${recentMenu.y}`}
-        game={recentMenu.game}
-        x={recentMenu.x}
-        y={recentMenu.y}
-        onClose={() => setRecentMenu(undefined)}
-        onTogglePinned={() => togglePinned(recentMenu.game)}
-        onDelete={() => deleteRecent(recentMenu.game)}
-      />}
+      {error && (
+        <ErrorToast message={error} onDismiss={() => setError(undefined)} />
+      )}
+      {gameMenu && (
+        <GameMenu
+          key={`${gameMenu.game.url}:${gameMenu.kind}`}
+          game={gameMenu.game}
+          position={gameMenu.position}
+          isFavorite={favoriteUrls.has(gameMenu.game.url)}
+          canDelete={gameMenu.kind === "recent"}
+          onClose={() => setGameMenu(undefined)}
+          onShowInfo={() => setGameInfo(gameMenu.game)}
+          onToggleFavorite={() => toggleFavorite(gameMenu.game)}
+          onDelete={() => deleteRecent(gameMenu.game)}
+        />
+      )}
+      {gameInfo && (
+        <GameInfoPanel
+          icon={gameInfo.icon}
+          name={gameInfo.name}
+          url={gameInfo.url}
+          onClose={() => setGameInfo(undefined)}
+        />
+      )}
     </div>
   );
 }
 
-function EntryOverlay({ status, onCancel }: { status: string; onCancel(): void }) {
-  return <div className="creating-overlay">
-    <div className="creating-status" role="status" aria-live="polite">
-      <span className="loading-spinner" aria-hidden="true" />
-      <span>{status}</span>
+function EntryOverlay({
+  status,
+  onCancel,
+}: {
+  status: string;
+  onCancel(): void;
+}) {
+  return (
+    <div className="creating-overlay">
+      <div className="creating-status" role="status" aria-live="polite">
+        <span className="loading-spinner" aria-hidden="true" />
+        <span>{status}</span>
+      </div>
+      <button className="creating-cancel" type="button" onClick={onCancel}>
+        Cancel
+      </button>
     </div>
-    <button className="creating-cancel" type="button" onClick={onCancel}>Cancel</button>
-  </div>;
+  );
 }
 
 interface GameShelfProps {
   title: string;
-  games: Array<RecentGame | typeof FEATURED_GAMES[number]>;
+  kind: GameShelfKind;
+  games: ShelfGame[];
   onSelect(url: string): void;
-  onContextMenu?(game: RecentGame, event: ReactMouseEvent<HTMLButtonElement>): void;
-  recent?: boolean;
+  onContextMenu(
+    game: ShelfGame,
+    kind: GameShelfKind,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ): void;
 }
 
-function GameShelf({ title, games, onSelect, onContextMenu, recent = false }: GameShelfProps) {
-  return <section className="game-shelf" aria-labelledby={`${title.toLowerCase().replaceAll(" ", "-")}-title`}>
-    <div className="shelf-heading"><h2 id={`${title.toLowerCase().replaceAll(" ", "-")}-title`}>{title}</h2></div>
-    <div className="shelf-row">
-      {games.map((game) => <button className="shelf-game" key={game.url} onClick={() => onSelect(game.url)} onContextMenu={recent ? (event) => onContextMenu?.(game as RecentGame, event) : undefined}>
-        <span className="shelf-art">{game.icon ? <img src={game.icon} alt="" referrerPolicy="no-referrer" /> : <span>{game.name.slice(0, 2).toUpperCase()}</span>}</span>
-        <span className="shelf-game-name">{game.name}</span>
-        <span className="shelf-game-meta">{"category" in game && !recent ? game.category : hostname(game.url)}</span>
-      </button>)}
-    </div>
-  </section>;
+function GameShelf({
+  title,
+  kind,
+  games,
+  onSelect,
+  onContextMenu,
+}: GameShelfProps) {
+  return (
+    <section
+      className="game-shelf"
+      aria-labelledby={`${title.toLowerCase().replaceAll(" ", "-")}-title`}
+    >
+      <div className="shelf-heading">
+        <h2 id={`${title.toLowerCase().replaceAll(" ", "-")}-title`}>
+          {title}
+        </h2>
+      </div>
+      <div className="shelf-row">
+        {games.map((game) => (
+          <button
+            className="shelf-game"
+            key={game.url}
+            onClick={() => onSelect(game.url)}
+            onContextMenu={(event) => onContextMenu(game, kind, event)}
+          >
+            <span className="shelf-art">
+              {game.icon ? (
+                <img src={game.icon} alt="" referrerPolicy="no-referrer" />
+              ) : (
+                <span>{game.name.slice(0, 2).toUpperCase()}</span>
+              )}
+            </span>
+            <span className="shelf-game-name">{game.name}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function readRecentGames(): RecentGame[] {
+  return readStoredRecentGames().map(toRecentGame).slice(0, MAX_RECENT_GAMES);
+}
+
+function readFavoriteGames(): RecentGame[] {
+  const savedFavorites = readStoredGames(FAVORITE_GAMES_KEY).map(toRecentGame);
+  const pinnedFavorites = readStoredRecentGames()
+    .filter((game) => game.pinned)
+    .map(toRecentGame);
+  const favorites = uniqueGames([...savedFavorites, ...pinnedFavorites]).slice(
+    0,
+    MAX_FAVORITE_GAMES,
+  );
+  if (pinnedFavorites.length > 0) persistFavoriteGames(favorites);
+  return favorites;
+}
+
+function readStoredRecentGames(): StoredRecentGame[] {
+  return readStoredGames(RECENT_GAMES_KEY);
+}
+
+function readStoredGames(key: string): StoredRecentGame[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(RECENT_GAMES_KEY) ?? "[]") as unknown;
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
     if (!Array.isArray(parsed)) return [];
-    return orderRecentGames(parsed.filter(isRecentGame)).slice(0, 8);
+    return parsed.filter(isStoredRecentGame);
   } catch {
     return [];
   }
 }
 
 function saveRecentGame(game: RecentGame): void {
+  const favorites = readFavoriteGames();
+  if (favorites.some((item) => item.url === game.url)) {
+    persistFavoriteGames([
+      game,
+      ...favorites.filter((item) => item.url !== game.url),
+    ]);
+  }
   const current = readRecentGames();
-  const existing = current.find((item) => item.url === game.url);
-  persistRecentGames([{ ...game, pinned: existing?.pinned }, ...current.filter((item) => item.url !== game.url)]);
+  persistRecentGames([
+    game,
+    ...current.filter((item) => item.url !== game.url),
+  ]);
 }
 
 function persistRecentGames(games: RecentGame[]): RecentGame[] {
-  const next = orderRecentGames(games).slice(0, 8);
+  const next = uniqueGames(games).slice(0, MAX_RECENT_GAMES);
   localStorage.setItem(RECENT_GAMES_KEY, JSON.stringify(next));
   return next;
 }
 
-function orderRecentGames(games: RecentGame[]): RecentGame[] {
-  return [...games.filter((game) => game.pinned), ...games.filter((game) => !game.pinned)];
+function persistFavoriteGames(games: RecentGame[]): RecentGame[] {
+  const next = uniqueGames(games).slice(0, MAX_FAVORITE_GAMES);
+  localStorage.setItem(FAVORITE_GAMES_KEY, JSON.stringify(next));
+  return next;
 }
 
-function isRecentGame(value: unknown): value is RecentGame {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+function uniqueGames(games: RecentGame[]): RecentGame[] {
+  const seenUrls = new Set<string>();
+  return games.filter((game) => {
+    if (seenUrls.has(game.url)) return false;
+    seenUrls.add(game.url);
+    return true;
+  });
+}
+
+function isStoredRecentGame(value: unknown): value is StoredRecentGame {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
   const item = value as Record<string, unknown>;
-  return typeof item.url === "string"
-    && typeof item.name === "string"
-    && (item.icon === undefined || typeof item.icon === "string")
-    && (item.pinned === undefined || typeof item.pinned === "boolean");
+  return (
+    typeof item.url === "string" &&
+    typeof item.name === "string" &&
+    (item.icon === undefined || typeof item.icon === "string") &&
+    (item.helpUrl === undefined || typeof item.helpUrl === "string") &&
+    (item.pinned === undefined || typeof item.pinned === "boolean")
+  );
 }
 
-function hostname(url: string): string {
-  try { return new URL(url).hostname; } catch { return url; }
+function toRecentGame(game: ShelfGame): RecentGame {
+  return {
+    url: game.url,
+    name: game.name,
+    ...(game.icon ? { icon: game.icon } : {}),
+    ...("helpUrl" in game && game.helpUrl ? { helpUrl: game.helpUrl } : {}),
+  };
+}
+
+function roomIdFromInput(value: string): string | undefined {
+  const input = value.trim();
+  if (!input) return undefined;
+  const format = roomIdFormat(import.meta.env.VITE_ROOM_ID_FORMAT);
+  switch (format.kind) {
+    case "uuid":
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        input,
+      )
+        ? input.toLowerCase()
+        : undefined;
+    case "digits":
+      return new RegExp(`^\\d{${format.length}}$`).test(input)
+        ? input
+        : undefined;
+    case "base64url":
+      return new RegExp(`^[A-Za-z0-9_-]{${format.length}}$`).test(input)
+        ? input
+        : undefined;
+    case "code": {
+      const uppercased = input.toUpperCase();
+      return uppercased.length === format.length &&
+        [...uppercased].every((character) => CODE_ALPHABET.includes(character))
+        ? uppercased
+        : undefined;
+    }
+  }
+}
+
+function roomIdFormat(value: string | undefined): RoomIdFormat {
+  const configured = (value?.trim() || DEFAULT_ROOM_ID_FORMAT).toLowerCase();
+  if (configured === "uuid") return { kind: "uuid" };
+  const match = /^(code|digits|base64url):([1-9]\d{0,2})$/.exec(configured);
+  if (!match) return { kind: "code", length: 4 };
+  return {
+    kind: match[1] as "code" | "digits" | "base64url",
+    length: Number(match[2]),
+  };
 }
 
 function message(reason: unknown): string {

@@ -6,6 +6,7 @@ import {
   requirePlatformOrigin,
   requirePlatformSession,
 } from "./platform-session";
+import { generateRoomId, roomIdMaxAttempts } from "./room-id";
 
 export { GameRoom };
 export type { Env };
@@ -20,14 +21,29 @@ export default {
       if (request.method === "POST" && url.pathname === "/api/rooms") {
         requirePlatformOrigin(request);
         const session = await requirePlatformSession(request, env);
-        const roomId = crypto.randomUUID();
-        const forwarded = new Request(new URL("/create", request.url), request);
-        forwarded.headers.set("X-Playweft-Player-Id", session.sub);
-        const response =
-          await env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
-        if (!response.ok) return response;
-        const launch = (await response.json()) as { gameUrl: string };
-        return Response.json({ roomId, gameUrl: launch.gameUrl });
+        const body = await request.text();
+        const attempts = roomIdMaxAttempts(env.ROOM_ID_MAX_ATTEMPTS);
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          const roomId = generateRoomId(env.ROOM_ID_FORMAT);
+          const forwarded = new Request(new URL("/create", request.url), {
+            body,
+            headers: request.headers,
+            method: request.method,
+          });
+          forwarded.headers.set("X-Playweft-Player-Id", session.sub);
+          const response =
+            await env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
+          if (response.status === 409) {
+            if (attempt + 1 < attempts) continue;
+            return Response.json(
+              { error: "room id collision limit reached" },
+              { status: 409 },
+            );
+          }
+          if (!response.ok) return response;
+          const launch = (await response.json()) as { gameUrl: string };
+          return Response.json({ roomId, gameUrl: launch.gameUrl });
+        }
       }
       if (request.method === "GET" && url.pathname === "/") {
         return Response.json({
@@ -44,6 +60,7 @@ export default {
             ready: "POST /api/rooms/:roomId/ready",
             kick: "POST /api/rooms/:roomId/kick",
             transferHost: "POST /api/rooms/:roomId/transfer-host",
+            dissolve: "POST /api/rooms/:roomId/dissolve",
             changeGame: "PUT /api/rooms/:roomId/game",
             returnToRoom: "POST /api/rooms/:roomId/return-to-room",
             state: "GET /api/rooms/:roomId/state",
@@ -54,7 +71,7 @@ export default {
       }
 
       const match =
-        /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/(game|launch|initialize|join|start|leave|seat|ready|kick|transfer-host|return-to-room|state|actions|connect)$/.exec(
+        /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/(game|launch|initialize|join|start|leave|seat|ready|kick|transfer-host|dissolve|return-to-room|state|actions|connect)$/.exec(
           url.pathname,
         );
       if (!match) return Response.json({ error: "not found" }, { status: 404 });

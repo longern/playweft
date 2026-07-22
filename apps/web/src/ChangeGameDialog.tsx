@@ -20,6 +20,7 @@ export default function ChangeGameDialog({
   return (
     <Dialog
       title="Change game"
+      size="wide"
       onDismiss={onClose}
       actions={[
         { label: "Cancel" },

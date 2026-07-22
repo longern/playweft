@@ -4,11 +4,11 @@ import {
   connectRoom,
   changeRoomGame,
   createGuestSession,
+  dissolveRoom,
   getRoomLaunch,
   initializeRoom,
   joinRoom,
   kickPlayer,
-  leaveRoom,
   setPlayerReady,
   setRoomSeat,
   sendAction,
@@ -22,6 +22,7 @@ import {
 } from "./platform-api";
 import ErrorToast from "./ErrorToast";
 import Dialog from "./Dialog";
+import GameInfoPanel, { type GameInfoAction } from "./GameInfoPanel";
 import InviteDialog from "./InviteDialog";
 import Menu from "./Menu";
 import ChangeGameDialog from "./ChangeGameDialog";
@@ -33,7 +34,6 @@ export interface RecentGame {
   name: string;
   icon?: string;
   helpUrl?: string;
-  pinned?: boolean;
 }
 
 interface RoomHostProps {
@@ -59,6 +59,7 @@ export default function RoomHost({
   const [gameUrl, setGameUrl] = useState<string>();
   const [gameRevision, setGameRevision] = useState(0);
   const [gameName, setGameName] = useState("Game room");
+  const [gameIconHref, setGameIconHref] = useState<string>();
   const [lobby, setLobby] = useState<RoomLobby>();
   const [selfId, setSelfId] = useState<string>();
   const [copied, setCopied] = useState(false);
@@ -66,9 +67,7 @@ export default function RoomHost({
   const [error, setError] = useState<string>();
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
-  const [leaveGameDialogOpen, setLeaveGameDialogOpen] = useState(false);
-  const [gameMenuOpen, setGameMenuOpen] = useState(false);
-  const [gameMenuClosing, setGameMenuClosing] = useState(false);
+  const [gameInfoOpen, setGameInfoOpen] = useState(false);
   const [playerMenuId, setPlayerMenuId] = useState<string>();
   const [playerMenuClosing, setPlayerMenuClosing] = useState(false);
   const [spectatorHintOpen, setSpectatorHintOpen] = useState(false);
@@ -77,6 +76,7 @@ export default function RoomHost({
   const [gameHelpHref, setGameHelpHref] = useState<string>();
   const [gameHelpOpen, setGameHelpOpen] = useState(false);
   const [changeGameOpen, setChangeGameOpen] = useState(false);
+  const [dissolveDialogOpen, setDissolveDialogOpen] = useState(false);
 
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
@@ -130,7 +130,9 @@ export default function RoomHost({
     let socket: WebSocket | undefined;
     let heartbeatTimer: number | undefined;
     let reconnectTimer: number | undefined;
+    let connectionErrorSuppressTimer: number | undefined;
     let reconnectAttempts = 0;
+    let suppressConnectionError = false;
     let closed = false;
     let roomInitializing = false;
     let joined = false;
@@ -165,6 +167,14 @@ export default function RoomHost({
       bridgePort.current?.postMessage({ type: "error", code, error });
     };
 
+    const suppressNextConnectionError = () => {
+      suppressConnectionError = true;
+      window.clearTimeout(connectionErrorSuppressTimer);
+      connectionErrorSuppressTimer = window.setTimeout(() => {
+        suppressConnectionError = false;
+      }, 5_000);
+    };
+
     const connect = () => {
       window.clearTimeout(reconnectTimer);
       window.clearInterval(heartbeatTimer);
@@ -185,7 +195,14 @@ export default function RoomHost({
           | RoomSnapshot
           | RoomLobby
           | { type: "game_changed"; gameUrl: string }
+          | { type: "room_dissolved"; error: string }
           | { type: "error"; error: string };
+        if (payload.type === "room_dissolved") {
+          closed = true;
+          socket?.close();
+          onBack();
+          return;
+        }
         if (payload.type === "error") {
           setError(payload.error);
           reportBridgeError("ROOM_ERROR", payload.error);
@@ -210,6 +227,11 @@ export default function RoomHost({
         }
       };
       nextSocket.onerror = () => {
+        if (suppressConnectionError) {
+          suppressConnectionError = false;
+          window.clearTimeout(connectionErrorSuppressTimer);
+          return;
+        }
         setError("Live connection to the platform failed");
         if (!entryComplete) onEntryFailed();
         reportBridgeError(
@@ -217,9 +239,14 @@ export default function RoomHost({
           "Live connection to the platform failed",
         );
       };
-      nextSocket.onclose = () => {
+      nextSocket.onclose = (event) => {
         window.clearInterval(heartbeatTimer);
         if (closed || socket !== nextSocket) return;
+        if (event.code === 4004) {
+          closed = true;
+          onBack();
+          return;
+        }
         if (receivedServerSignal) reconnectAttempts = 0;
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
           const error = "Live connection could not be restored";
@@ -232,6 +259,14 @@ export default function RoomHost({
           reconnectTimer = window.setTimeout(connect, 2_000);
         }
       };
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible" || !joined) return;
+      suppressNextConnectionError();
+      setError(undefined);
+      reconnectAttempts = 0;
+      connect();
     };
 
     const onWindowMessage = (event: MessageEvent) => {
@@ -255,6 +290,7 @@ export default function RoomHost({
           const game = descriptor(data.descriptor, gameOrigin, gameUrl);
           if (!game) return;
           setGameName(game.name);
+          setGameIconHref(game.icon);
           setGameHelpHref(game.helpUrl);
           onGameDiscovered(game);
           metadataReady = true;
@@ -293,21 +329,38 @@ export default function RoomHost({
           return;
         }
         if (data?.type !== "action") return;
+        const requestId = bridgeRequestId(data.requestId);
+        if (!requestId) {
+          channel.port1.postMessage({
+            type: "error",
+            code: "INVALID_ACTION_REQUEST",
+            error: "An action requestId is required",
+          });
+          return;
+        }
         if (!joined || phaseRef.current === "lobby") {
           channel.port1.postMessage({
             type: "error",
             code: "GAME_NOT_STARTED",
             error: "The game has not started",
+            requestId,
           });
           return;
         }
         try {
-          publish(await sendAction(roomId, data.action));
+          const snapshot = await sendAction(roomId, data.action);
+          publish(snapshot);
+          channel.port1.postMessage({
+            type: "action-result",
+            requestId,
+            version: snapshot.version,
+          });
         } catch (reason) {
           channel.port1.postMessage({
             type: "error",
             code: "ACTION_REJECTED",
             error: message(reason),
+            requestId,
           });
         }
       };
@@ -320,15 +373,18 @@ export default function RoomHost({
     };
 
     window.addEventListener("message", onWindowMessage);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       closed = true;
       window.clearTimeout(reconnectTimer);
+      window.clearTimeout(connectionErrorSuppressTimer);
       window.clearInterval(heartbeatTimer);
       socket?.close();
       bridgePort.current?.close();
       bridgePort.current = undefined;
       window.clearTimeout(metadataFallback);
       window.removeEventListener("message", onWindowMessage);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [
     gameRevision,
@@ -390,7 +446,7 @@ export default function RoomHost({
     try {
       setError(undefined);
       setLobby(await returnRoomToLobby(roomId));
-      setGameMenuOpen(false);
+      setGameInfoOpen(false);
     } catch (reason) {
       setError(message(reason));
     }
@@ -401,6 +457,16 @@ export default function RoomHost({
       setError(undefined);
       setChangeGameOpen(false);
       await changeRoomGame(roomId, url);
+    } catch (reason) {
+      setError(message(reason));
+    }
+  };
+
+  const dissolve = async () => {
+    try {
+      setError(undefined);
+      await dissolveRoom(roomId);
+      onBack();
     } catch (reason) {
       setError(message(reason));
     }
@@ -435,26 +501,6 @@ export default function RoomHost({
     else onBack();
   };
 
-  const leaveGame = async () => {
-    try {
-      setError(undefined);
-      await leaveRoom(roomId);
-      onBack();
-    } catch (reason) {
-      setError(message(reason));
-    }
-  };
-
-  const closeGameMenu = (after?: () => void) => {
-    if (gameMenuClosing) return;
-    setGameMenuClosing(true);
-    window.setTimeout(() => {
-      setGameMenuOpen(false);
-      setGameMenuClosing(false);
-      after?.();
-    }, 160);
-  };
-
   const closePlayerMenu = (after?: () => void) => {
     if (!playerMenuId || playerMenuClosing) return;
     setPlayerMenuClosing(true);
@@ -469,6 +515,16 @@ export default function RoomHost({
     setSpectatorHintOpen(true);
     window.setTimeout(() => setSpectatorHintOpen(false), 2_500);
   };
+
+  const gameInfoActions: GameInfoAction[] = isOwner
+    ? [
+        {
+          label: "Return to room",
+          variant: "primary",
+          onSelect: () => void returnToRoom(),
+        },
+      ]
+    : [];
 
   return (
     <div className={`room-shell ${phase === "playing" ? "room-playing" : ""}`}>
@@ -779,20 +835,23 @@ export default function RoomHost({
           </p>
         </Dialog>
       )}
-      {leaveGameDialogOpen && (
+      {dissolveDialogOpen && (
         <Dialog
-          title="Leave game?"
-          onDismiss={() => setLeaveGameDialogOpen(false)}
+          title="Dissolve room?"
+          onDismiss={() => setDissolveDialogOpen(false)}
           actions={[
             { label: "Cancel" },
             {
-              label: "Leave",
+              label: "Dissolve room",
               variant: "danger",
-              onSelect: () => void leaveGame(),
+              onSelect: () => void dissolve(),
             },
           ]}
         >
-          <p className="leave-dialog-copy">Your game progress may be lost.</p>
+          <p className="leave-dialog-copy">
+            This closes the room for everyone and the invite link will stop
+            working.
+          </p>
         </Dialog>
       )}
       {gameHelpOpen && gameHelpHref && (
@@ -821,6 +880,16 @@ export default function RoomHost({
           className="lobby-menu"
           onClose={() => setLobbyMenuOpen(false)}
         >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setLobbyMenuOpen(false);
+              setGameInfoOpen(true);
+            }}
+          >
+            Game info
+          </button>
           {gameHelpHref && (
             <button
               type="button"
@@ -845,51 +914,38 @@ export default function RoomHost({
               Change game
             </button>
           )}
+          {isOwner && (
+            <button
+              className="menu-danger"
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setLobbyMenuOpen(false);
+                setDissolveDialogOpen(true);
+              }}
+            >
+              Dissolve room
+            </button>
+          )}
         </Menu>
+      )}
+      {gameInfoOpen && gameUrl && (
+        <GameInfoPanel
+          actions={phase === "playing" ? gameInfoActions : undefined}
+          icon={gameIconHref}
+          name={gameName}
+          url={gameUrl}
+          onClose={() => setGameInfoOpen(false)}
+        />
       )}
       {phase === "playing" && (
         <>
-          {gameMenuOpen && (
-            <>
-              <button
-                className={`game-menu-backdrop ${gameMenuClosing ? "game-menu-backdrop-closing" : ""}`}
-                type="button"
-                aria-label="Close game menu"
-                onClick={() => closeGameMenu()}
-              />
-              <div
-                className={`game-menu ${gameMenuClosing ? "game-menu-closing" : ""}`}
-                role="menu"
-              >
-                {isOwner && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void returnToRoom()}
-                  >
-                    Return to room
-                  </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() =>
-                    closeGameMenu(() => setLeaveGameDialogOpen(true))
-                  }
-                >
-                  Leave game
-                </button>
-              </div>
-            </>
-          )}
           <button
             className="game-options"
             type="button"
-            aria-label="Game options"
-            aria-expanded={gameMenuOpen}
-            onClick={() =>
-              gameMenuOpen ? closeGameMenu() : setGameMenuOpen(true)
-            }
+            aria-label="Game information"
+            aria-expanded={gameInfoOpen}
+            onClick={() => setGameInfoOpen(true)}
           >
             <i />
             <i />
@@ -942,6 +998,12 @@ function isLimit(value: unknown): value is number {
     value >= 1 &&
     value <= 32
   );
+}
+
+function bridgeRequestId(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && value.length <= 128
+    ? value
+    : undefined;
 }
 
 function descriptor(

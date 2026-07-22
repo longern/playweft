@@ -68,13 +68,14 @@ requests remain usable in browsers that omit `Origin` for a same-origin GET.
 
 | Request | Purpose |
 | --- | --- |
-| `POST /api/rooms` | Create a random room with `{ gameUrl }`; the URL is the only launch metadata persisted for that room. |
+| `POST /api/rooms` | Create a random room with `{ gameUrl }`; room IDs default to 4-character friendly codes and the URL is the only launch metadata persisted for that room. |
 | `GET /api/rooms/:roomId/launch` | Read the game's entry URL for the invitation page. |
 | `PUT /api/rooms/:roomId/initialize` | Atomically install `{ runtime?: "lua", script, minPlayers, maxPlayers }`; repeating the same complete configuration is safe. |
 | `POST /api/rooms/:roomId/join` | Join the platform-owned lobby. The room creator is the host; when every seat is taken, new arrivals join as spectators. |
 | `POST /api/rooms/:roomId/seat` | Choose an empty numbered seat with `{ seat }`, or leave a seat to spectate with `{ seat: null }`. The host keeps their seat. |
 | `POST /api/rooms/:roomId/ready` | Set a seated non-host player's readiness with `{ ready }`. |
 | `POST /api/rooms/:roomId/kick` | Room-host-only lobby action with `{ playerId }`. |
+| `POST /api/rooms/:roomId/dissolve` | Room-host-only lobby action that closes the room for everyone and invalidates its invite link. |
 | `POST /api/rooms/:roomId/start` | Room-host-only action; requires the minimum seated players and every seated non-host player ready, then locks the roster and calls Lua `setup({ players })`. |
 | `POST /api/platform/guest` | Platform-only demo bootstrap; sets an HttpOnly guest session. |
 | `GET /api/rooms/:roomId/state` | Read persisted state; requires a platform session. |
@@ -105,7 +106,7 @@ npm run dev:rps
 npm run dev:web
 ```
 
-Open `http://localhost:5173`, enter `http://localhost:5174`, then create a
+Open `http://localhost:9133`, enter `http://localhost:9139`, then create a
 room. Copy the resulting `/r/<roomId>` link to another browser or device. Each
 browser receives an anonymous platform session. The first player chooses one of
 three buttons; the server reveals both choices only after a second player
@@ -154,6 +155,14 @@ put` immediately creates a new Worker version:
 ```sh
 npx wrangler secret put AUTH_SECRET --config apps/worker/wrangler.jsonc
 ```
+
+Room ID generation is optional to configure. By default, the Worker uses
+`ROOM_ID_FORMAT=code:4` with the friendly alphabet
+`23456789ABCDEFGHJKMNPQRSTUVWXYZ`, and retries up to
+`ROOM_ID_MAX_ATTEMPTS=8` collisions. Supported formats are `code:N`,
+`digits:N`, `base64url:N`, and `uuid`. If the frontend is separately
+configured, set `VITE_ROOM_ID_FORMAT` to the same value so the home input can
+recognize room codes without an extra config request.
 
 Deploy the platform. The Worker configuration uploads `apps/web/dist`; `/api/*`
 runs the Worker first while other navigation requests are handled by the React

@@ -18,7 +18,7 @@ descriptor         ────────>
 initialize         ────────>
                      <──────  ready
 action             ────────>
-                     <──────  state | error
+                     <──────  action-result | state | error
 ```
 
 All messages after `bridge` travel through the transferred port. Message names
@@ -45,7 +45,10 @@ let ownPlayerId;
 let latestVersion = -1;
 
 const announceReady = () => {
-  window.parent.postMessage({ type: "playweft:bridge-ready", version: 1 }, "*");
+  window.parent.postMessage(
+    { type: "playweft:bridge-ready", version: 1 },
+    "*",
+  );
 };
 
 const probe = window.setInterval(announceReady, 500);
@@ -53,7 +56,10 @@ announceReady();
 
 window.addEventListener("message", (event) => {
   if (event.source !== window.parent) return;
-  if (event.data?.type !== "playweft:bridge" || event.data?.version !== 1) return;
+  if (event.data?.type !== "playweft:bridge" || event.data?.version !== 1) {
+    return;
+  }
+
   const [port] = event.ports;
   if (!port) return;
 
@@ -65,7 +71,11 @@ window.addEventListener("message", (event) => {
   // Optional local-history metadata.
   gamePort.postMessage({
     type: "descriptor",
-    descriptor: { name: "My Game", icon: "/icon.svg", helpUrl: "/help.html" },
+    descriptor: {
+      name: "My Game",
+      icon: "/icon.svg",
+      helpUrl: "/help.html",
+    },
   });
 
   // Required room configuration. This compiles the Lua source but does not
@@ -98,7 +108,8 @@ The platform sends one of the following messages through the port.
 | --- | --- |
 | `{ type: "ready", phase, playerId }` | Registration and lobby join succeeded. `playerId` is this browser's opaque, room-scoped ID. |
 | `{ type: "state", phase: "playing", state, events, version }` | Authoritative game update. `version` only increases; duplicates for the same version are not sent. |
-| `{ type: "error", code, error }` | A protocol or room operation failed. `code` is stable enough for UI branching; `error` is a human-readable explanation. |
+| `{ type: "action-result", requestId, version }` | The action with `requestId` was accepted and persisted at `version`. The accompanying `state` message remains the rendering source of truth. |
+| `{ type: "error", code, error, requestId? }` | A protocol or room operation failed. Action errors include their originating `requestId`; platform errors do not. `code` is stable enough for UI branching and `error` is human-readable. |
 
 ```js
 function onPlatformMessage(event) {
@@ -128,20 +139,25 @@ The game is in the lobby after `ready`; it should not allow gameplay until its
 first `state` message. The platform owns the lobby, host privileges, player
 limits, kicking, and game start.
 
-Current error codes are `INITIALIZATION_REJECTED`, `GAME_NOT_STARTED`,
-`ACTION_REJECTED`, `ROOM_ERROR`, and `REALTIME_CONNECTION_FAILED`.
+Current error codes are `INITIALIZATION_REJECTED`, `INVALID_ACTION_REQUEST`,
+`GAME_NOT_STARTED`, `ACTION_REJECTED`, `ROOM_ERROR`, and
+`REALTIME_CONNECTION_FAILED`.
 
 ## 4. Submit an action
 
 ```js
 function chooseCard(card) {
+  const requestId = crypto.randomUUID();
   gamePort?.postMessage({
     type: "action",
+    requestId,
     action: { type: "choose", card },
   });
 }
 ```
 
+Every action requires a non-empty `requestId` up to 128 characters. Keep the
+action pending until its matching `action-result` or request-scoped `error`.
 An action must be JSON-serializable and no larger than 8 KiB. The platform
 derives player identity from the top-level page's HttpOnly session; it ignores
 any identity fields in the submitted action. `playerId` from `ready` is useful
@@ -156,18 +172,33 @@ starts the game and the player roster is locked:
 function setup(context)
   -- A locked roster of opaque, room-scoped player IDs.
   -- randomSeed is generated once by Playweft for this room.
-  return { players = context.players, seed = context.randomSeed, moves = {} }
+  return {
+    players = context.players,
+    seed = context.randomSeed,
+    moves = {},
+  }
 end
 
 function on_action(state, action, context)
   if action.type ~= "choose" then
-    return { state = state, events = { { type = "invalid_action" } } }
+    return {
+      state = state,
+      events = {
+        { type = "invalid_action" },
+      },
+    }
   end
 
   state.moves[context.playerId] = action.card
+
   return {
     state = state,
-    events = { { type = "chosen", player = context.playerId } },
+    events = {
+      {
+        type = "chosen",
+        player = context.playerId,
+      },
+    },
   }
 end
 ```
@@ -180,7 +211,16 @@ events needed to let remaining players continue or show that the game ended.
 ```lua
 function on_player_left(state, context)
   state.disconnected = context.playerId
-  return { state = state, events = { { type = "player_left", player = context.playerId } } }
+
+  return {
+    state = state,
+    events = {
+      {
+        type = "player_left",
+        player = context.playerId,
+      },
+    },
+  }
 end
 ```
 

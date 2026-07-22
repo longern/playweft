@@ -535,61 +535,252 @@ main.room-host {
   outline: 0;
 }
 
-.game-menu-backdrop {
+.game-info-layer {
   position: fixed;
-  z-index: 4;
+  z-index: 8;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.game-info-backdrop {
+  position: absolute;
   inset: 0;
   border: 0;
-  background: rgba(18, 22, 20, 0.08);
+  background: rgba(18, 22, 20, 0.22);
   cursor: default;
-  animation: game-menu-backdrop-in 0.16s ease-out both;
+  animation: game-info-backdrop-in 0.18s ease-out both;
 }
 
-.game-menu-backdrop-closing {
+.game-info-backdrop-closing {
   pointer-events: none;
-  animation: game-menu-backdrop-out 0.14s ease-in both;
+  animation: game-info-backdrop-out 0.16s ease-in both;
 }
 
-.game-menu {
-  position: fixed;
-  z-index: 5;
-  top: 56px;
-  right: 20px;
-  width: 148px;
-  padding: 6px;
-  border: 1px solid rgba(216, 221, 224, 0.9);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 12px 30px rgba(18, 22, 20, 0.16);
-  transform-origin: calc(100% - 24px) top;
-  animation: game-menu-in 0.16s cubic-bezier(0.22, 1, 0.36, 1) both;
+.game-info-panel {
+  position: relative;
+  z-index: 1;
+  width: min(360px, 100%);
+  overflow: hidden;
+  border: 1px solid rgba(216, 221, 224, 0.96);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 20px 60px rgba(18, 22, 20, 0.24);
+  animation: game-info-dialog-in 0.18s cubic-bezier(0.22, 1, 0.36, 1)
+    both;
   backdrop-filter: blur(12px);
 }
 
-.game-menu button {
-  width: 100%;
-  padding: 9px 10px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: #b23b48;
-  font-size: 0.86rem;
-  font-weight: 700;
-  text-align: left;
+.game-info-panel-closing {
+  pointer-events: none;
+  animation: game-info-dialog-out 0.16s ease-in both;
 }
 
-.game-menu button:hover,
-.game-menu button:focus-visible {
-  background: #fbeff1;
+.game-info-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 58px;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid #edf0f2;
+}
+
+.game-info-header h2 {
+  margin: 0;
+  color: #202124;
+  font-size: 1rem;
+}
+
+.game-info-header button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #5e666d;
+}
+
+.game-info-header button:hover,
+.game-info-header button:focus-visible {
+  background: #f1f3f4;
+  color: #202124;
   outline: 0;
 }
 
-.game-menu-closing {
-  pointer-events: none;
-  animation: game-menu-out 0.14s ease-in both;
+.game-info-header svg {
+  width: 20px;
+  height: 20px;
+}
+
+.game-info-content {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+}
+
+.game-info-icon {
+  display: grid;
+  width: 72px;
+  height: 72px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 16px;
+  background: #f3f6f2;
+  color: #17221a;
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: -0.05em;
+}
+
+.game-info-icon img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: contain;
+}
+
+.game-info-copy {
+  min-width: 0;
+}
+
+.game-info-copy h3 {
+  margin: 0 0 5px;
+  overflow: hidden;
+  color: #202124;
+  font-size: 1.1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-info-url {
+  padding: 0 20px 20px;
+  color: #687078;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.game-info-actions {
+  display: grid;
+  gap: 10px;
+  padding: 0 20px 20px;
+}
+
+.game-info-action {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
+.game-info-action-primary {
+  border-color: transparent;
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.game-info-action-secondary {
+  background: #fff;
+  color: #202124;
+}
+
+.game-info-action-primary:hover,
+.game-info-action-primary:focus-visible {
+  background: var(--color-primary-hover);
+  outline: 0;
+}
+
+.game-info-action-secondary:hover,
+.game-info-action-secondary:focus-visible {
+  background: #f1f3f4;
+  outline: 0;
+}
+
+@keyframes game-info-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes game-info-backdrop-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes game-info-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes game-info-dialog-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.97);
+  }
+}
+
+@keyframes game-info-drawer-in {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes game-info-drawer-out {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(100%);
+  }
 }
 
 @media (max-width: 620px) {
+  .game-info-layer {
+    align-items: end;
+    justify-items: stretch;
+    padding: 0;
+  }
+
+  .game-info-panel {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 22px 22px 0 0;
+    animation: game-info-drawer-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .game-info-panel-closing {
+    animation: game-info-drawer-out 0.16s ease-in both;
+  }
+
   main.room-host {
     width: min(100% - 28px, 860px);
     padding: 24px 0 18px;
@@ -662,11 +853,6 @@ main.room-host {
 
   .game-options {
     top: 12px;
-    right: 12px;
-  }
-
-  .game-menu {
-    top: 48px;
     right: 12px;
   }
 }

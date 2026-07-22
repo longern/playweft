@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { X } from "lucide-react";
 
 export interface DialogAction {
   label: string;
@@ -11,7 +12,7 @@ interface DialogProps {
   children: ReactNode;
   onDismiss(): void;
   actions?: DialogAction[];
-  size?: "default" | "large";
+  size?: "default" | "wide" | "large";
 }
 
 export default function Dialog({
@@ -67,7 +68,7 @@ export default function Dialog({
             onClick={() => close()}
             aria-label={`Close ${title} dialog`}
           >
-            ×
+            <X aria-hidden="true" />
           </button>
         </header>
         <div className="dialog-content">{children}</div>
