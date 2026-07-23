@@ -36,6 +36,7 @@ export interface RoomInitialization {
   script: string;
   minPlayers: number;
   maxPlayers: number;
+  liveRoom?: boolean;
 }
 
 export interface CreatedRoom {

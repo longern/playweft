@@ -30,6 +30,7 @@ interface RoomConfig {
   minPlayers: number;
   maxPlayers: number;
   randomSeed: number;
+  liveRoom: boolean;
 }
 
 interface RoomLaunch {
@@ -84,6 +85,9 @@ export class GameRoom extends DurableObject<Env> {
     scriptHash: string;
     engine: GameRuntime;
   };
+  private liveRoomState?: RoomState;
+  private liveSockets = new Set<WebSocket>();
+  private liveSocketAttachments = new Map<WebSocket, SocketAttachment>();
   private tail: Promise<void> = Promise.resolve();
 
   async fetch(request: Request): Promise<Response> {
@@ -156,7 +160,7 @@ export class GameRoom extends DurableObject<Env> {
       return;
     }
     await this.transferOfflineHost();
-    if (this.ctx.getWebSockets().length > 0) {
+    if (this.sockets().length > 0) {
       await this.touch();
       return;
     }
@@ -173,12 +177,19 @@ export class GameRoom extends DurableObject<Env> {
     webSocket: WebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
+    await this.handleWebSocketMessage(webSocket, message);
+  }
+
+  private async handleWebSocketMessage(
+    webSocket: WebSocket,
+    message: string | ArrayBuffer,
+  ): Promise<void> {
+    let requestId: string | undefined;
     try {
       if (typeof message !== "string")
         throw new RoomHttpError(400, "messages must be JSON text");
       const input = parseJson(message);
-      const attachment =
-        webSocket.deserializeAttachment() as SocketAttachment | null;
+      const attachment = this.socketAttachment(webSocket);
       if (!attachment) throw new RoomHttpError(401, "socket has no identity");
       if (isRecord(input) && input.type === "heartbeat") {
         await this.enqueue(() => this.noteSocketSeen(webSocket, attachment));
@@ -190,16 +201,35 @@ export class GameRoom extends DurableObject<Env> {
           "expected { type: 'heartbeat' } or { type: 'action', action }",
         );
       }
-      await this.enqueue(() =>
+      requestId =
+        typeof input.requestId === "string" &&
+        input.requestId.length > 0 &&
+        input.requestId.length <= 128
+          ? input.requestId
+          : undefined;
+      const update = await this.enqueue(() =>
         this.applyActionInput({
           playerId: attachment.playerId,
           actorId: attachment.actorId,
           action: input.action,
         }),
       );
+      if (requestId) {
+        webSocket.send(
+          JSON.stringify({
+            type: "action-result",
+            requestId,
+            version: update.version,
+          }),
+        );
+      }
     } catch (error) {
       webSocket.send(
-        JSON.stringify({ type: "error", error: errorMessage(error) }),
+        JSON.stringify({
+          type: "error",
+          error: errorMessage(error),
+          ...(requestId ? { requestId } : {}),
+        }),
       );
     }
   }
@@ -246,6 +276,7 @@ export class GameRoom extends DurableObject<Env> {
     const gameUrl = normalizeGameUrl(input.gameUrl);
 
     this.disposeRuntime();
+    this.liveRoomState = undefined;
     const meta = await this.meta();
     meta.gameUrl = gameUrl;
     meta.phase = "lobby";
@@ -263,7 +294,7 @@ export class GameRoom extends DurableObject<Env> {
     if (!isRecord(input) || typeof input.script !== "string") {
       throw new RoomHttpError(
         400,
-        "expected { runtime?: 'lua', script, minPlayers, maxPlayers }",
+        "expected { runtime?: 'lua', script, minPlayers, maxPlayers, liveRoom? }",
       );
     }
 
@@ -276,6 +307,7 @@ export class GameRoom extends DurableObject<Env> {
     const maxPlayers = validatePlayerLimit(input.maxPlayers, "maxPlayers");
     if (minPlayers > maxPlayers)
       throw new RoomHttpError(400, "minPlayers must not exceed maxPlayers");
+    const liveRoom = input.liveRoom === true;
 
     const scriptHash = await hash(input.script);
     const existing = await this.storedConfig();
@@ -283,7 +315,8 @@ export class GameRoom extends DurableObject<Env> {
       if (
         existing.scriptHash !== scriptHash ||
         existing.minPlayers !== minPlayers ||
-        existing.maxPlayers !== maxPlayers
+        existing.maxPlayers !== maxPlayers ||
+        existing.liveRoom !== liveRoom
       ) {
         throw new RoomHttpError(
           409,
@@ -305,6 +338,7 @@ export class GameRoom extends DurableObject<Env> {
         minPlayers,
         maxPlayers,
         randomSeed: secureRandomSeed(),
+        liveRoom,
       };
       await this.saveMeta(meta);
       await this.touch();
@@ -422,9 +456,8 @@ export class GameRoom extends DurableObject<Env> {
     delete members[target[0]];
     await this.saveMembers(members);
     await this.touch();
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment =
-        socket.deserializeAttachment() as SocketAttachment | null;
+    for (const socket of this.sockets()) {
+      const attachment = this.socketAttachment(socket);
       if (attachment?.playerId !== target[0]) continue;
       try {
         socket.send(
@@ -490,6 +523,7 @@ export class GameRoom extends DurableObject<Env> {
       error: "The room was dissolved by the host",
     });
     this.closeRoomSockets(4004, "room dissolved");
+    this.liveRoomState = undefined;
     await this.ctx.storage.deleteAll();
     return { dissolved: true };
   }
@@ -529,7 +563,7 @@ export class GameRoom extends DurableObject<Env> {
     meta.phase = "lobby";
     meta.members = members;
     await this.saveMeta(meta);
-    await this.ctx.storage.delete(["gameState", "state", "version"]);
+    await this.clearRoomState(config);
     await this.touch();
     const lobby = await this.lobby();
     this.broadcast(lobby);
@@ -668,7 +702,7 @@ export class GameRoom extends DurableObject<Env> {
     playerId: string;
     actorId: string;
     action: unknown;
-  }): Promise<object> {
+  }): Promise<RoomSnapshot> {
     if (!input.actorId || input.actorId.length > MAX_PLAYER_ID_LENGTH) {
       throw new RoomHttpError(
         400,
@@ -694,7 +728,7 @@ export class GameRoom extends DurableObject<Env> {
     await this.saveRoomState({ state: result.state, version });
     await this.touch();
 
-    const update = {
+    const update: RoomSnapshot = {
       type: "state",
       state: result.state,
       events: result.events,
@@ -726,8 +760,9 @@ export class GameRoom extends DurableObject<Env> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       throw new RoomHttpError(426, "expected WebSocket upgrade");
     }
-    const attachment = await this.enqueue(async () => {
+    const { attachment, liveRoom } = await this.enqueue(async () => {
       await this.launch();
+      const config = await this.config();
       const playerId = this.playerId(request);
       const now = Date.now();
       const attachment = {
@@ -738,14 +773,48 @@ export class GameRoom extends DurableObject<Env> {
       } satisfies SocketAttachment;
       if (attachment.isOwner)
         await this.ctx.storage.setAlarm(now + HOST_OFFLINE_TIMEOUT_MS);
-      return attachment;
+      return { attachment, liveRoom: config.liveRoom };
     });
 
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
+    if (liveRoom) {
+      this.acceptLiveWebSocket(server, attachment);
+    } else {
+      this.acceptHibernatingWebSocket(server, attachment);
+    }
+    this.sendInitialSocketMessage(server);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private acceptLiveWebSocket(
+    server: WebSocket,
+    attachment: SocketAttachment,
+  ): void {
+    server.accept();
+    this.liveSockets.add(server);
+    this.liveSocketAttachments.set(server, attachment);
+    server.addEventListener("message", (event) => {
+      void this.handleWebSocketMessage(server, event.data);
+    });
+    const cleanup = () => {
+      this.liveSockets.delete(server);
+      this.liveSocketAttachments.delete(server);
+    };
+    server.addEventListener("close", cleanup);
+    server.addEventListener("error", cleanup);
+  }
+
+  private acceptHibernatingWebSocket(
+    server: WebSocket,
+    attachment: SocketAttachment,
+  ): void {
     server.serializeAttachment(attachment);
     this.ctx.acceptWebSocket(server);
+  }
+
+  private sendInitialSocketMessage(server: WebSocket): void {
     this.ctx.waitUntil(
       this.enqueue(async () => {
         try {
@@ -763,7 +832,6 @@ export class GameRoom extends DurableObject<Env> {
         }
       }),
     );
-    return new Response(null, { status: 101, webSocket: client });
   }
 
   private async config(): Promise<RoomConfig> {
@@ -782,6 +850,11 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private async roomState(): Promise<RoomState> {
+    const config = await this.config();
+    if (config.liveRoom) {
+      if (this.liveRoomState !== undefined) return this.liveRoomState;
+      throw new RoomHttpError(409, "room has no live state; start it first");
+    }
     const stored = await this.ctx.storage.get<RoomState>("gameState");
     if (stored !== undefined) return stored;
     const [state, version] = await Promise.all([
@@ -801,7 +874,21 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private async saveRoomState(room: RoomState): Promise<void> {
+    const config = await this.config();
+    if (config.liveRoom) {
+      this.liveRoomState = room;
+      return;
+    }
     await this.ctx.storage.put("gameState", room);
+  }
+
+  private async clearRoomState(config?: RoomConfig): Promise<void> {
+    const roomConfig = config ?? (await this.config());
+    if (roomConfig.liveRoom) {
+      this.liveRoomState = undefined;
+      return;
+    }
+    await this.ctx.storage.delete(["gameState", "state", "version"]);
   }
 
   private async meta(): Promise<RoomMeta> {
@@ -821,14 +908,22 @@ export class GameRoom extends DurableObject<Env> {
     if (phase !== "lobby" && phase !== "playing")
       throw new RoomHttpError(500, "room has invalid phase");
 
-    const [runtime, script, scriptHash, minPlayers, maxPlayers, randomSeed] =
-      await Promise.all([
+    const [
+      runtime,
+      script,
+      scriptHash,
+      minPlayers,
+      maxPlayers,
+      randomSeed,
+      liveRoom,
+    ] = await Promise.all([
         this.ctx.storage.get<string>("runtime"),
         this.ctx.storage.get<string>("script"),
         this.ctx.storage.get<string>("scriptHash"),
         this.ctx.storage.get<number>("minPlayers"),
         this.ctx.storage.get<number>("maxPlayers"),
         this.ctx.storage.get<number>("randomSeed"),
+        this.ctx.storage.get<boolean>("liveRoom"),
       ]);
     const config = configFromStoredValues({
       runtime,
@@ -837,6 +932,7 @@ export class GameRoom extends DurableObject<Env> {
       minPlayers,
       maxPlayers,
       randomSeed,
+      liveRoom,
     });
     const meta: RoomMeta = {
       gameUrl,
@@ -859,6 +955,7 @@ export class GameRoom extends DurableObject<Env> {
       "minPlayers",
       "maxPlayers",
       "randomSeed",
+      "liveRoom",
     ]);
     return meta;
   }
@@ -918,7 +1015,7 @@ export class GameRoom extends DurableObject<Env> {
     attachment: SocketAttachment,
   ): Promise<void> {
     const now = Date.now();
-    webSocket.serializeAttachment({ ...attachment, lastSeenAt: now });
+    this.saveSocketAttachment(webSocket, { ...attachment, lastSeenAt: now });
     if (attachment.isOwner)
       await this.ctx.storage.setAlarm(now + HOST_OFFLINE_TIMEOUT_MS);
   }
@@ -970,9 +1067,8 @@ export class GameRoom extends DurableObject<Env> {
 
   private socketLastSeenByPlayer(): Map<string, number> {
     const latest = new Map<string, number>();
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment =
-        socket.deserializeAttachment() as SocketAttachment | null;
+    for (const socket of this.sockets()) {
+      const attachment = this.socketAttachment(socket);
       if (!attachment) continue;
       latest.set(
         attachment.playerId,
@@ -983,11 +1079,10 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private updateSocketOwnership(ownerPlayerId: string): void {
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment =
-        socket.deserializeAttachment() as SocketAttachment | null;
+    for (const socket of this.sockets()) {
+      const attachment = this.socketAttachment(socket);
       if (!attachment) continue;
-      socket.serializeAttachment({
+      this.saveSocketAttachment(socket, {
         ...attachment,
         isOwner: attachment.playerId === ownerPlayerId,
       });
@@ -996,7 +1091,7 @@ export class GameRoom extends DurableObject<Env> {
 
   private broadcast(message: object): void {
     const serialized = JSON.stringify(message);
-    for (const socket of this.ctx.getWebSockets()) {
+    for (const socket of this.sockets()) {
       try {
         socket.send(serialized);
       } catch {
@@ -1006,9 +1101,8 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private closePlayerSockets(playerId: string): void {
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment =
-        socket.deserializeAttachment() as SocketAttachment | null;
+    for (const socket of this.sockets()) {
+      const attachment = this.socketAttachment(socket);
       if (attachment?.playerId !== playerId) continue;
       try {
         socket.close(4001, "left room");
@@ -1019,13 +1113,35 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private closeRoomSockets(code: number, reason: string): void {
-    for (const socket of this.ctx.getWebSockets()) {
+    for (const socket of this.sockets()) {
       try {
         socket.close(code, reason);
       } catch {
         // A peer may already be disconnected.
       }
     }
+  }
+
+  private sockets(): WebSocket[] {
+    return [...this.ctx.getWebSockets(), ...this.liveSockets];
+  }
+
+  private socketAttachment(socket: WebSocket): SocketAttachment | null {
+    return (
+      this.liveSocketAttachments.get(socket) ??
+      (socket.deserializeAttachment() as SocketAttachment | null)
+    );
+  }
+
+  private saveSocketAttachment(
+    socket: WebSocket,
+    attachment: SocketAttachment,
+  ): void {
+    if (this.liveSocketAttachments.has(socket)) {
+      this.liveSocketAttachments.set(socket, attachment);
+      return;
+    }
+    socket.serializeAttachment(attachment);
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -1137,9 +1253,17 @@ function configFromStoredValues(values: {
   minPlayers: number | undefined;
   maxPlayers: number | undefined;
   randomSeed: number | undefined;
+  liveRoom: boolean | undefined;
 }): RoomConfig | undefined {
-  const { runtime, script, scriptHash, minPlayers, maxPlayers, randomSeed } =
-    values;
+  const {
+    runtime,
+    script,
+    scriptHash,
+    minPlayers,
+    maxPlayers,
+    randomSeed,
+    liveRoom,
+  } = values;
   if (
     runtime === undefined &&
     script === undefined &&
@@ -1172,6 +1296,7 @@ function configFromStoredValues(values: {
     minPlayers,
     maxPlayers,
     randomSeed: randomSeed ?? secureRandomSeed(),
+    liveRoom: liveRoom === true,
   };
 }
 

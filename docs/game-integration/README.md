@@ -75,6 +75,8 @@ window.addEventListener("message", (event) => {
       name: "My Game",
       icon: "/icon.svg",
       helpUrl: "/help.html",
+      modes: ["solo", "room"],
+      liveRoom: false,
     },
   });
 
@@ -87,6 +89,7 @@ window.addEventListener("message", (event) => {
       script: gameLuaSource,
       minPlayers: 2,
       maxPlayers: 4,
+      liveRoom: false,
     },
   });
 });
@@ -94,11 +97,18 @@ window.addEventListener("message", (event) => {
 
 `descriptor` is optional. `name` must contain 1–100 characters. `icon` and
 `helpUrl` must be relative URLs or absolute URLs hosted on the game's own origin.
+`modes` may include `"solo"` and/or `"room"`; omitted modes default to room
+play. `liveRoom: true` declares that room play needs a non-hibernating,
+always-live room connection. Live room state is kept in Durable Object memory
+instead of being persisted after every action, so it is best for games that
+need lower latency while players are actively connected. The game-facing
+message protocol stays the same; the platform routes actions over the live
+connection internally.
 
 `initialize` is required. `minPlayers` and `maxPlayers` must be integers from
 1 to 32, with `minPlayers <= maxPlayers`. The room atomically fixes the Lua
-source, runtime, and player limits. Repeating the exact same configuration is
-safe; submitting a different configuration fails.
+source, runtime, player limits, and `liveRoom` setting. Repeating the exact
+same configuration is safe; submitting a different configuration fails.
 
 ## 3. Receive platform messages
 
@@ -108,7 +118,7 @@ The platform sends one of the following messages through the port.
 | --- | --- |
 | `{ type: "ready", phase, playerId }` | Registration and lobby join succeeded. `playerId` is this browser's opaque, room-scoped ID. |
 | `{ type: "state", phase: "playing", state, events, version }` | Authoritative game update. `version` only increases; duplicates for the same version are not sent. |
-| `{ type: "action-result", requestId, version }` | The action with `requestId` was accepted and persisted at `version`. The accompanying `state` message remains the rendering source of truth. |
+| `{ type: "action-result", requestId, version }` | The action with `requestId` was accepted at `version`. The accompanying `state` message remains the rendering source of truth. |
 | `{ type: "error", code, error, requestId? }` | A protocol or room operation failed. Action errors include their originating `requestId`; platform errors do not. `code` is stable enough for UI branching and `error` is human-readable. |
 
 ```js

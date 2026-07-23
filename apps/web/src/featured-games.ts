@@ -1,3 +1,5 @@
+import type { GameMode } from "./RoomHost";
+
 /**
  * Curated games shown on the home page. Add static entries here as games are
  * approved for discovery; this is intentionally not room or user data.
@@ -8,6 +10,8 @@ export interface FeaturedGame {
   icon?: string;
   description: string;
   category: string;
+  modes?: GameMode[];
+  liveRoom?: boolean;
 }
 
 export const FEATURED_GAMES: FeaturedGame[] = [
@@ -17,5 +21,6 @@ export const FEATURED_GAMES: FeaturedGame[] = [
     icon: "https://playweft-rps-demo.pages.dev/rps.svg",
     description: "A quick two-player round.",
     category: "Quick match",
+    modes: ["room"],
   },
 ];

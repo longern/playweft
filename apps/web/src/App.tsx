@@ -7,8 +7,9 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createGuestSession, createRoom } from "./platform-api";
-import RoomHost, { type RecentGame } from "./RoomHost";
+import RoomHost, { type GameMode, type RecentGame } from "./RoomHost";
 import { FEATURED_GAMES, type FeaturedGame } from "./featured-games";
+import Dialog from "./Dialog";
 import ErrorToast from "./ErrorToast";
 import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
@@ -20,6 +21,8 @@ const MAX_RECENT_GAMES = 8;
 const MAX_FAVORITE_GAMES = 8;
 const DEFAULT_ROOM_ID_FORMAT = "code:4";
 const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+const GAME_PROBE_TIMEOUT_MS = 8_000;
+const GAME_PROBE_METADATA_TIMEOUT_MS = 2_000;
 type ShelfGame = RecentGame | FeaturedGame;
 type GameShelfKind = "favorite" | "recent" | "recommended";
 type StoredRecentGame = RecentGame & { pinned?: boolean };
@@ -31,6 +34,7 @@ export default function App() {
   const [path, setPath] = useState(window.location.pathname);
   const [entryStatus, setEntryStatus] = useState<string>();
   const [settledRoomId, setSettledRoomId] = useState<string>();
+  const [soloGame, setSoloGame] = useState<RecentGame>();
   const entryGeneration = useRef(0);
 
   useEffect(() => {
@@ -58,6 +62,7 @@ export default function App() {
   const cancelEntry = useCallback(() => {
     entryGeneration.current += 1;
     setEntryStatus(undefined);
+    setSoloGame(undefined);
     navigate("/");
   }, [navigate]);
 
@@ -72,6 +77,12 @@ export default function App() {
   const overlayStatus =
     entryStatus ??
     (roomId && settledRoomId !== roomId ? "Loading game" : undefined);
+
+  if (soloGame) {
+    return (
+      <SoloHost game={soloGame} onBack={() => setSoloGame(undefined)} />
+    );
+  }
 
   if (roomId) {
     return (
@@ -97,6 +108,7 @@ export default function App() {
         onNavigate={navigate}
         onBeginEntry={beginEntry}
         onEntryStatus={setEntryStatus}
+        onPlaySolo={setSoloGame}
       />
       {overlayStatus && (
         <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />
@@ -109,9 +121,15 @@ interface HomeProps {
   onNavigate(path: string): void;
   onBeginEntry(): () => boolean;
   onEntryStatus(status: string | undefined): void;
+  onPlaySolo(game: RecentGame): void;
 }
 
-function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
+function Home({
+  onNavigate,
+  onBeginEntry,
+  onEntryStatus,
+  onPlaySolo,
+}: HomeProps) {
   const [gameUrl, setGameUrl] = useState("");
   const [recentGames, setRecentGames] = useState(readRecentGames);
   const [favoriteGames, setFavoriteGames] = useState(readFavoriteGames);
@@ -122,33 +140,111 @@ function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
     position: MenuPosition;
   }>();
   const [gameInfo, setGameInfo] = useState<ShelfGame>();
+  const [launchChoice, setLaunchChoice] = useState<ShelfGame>();
+  const [launchChoiceRoomCode, setLaunchChoiceRoomCode] = useState("");
+  const [unsupportedGame, setUnsupportedGame] = useState<{
+    url: string;
+    error: string;
+  }>();
   const favoriteUrls = useMemo(
     () => new Set(favoriteGames.map((game) => game.url)),
     [favoriteGames],
   );
   const roomIdInput = roomIdFromInput(gameUrl);
 
-  const create = async (url = gameUrl) => {
-    const trimmed = url.trim();
-    const roomId = roomIdFromInput(trimmed);
+  const rememberGame = (game: RecentGame) => {
+    saveRecentGame(game);
+    setRecentGames(readRecentGames());
+    setFavoriteGames(readFavoriteGames());
+  };
+
+  const playSolo = (game: RecentGame) => {
+    rememberGame(game);
+    onEntryStatus(undefined);
+    onPlaySolo(game);
+  };
+
+  const joinRoomById = async (roomId: string) => {
     const cancelled = onBeginEntry();
     setError(undefined);
+    setUnsupportedGame(undefined);
     try {
       await createGuestSession();
       if (cancelled()) return;
-      if (roomId) {
-        onEntryStatus("Loading game");
-        onNavigate(`/r/${roomId}`);
-        return;
-      }
-      const room = await createRoom(trimmed);
+      onEntryStatus("Loading game");
+      onNavigate(`/r/${roomId}`);
+    } catch (reason) {
       if (cancelled()) return;
+      onEntryStatus(undefined);
+      setError(message(reason));
+    }
+  };
+
+  const createRoomForGame = async (game: RecentGame) => {
+    const cancelled = onBeginEntry();
+    setError(undefined);
+    setUnsupportedGame(undefined);
+    try {
+      await createGuestSession();
+      if (cancelled()) return;
+      const room = await createRoom(game.url);
+      if (cancelled()) return;
+      rememberGame(game);
       onEntryStatus("Loading game");
       onNavigate(`/r/${room.roomId}`);
     } catch (reason) {
       if (cancelled()) return;
       onEntryStatus(undefined);
       setError(message(reason));
+    }
+  };
+
+  const launchGame = (game: ShelfGame, mode?: GameMode) => {
+    const recentGame = toRecentGame(game);
+    const modes = supportedModes(recentGame);
+    if (mode === "solo") {
+      playSolo(recentGame);
+      return;
+    }
+    if (mode === "room") {
+      void createRoomForGame(recentGame);
+      return;
+    }
+    if (modes.includes("solo") && modes.includes("room")) {
+      setLaunchChoice(recentGame);
+      setLaunchChoiceRoomCode("");
+      return;
+    }
+    if (modes.includes("solo")) {
+      playSolo(recentGame);
+      return;
+    }
+    void createRoomForGame(recentGame);
+  };
+
+  const launchInput = async (url = gameUrl) => {
+    const trimmed = url.trim();
+    const roomId = roomIdFromInput(trimmed);
+    if (roomId) {
+      void joinRoomById(roomId);
+      return;
+    }
+    const cancelled = onBeginEntry();
+    setError(undefined);
+    setUnsupportedGame(undefined);
+    try {
+      const game = await probeGame(trimmed, (status) => onEntryStatus(status));
+      if (cancelled()) return;
+      onEntryStatus(undefined);
+      launchGame(game);
+    } catch (reason) {
+      if (cancelled()) return;
+      onEntryStatus(undefined);
+      if (reason instanceof UnsupportedGameUrlError) {
+        setUnsupportedGame({ url: reason.url, error: reason.message });
+      } else {
+        setError(message(reason));
+      }
     }
   };
 
@@ -212,7 +308,7 @@ function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
             className="launch-form"
             onSubmit={(event) => {
               event.preventDefault();
-              void create();
+              void launchInput();
             }}
           >
             <label className="sr-only" htmlFor="game-url">
@@ -246,7 +342,7 @@ function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
             title="Favorites"
             kind="favorite"
             games={favoriteGames}
-            onSelect={(url) => void create(url)}
+            onSelect={launchGame}
             onContextMenu={openGameMenu}
           />
         )}
@@ -255,7 +351,7 @@ function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
             title="Recently played"
             kind="recent"
             games={recentGames}
-            onSelect={(url) => void create(url)}
+            onSelect={launchGame}
             onContextMenu={openGameMenu}
           />
         )}
@@ -263,7 +359,7 @@ function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
           title="Recommended"
           kind="recommended"
           games={FEATURED_GAMES}
-          onSelect={(url) => void create(url)}
+          onSelect={launchGame}
           onContextMenu={openGameMenu}
         />
       </main>
@@ -289,6 +385,87 @@ function Home({ onNavigate, onBeginEntry, onEntryStatus }: HomeProps) {
           name={gameInfo.name}
           url={gameInfo.url}
           onClose={() => setGameInfo(undefined)}
+        />
+      )}
+      {launchChoice && (
+        <LaunchChoiceDialog
+          game={launchChoice}
+          roomCode={launchChoiceRoomCode}
+          onRoomCodeChange={setLaunchChoiceRoomCode}
+          onClose={() => setLaunchChoice(undefined)}
+          onPlaySolo={() => {
+            setLaunchChoice(undefined);
+            launchGame(launchChoice, "solo");
+          }}
+          onCreateRoom={() => {
+            setLaunchChoice(undefined);
+            launchGame(launchChoice, "room");
+          }}
+          onJoinRoom={(roomId) => {
+            setLaunchChoice(undefined);
+            void joinRoomById(roomId);
+          }}
+        />
+      )}
+      {unsupportedGame && (
+        <UnsupportedGameDialog
+          error={unsupportedGame.error}
+          url={unsupportedGame.url}
+          onClose={() => setUnsupportedGame(undefined)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SoloHost({
+  game,
+  onBack,
+}: {
+  game: RecentGame;
+  onBack(): void;
+}) {
+  const [gameInfoOpen, setGameInfoOpen] = useState(false);
+
+  useEffect(() => {
+    document.title = `${game.name} | Playweft`;
+    return () => {
+      document.title = "Playweft";
+    };
+  }, [game.name]);
+
+  return (
+    <div className="room-shell room-playing solo-host">
+      <iframe
+        className="game-frame"
+        title={game.name}
+        src={game.url}
+        sandbox="allow-scripts allow-same-origin"
+      />
+      <button
+        className="game-options"
+        type="button"
+        aria-label="Game information"
+        aria-expanded={gameInfoOpen}
+        onClick={() => setGameInfoOpen(true)}
+      >
+        <i />
+        <i />
+        <i />
+      </button>
+      {gameInfoOpen && (
+        <GameInfoPanel
+          actions={[
+            {
+              label: "Back home",
+              variant: "primary",
+              onSelect: onBack,
+            },
+          ]}
+          icon={game.icon}
+          name={game.name}
+          url={game.url}
+          onClose={() => setGameInfoOpen(false)}
         />
       )}
     </div>
@@ -319,7 +496,7 @@ interface GameShelfProps {
   title: string;
   kind: GameShelfKind;
   games: ShelfGame[];
-  onSelect(url: string): void;
+  onSelect(game: ShelfGame): void;
   onContextMenu(
     game: ShelfGame,
     kind: GameShelfKind,
@@ -349,7 +526,7 @@ function GameShelf({
           <button
             className="shelf-game"
             key={game.url}
-            onClick={() => onSelect(game.url)}
+            onClick={() => onSelect(game)}
             onContextMenu={(event) => onContextMenu(game, kind, event)}
           >
             <span className="shelf-art">
@@ -364,6 +541,100 @@ function GameShelf({
         ))}
       </div>
     </section>
+  );
+}
+
+function LaunchChoiceDialog({
+  game,
+  roomCode,
+  onRoomCodeChange,
+  onClose,
+  onPlaySolo,
+  onCreateRoom,
+  onJoinRoom,
+}: {
+  game: ShelfGame;
+  roomCode: string;
+  onRoomCodeChange(value: string): void;
+  onClose(): void;
+  onPlaySolo(): void;
+  onCreateRoom(): void;
+  onJoinRoom(roomId: string): void;
+}) {
+  const roomId = roomIdFromInput(roomCode);
+
+  return (
+    <Dialog title="Play game" onDismiss={onClose}>
+      <div className="launch-choice">
+        <div className="launch-choice-game">
+          <span className="shelf-art">
+            {game.icon ? (
+              <img src={game.icon} alt="" referrerPolicy="no-referrer" />
+            ) : (
+              <span>{game.name.slice(0, 2).toUpperCase()}</span>
+            )}
+          </span>
+          <strong>{game.name}</strong>
+        </div>
+        <div className="launch-choice-actions">
+          <button type="button" onClick={onPlaySolo}>
+            Play solo
+          </button>
+          <button type="button" onClick={onCreateRoom}>
+            Create room
+          </button>
+        </div>
+        <form
+          className="launch-choice-join"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (roomId) onJoinRoom(roomId);
+          }}
+        >
+          <input
+            type="text"
+            placeholder="Enter room code"
+            value={roomCode}
+            onChange={(event) => onRoomCodeChange(event.target.value)}
+          />
+          <button type="submit" disabled={!roomId}>
+            Join room
+          </button>
+        </form>
+      </div>
+    </Dialog>
+  );
+}
+
+function UnsupportedGameDialog({
+  error,
+  url,
+  onClose,
+}: {
+  error: string;
+  url: string;
+  onClose(): void;
+}) {
+  return (
+    <Dialog
+      title="Game not supported"
+      onDismiss={onClose}
+      actions={[
+        { label: "Back" },
+        {
+          label: "Open site",
+          variant: "primary",
+          onSelect: () => {
+            window.location.href = url;
+          },
+        },
+      ]}
+    >
+      <div className="unsupported-game">
+        <p>{error}</p>
+        <span>{url}</span>
+      </div>
+    </Dialog>
   );
 }
 
@@ -443,6 +714,8 @@ function isStoredRecentGame(value: unknown): value is StoredRecentGame {
     typeof item.name === "string" &&
     (item.icon === undefined || typeof item.icon === "string") &&
     (item.helpUrl === undefined || typeof item.helpUrl === "string") &&
+    (item.modes === undefined || isGameModes(item.modes)) &&
+    (item.liveRoom === undefined || typeof item.liveRoom === "boolean") &&
     (item.pinned === undefined || typeof item.pinned === "boolean")
   );
 }
@@ -453,7 +726,208 @@ function toRecentGame(game: ShelfGame): RecentGame {
     name: game.name,
     ...(game.icon ? { icon: game.icon } : {}),
     ...("helpUrl" in game && game.helpUrl ? { helpUrl: game.helpUrl } : {}),
+    ...(game.modes ? { modes: supportedModes(game) } : {}),
+    ...(game.liveRoom ? { liveRoom: true } : {}),
   };
+}
+
+function supportedModes(game: ShelfGame): GameMode[] {
+  return game.modes && game.modes.length > 0 ? game.modes : ["room"];
+}
+
+function isGameModes(value: unknown): value is GameMode[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((item) => item === "solo" || item === "room")
+  );
+}
+
+class UnsupportedGameUrlError extends Error {
+  constructor(
+    readonly url: string,
+    message = "This URL does not expose the Playweft game bridge.",
+  ) {
+    super(message);
+  }
+}
+
+function probeGame(
+  value: string,
+  onStatus: (status: string) => void,
+): Promise<RecentGame> {
+  const gameUrl = normalizeGameUrl(value);
+  const gameOrigin = new URL(gameUrl).origin;
+  onStatus("Checking game");
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let bridgeReady = false;
+    let descriptorGame: RecentGame | undefined;
+    let metadataTimer: number | undefined;
+    let port: MessagePort | undefined;
+    const iframe = document.createElement("iframe");
+    iframe.src = gameUrl;
+    iframe.title = "Game compatibility check";
+    iframe.tabIndex = -1;
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.className = "game-probe-frame";
+
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      window.clearTimeout(metadataTimer);
+      window.removeEventListener("message", onMessage);
+      port?.close();
+      iframe.remove();
+    };
+    const finish = (game: RecentGame) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(game);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const fallbackGame = (): RecentGame => ({
+      url: gameUrl,
+      name: gameNameFromUrl(gameUrl),
+      modes: ["room"],
+    });
+    const timeout = window.setTimeout(() => {
+      fail(
+        new UnsupportedGameUrlError(
+          gameUrl,
+          bridgeReady
+            ? "This game did not describe how Playweft should launch it."
+            : "This URL does not expose the Playweft game bridge.",
+        ),
+      );
+    }, GAME_PROBE_TIMEOUT_MS);
+    const onPortMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (data?.type === "descriptor") {
+        const game = gameDescriptor(data.descriptor, gameOrigin, gameUrl);
+        if (!game) return;
+        descriptorGame = game;
+        const modes = supportedModes(game);
+        if (modes.includes("solo")) finish(game);
+        return;
+      }
+      if (data?.type === "initialize") {
+        const liveRoom =
+          data.initialization !== null &&
+          typeof data.initialization === "object" &&
+          !Array.isArray(data.initialization) &&
+          (data.initialization as Record<string, unknown>).liveRoom === true;
+        const game = descriptorGame ?? fallbackGame();
+        finish({
+          ...game,
+          modes: supportedModes(game).includes("room")
+            ? supportedModes(game)
+            : [...supportedModes(game), "room"],
+          ...(liveRoom ? { liveRoom: true } : {}),
+        });
+      }
+    };
+    const onMessage = (event: MessageEvent) => {
+      if (settled) return;
+      if (event.origin !== gameOrigin) return;
+      if (event.source !== iframe.contentWindow) return;
+      if (
+        event.data?.type !== "playweft:bridge-ready" ||
+        event.data?.version !== 1
+      )
+        return;
+      bridgeReady = true;
+      const channel = new MessageChannel();
+      port = channel.port1;
+      channel.port1.onmessage = onPortMessage;
+      channel.port1.start();
+      iframe.contentWindow?.postMessage(
+        { type: "playweft:bridge", version: 1 },
+        gameOrigin,
+        [channel.port2],
+      );
+      metadataTimer = window.setTimeout(() => {
+        if (descriptorGame) {
+          finish(descriptorGame);
+          return;
+        }
+        fail(
+          new UnsupportedGameUrlError(
+            gameUrl,
+            "This game opened the Playweft bridge but did not describe how to launch.",
+          ),
+        );
+      }, GAME_PROBE_METADATA_TIMEOUT_MS);
+    };
+
+    window.addEventListener("message", onMessage);
+    document.body.append(iframe);
+  });
+}
+
+function normalizeGameUrl(value: string): string {
+  try {
+    return new URL(value).toString();
+  } catch {
+    throw new Error("Enter a full game URL, including https://.");
+  }
+}
+
+function gameDescriptor(
+  value: unknown,
+  gameOrigin: string,
+  gameUrl: string,
+): RecentGame | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const input = value as Record<string, unknown>;
+  if (
+    typeof input.name !== "string" ||
+    input.name.length === 0 ||
+    input.name.length > 100
+  )
+    return undefined;
+  let icon: string | undefined;
+  let helpUrl: string | undefined;
+  if (typeof input.icon === "string") {
+    try {
+      const resolved = new URL(input.icon, gameUrl);
+      if (resolved.origin === gameOrigin) icon = resolved.toString();
+    } catch {
+      // Optional metadata.
+    }
+  }
+  if (typeof input.helpUrl === "string") {
+    try {
+      const resolved = new URL(input.helpUrl, gameUrl);
+      if (resolved.origin === gameOrigin) helpUrl = resolved.toString();
+    } catch {
+      // Optional metadata.
+    }
+  }
+  const modes = isGameModes(input.modes)
+    ? [...new Set(input.modes)]
+    : undefined;
+  const liveRoom = input.liveRoom === true;
+  return {
+    url: gameUrl,
+    name: input.name,
+    ...(icon ? { icon } : {}),
+    ...(helpUrl ? { helpUrl } : {}),
+    ...(modes ? { modes } : {}),
+    ...(liveRoom ? { liveRoom } : {}),
+  };
+}
+
+function gameNameFromUrl(value: string): string {
+  const url = new URL(value);
+  const segment = url.pathname.split("/").filter(Boolean).at(-1);
+  return segment ? decodeURIComponent(segment) : url.hostname;
 }
 
 function roomIdFromInput(value: string): string | undefined {

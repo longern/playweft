@@ -28,13 +28,18 @@ import Menu from "./Menu";
 import ChangeGameDialog from "./ChangeGameDialog";
 
 const MAX_RECONNECT_ATTEMPTS = 5;
+const ROOM_HANDSHAKE_TIMEOUT_MS = 10_000;
 
 export interface RecentGame {
   url: string;
   name: string;
   icon?: string;
   helpUrl?: string;
+  modes?: GameMode[];
+  liveRoom?: boolean;
 }
+
+export type GameMode = "solo" | "room";
 
 interface RoomHostProps {
   roomId: string;
@@ -136,6 +141,8 @@ export default function RoomHost({
     let closed = false;
     let roomInitializing = false;
     let joined = false;
+    let liveRoom = false;
+    let bridgeConnected = false;
     let metadataReady = false;
     let membershipReady = false;
     let entryComplete = false;
@@ -167,6 +174,16 @@ export default function RoomHost({
       bridgePort.current?.postMessage({ type: "error", code, error });
     };
 
+    const handshakeTimeout = window.setTimeout(() => {
+      if (closed || joined) return;
+      const error = bridgeConnected
+        ? "This game did not send Playweft room initialization."
+        : "This URL does not expose the Playweft game bridge.";
+      setError(error);
+      onEntryFailed();
+      reportBridgeError("GAME_BRIDGE_TIMEOUT", error);
+    }, ROOM_HANDSHAKE_TIMEOUT_MS);
+
     const suppressNextConnectionError = () => {
       suppressConnectionError = true;
       window.clearTimeout(connectionErrorSuppressTimer);
@@ -194,16 +211,30 @@ export default function RoomHost({
         const payload = JSON.parse(event.data as string) as
           | RoomSnapshot
           | RoomLobby
+          | { type: "action-result"; requestId: string; version: number }
           | { type: "game_changed"; gameUrl: string }
           | { type: "room_dissolved"; error: string }
-          | { type: "error"; error: string };
+          | { type: "error"; error: string; requestId?: string };
         if (payload.type === "room_dissolved") {
           closed = true;
           socket?.close();
           onBack();
           return;
         }
+        if (payload.type === "action-result") {
+          bridgePort.current?.postMessage(payload);
+          return;
+        }
         if (payload.type === "error") {
+          if (payload.requestId) {
+            bridgePort.current?.postMessage({
+              type: "error",
+              code: "ACTION_REJECTED",
+              error: payload.error,
+              requestId: payload.requestId,
+            });
+            return;
+          }
           setError(payload.error);
           reportBridgeError("ROOM_ERROR", payload.error);
           return;
@@ -282,6 +313,7 @@ export default function RoomHost({
         return;
 
       bridgePort.current?.close();
+      bridgeConnected = true;
       const channel = new MessageChannel();
       bridgePort.current = channel.port1;
       channel.port1.onmessage = async (bridgeEvent) => {
@@ -304,11 +336,14 @@ export default function RoomHost({
           try {
             onEntryStatus("Joining room");
             setError(undefined);
-            await initializeRoom(roomId, initialization(data.initialization));
+            const roomInitialization = initialization(data.initialization);
+            liveRoom = roomInitialization.liveRoom === true;
+            await initializeRoom(roomId, roomInitialization);
             const membership = await joinRoom(roomId);
             if (closed) return;
             applyMembership(membership, setLobby, setSelfId);
             joined = true;
+            window.clearTimeout(handshakeTimeout);
             membershipReady = true;
             channel.port1.postMessage({
               type: "ready",
@@ -318,6 +353,7 @@ export default function RoomHost({
             connect();
             finishEntryIfReady();
           } catch (reason) {
+            window.clearTimeout(handshakeTimeout);
             setError(message(reason));
             onEntryFailed();
             channel.port1.postMessage({
@@ -348,6 +384,19 @@ export default function RoomHost({
           return;
         }
         try {
+          if (liveRoom) {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+              throw new Error("Live connection is not ready");
+            }
+            socket.send(
+              JSON.stringify({
+                type: "action",
+                requestId,
+                action: data.action,
+              }),
+            );
+            return;
+          }
           const snapshot = await sendAction(roomId, data.action);
           publish(snapshot);
           channel.port1.postMessage({
@@ -378,6 +427,7 @@ export default function RoomHost({
       closed = true;
       window.clearTimeout(reconnectTimer);
       window.clearTimeout(connectionErrorSuppressTimer);
+      window.clearTimeout(handshakeTimeout);
       window.clearInterval(heartbeatTimer);
       socket?.close();
       bridgePort.current?.close();
@@ -988,6 +1038,7 @@ function initialization(value: unknown): RoomInitialization {
     script: input.script,
     minPlayers: input.minPlayers,
     maxPlayers: input.maxPlayers,
+    liveRoom: input.liveRoom === true,
   };
 }
 
@@ -1022,6 +1073,8 @@ function descriptor(
     return undefined;
   let icon: string | undefined;
   let helpUrl: string | undefined;
+  const modes = gameModes(input.modes);
+  const liveRoom = input.liveRoom === true;
   if (typeof input.icon === "string") {
     try {
       const resolved = new URL(input.icon, gameUrl);
@@ -1038,9 +1091,25 @@ function descriptor(
       // Help metadata is optional.
     }
   }
-  return { url: gameUrl, name: input.name, icon, helpUrl };
+  return {
+    url: gameUrl,
+    name: input.name,
+    icon,
+    helpUrl,
+    ...(modes ? { modes } : {}),
+    ...(liveRoom ? { liveRoom } : {}),
+  };
 }
 
 function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : "Unexpected error";
+}
+
+function gameModes(value: unknown): GameMode[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const modes = value.filter(
+    (item): item is GameMode => item === "solo" || item === "room",
+  );
+  const uniqueModes = [...new Set(modes)];
+  return uniqueModes.length > 0 ? uniqueModes : undefined;
 }

@@ -24,8 +24,25 @@ window.addEventListener("message", (event) => {
   window.clearInterval(bridgeProbe);
   port.onmessage = onPlatformMessage;
   port.start();
-  port.postMessage({ type: "descriptor", descriptor: { name: "Rock Paper Scissors", icon: "/rps.svg" } });
-  port.postMessage({ type: "initialize", initialization: { runtime: "lua", script: gameScript, minPlayers: 2, maxPlayers: 2 } });
+  port.postMessage({
+    type: "descriptor",
+    descriptor: {
+      name: "Rock Paper Scissors",
+      icon: "/rps.svg",
+      modes: ["room"],
+      liveRoom: false,
+    },
+  });
+  port.postMessage({
+    type: "initialize",
+    initialization: {
+      runtime: "lua",
+      script: gameScript,
+      minPlayers: 2,
+      maxPlayers: 2,
+      liveRoom: false,
+    },
+  });
   status.textContent = "Waiting for the host to start the game…";
 });
 
