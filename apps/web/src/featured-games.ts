@@ -1,4 +1,5 @@
 import type { GameMode } from "./RoomHost";
+import type { GameTranslations } from "./i18n";
 
 /**
  * Curated games shown on the home page. Add static entries here as games are
@@ -6,6 +7,7 @@ import type { GameMode } from "./RoomHost";
  */
 export interface FeaturedGame {
   name: string;
+  translations?: GameTranslations;
   url: string;
   icon?: string;
   description: string;
@@ -17,6 +19,7 @@ export interface FeaturedGame {
 export const FEATURED_GAMES: FeaturedGame[] = [
   {
     name: "Rock Paper Scissors",
+    translations: { "zh-CN": { name: "石头剪刀布" } },
     url: "https://playweft-rps-demo.pages.dev/",
     icon: "https://playweft-rps-demo.pages.dev/rps.svg",
     description: "A quick two-player round.",

@@ -26,6 +26,7 @@ import GameInfoPanel, { type GameInfoAction } from "./GameInfoPanel";
 import InviteDialog from "./InviteDialog";
 import Menu from "./Menu";
 import ChangeGameDialog from "./ChangeGameDialog";
+import { isGameTranslations, localizeGameName, useI18n, type GameTranslations, type Translator } from "./i18n";
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const ROOM_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -33,6 +34,7 @@ const ROOM_HANDSHAKE_TIMEOUT_MS = 10_000;
 export interface RecentGame {
   url: string;
   name: string;
+  translations?: GameTranslations;
   icon?: string;
   helpUrl?: string;
   modes?: GameMode[];
@@ -58,12 +60,15 @@ export default function RoomHost({
   onEntryReady,
   onEntryFailed,
 }: RoomHostProps) {
+  const { locale, t } = useI18n();
+  const tRef = useRef(t);
+  tRef.current = t;
   const iframe = useRef<HTMLIFrameElement>(null);
   const bridgePort = useRef<MessagePort | undefined>(undefined);
   const phaseRef = useRef<"lobby" | "playing">("lobby");
   const [gameUrl, setGameUrl] = useState<string>();
   const [gameRevision, setGameRevision] = useState(0);
-  const [gameName, setGameName] = useState("Game room");
+  const [game, setGame] = useState<RecentGame>();
   const [gameIconHref, setGameIconHref] = useState<string>();
   const [lobby, setLobby] = useState<RoomLobby>();
   const [selfId, setSelfId] = useState<string>();
@@ -82,6 +87,7 @@ export default function RoomHost({
   const [gameHelpOpen, setGameHelpOpen] = useState(false);
   const [changeGameOpen, setChangeGameOpen] = useState(false);
   const [dissolveDialogOpen, setDissolveDialogOpen] = useState(false);
+  const gameName = game ? localizeGameName(game, locale) : t("gameRoom");
 
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
@@ -112,7 +118,7 @@ export default function RoomHost({
     let cancelled = false;
     void (async () => {
       try {
-        onEntryStatus("Loading game");
+        onEntryStatus(tRef.current("loadingGame"));
         setError(undefined);
         await createGuestSession();
         const launch = await getRoomLaunch(roomId);
@@ -120,7 +126,7 @@ export default function RoomHost({
         setGameUrl(launch.gameUrl);
       } catch (reason) {
         if (!cancelled) {
-          setError(message(reason));
+          setError(message(reason, tRef.current("unexpectedError")));
           onEntryFailed();
         }
       }
@@ -177,8 +183,8 @@ export default function RoomHost({
     const handshakeTimeout = window.setTimeout(() => {
       if (closed || joined) return;
       const error = bridgeConnected
-        ? "This game did not send Playweft room initialization."
-        : "This URL does not expose the Playweft game bridge.";
+        ? tRef.current("gameInitializationMissing")
+        : tRef.current("gameBridgeUnavailable");
       setError(error);
       onEntryFailed();
       reportBridgeError("GAME_BRIDGE_TIMEOUT", error);
@@ -244,6 +250,7 @@ export default function RoomHost({
         setError(undefined);
         if (payload.type === "game_changed") {
           setLobby(undefined);
+          setGame(undefined);
           setGameHelpHref(undefined);
           setGameHelpOpen(false);
           setGameUrl(payload.gameUrl);
@@ -263,11 +270,11 @@ export default function RoomHost({
           window.clearTimeout(connectionErrorSuppressTimer);
           return;
         }
-        setError("Live connection to the platform failed");
+        setError(tRef.current("liveConnectionFailed"));
         if (!entryComplete) onEntryFailed();
         reportBridgeError(
           "REALTIME_CONNECTION_FAILED",
-          "Live connection to the platform failed",
+          tRef.current("liveConnectionFailed"),
         );
       };
       nextSocket.onclose = (event) => {
@@ -280,7 +287,7 @@ export default function RoomHost({
         }
         if (receivedServerSignal) reconnectAttempts = 0;
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-          const error = "Live connection could not be restored";
+          const error = tRef.current("liveConnectionNotRestored");
           setError(error);
           reportBridgeError("REALTIME_CONNECTION_FAILED", error);
           return;
@@ -321,7 +328,7 @@ export default function RoomHost({
         if (data?.type === "descriptor") {
           const game = descriptor(data.descriptor, gameOrigin, gameUrl);
           if (!game) return;
-          setGameName(game.name);
+          setGame(game);
           setGameIconHref(game.icon);
           setGameHelpHref(game.helpUrl);
           onGameDiscovered(game);
@@ -334,9 +341,9 @@ export default function RoomHost({
           if (roomInitializing || joined) return;
           roomInitializing = true;
           try {
-            onEntryStatus("Joining room");
+            onEntryStatus(tRef.current("joiningRoom"));
             setError(undefined);
-            const roomInitialization = initialization(data.initialization);
+            const roomInitialization = initialization(data.initialization, tRef.current);
             liveRoom = roomInitialization.liveRoom === true;
             await initializeRoom(roomId, roomInitialization);
             const membership = await joinRoom(roomId);
@@ -354,12 +361,12 @@ export default function RoomHost({
             finishEntryIfReady();
           } catch (reason) {
             window.clearTimeout(handshakeTimeout);
-            setError(message(reason));
+            setError(message(reason, tRef.current("unexpectedError")));
             onEntryFailed();
             channel.port1.postMessage({
               type: "error",
               code: "INITIALIZATION_REJECTED",
-              error: message(reason),
+              error: message(reason, tRef.current("unexpectedError")),
             });
           }
           return;
@@ -370,7 +377,7 @@ export default function RoomHost({
           channel.port1.postMessage({
             type: "error",
             code: "INVALID_ACTION_REQUEST",
-            error: "An action requestId is required",
+            error: tRef.current("actionRequestIdRequired"),
           });
           return;
         }
@@ -378,7 +385,7 @@ export default function RoomHost({
           channel.port1.postMessage({
             type: "error",
             code: "GAME_NOT_STARTED",
-            error: "The game has not started",
+            error: tRef.current("gameNotStarted"),
             requestId,
           });
           return;
@@ -386,7 +393,7 @@ export default function RoomHost({
         try {
           if (liveRoom) {
             if (!socket || socket.readyState !== WebSocket.OPEN) {
-              throw new Error("Live connection is not ready");
+              throw new Error(tRef.current("liveConnectionNotReady"));
             }
             socket.send(
               JSON.stringify({
@@ -408,7 +415,7 @@ export default function RoomHost({
           channel.port1.postMessage({
             type: "error",
             code: "ACTION_REJECTED",
-            error: message(reason),
+            error: message(reason, tRef.current("unexpectedError")),
             requestId,
           });
         }
@@ -452,9 +459,7 @@ export default function RoomHost({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1_500);
     } catch {
-      setError(
-        "Could not copy automatically. Copy the invite link from the address bar.",
-      );
+      setError(t("inviteCopyFailed"));
     }
   };
 
@@ -468,7 +473,7 @@ export default function RoomHost({
         current ? { ...current, phase: "playing" } : current,
       );
     } catch (reason) {
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     } finally {
       setStarting(false);
     }
@@ -479,7 +484,7 @@ export default function RoomHost({
       const nextLobby = await kickPlayer(roomId, playerId);
       setLobby(nextLobby);
     } catch (reason) {
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -488,7 +493,7 @@ export default function RoomHost({
       setError(undefined);
       setLobby(await transferRoomHost(roomId, playerId));
     } catch (reason) {
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -498,7 +503,7 @@ export default function RoomHost({
       setLobby(await returnRoomToLobby(roomId));
       setGameInfoOpen(false);
     } catch (reason) {
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -508,7 +513,7 @@ export default function RoomHost({
       setChangeGameOpen(false);
       await changeRoomGame(roomId, url);
     } catch (reason) {
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -518,7 +523,7 @@ export default function RoomHost({
       await dissolveRoom(roomId);
       onBack();
     } catch (reason) {
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -527,7 +532,7 @@ export default function RoomHost({
       setError(undefined);
       setLobby(await setRoomSeat(roomId, seat));
     } catch (reason) {
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -537,7 +542,7 @@ export default function RoomHost({
       setError(undefined);
       setLobby(await setPlayerReady(roomId, !selfPlayer.ready));
     } catch (reason) {
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -569,7 +574,7 @@ export default function RoomHost({
   const gameInfoActions: GameInfoAction[] = isOwner
     ? [
         {
-          label: "Return to room",
+          label: t("returnToRoom"),
           variant: "primary",
           onSelect: () => void returnToRoom(),
         },
@@ -583,7 +588,7 @@ export default function RoomHost({
           <button
             className="brand room-brand"
             onClick={requestBack}
-            aria-label="Back to Playweft home"
+            aria-label={t("backToPlayweftHome")}
           >
             <span className="brand-mark">
               <i />
@@ -598,7 +603,7 @@ export default function RoomHost({
           <button
             className="lobby-options lobby-options-mobile"
             type="button"
-            aria-label="Room options"
+            aria-label={t("roomOptions")}
             aria-expanded={lobbyMenuOpen}
             onClick={(event) => {
               setLobbyMenuAnchor(event.currentTarget);
@@ -618,7 +623,7 @@ export default function RoomHost({
                 <button
                   className="lobby-options lobby-options-desktop"
                   type="button"
-                  aria-label="Room options"
+                  aria-label={t("roomOptions")}
                   aria-expanded={lobbyMenuOpen}
                   onClick={(event) => {
                     setLobbyMenuAnchor(event.currentTarget);
@@ -632,15 +637,15 @@ export default function RoomHost({
             <section className="lobby-panel" aria-live="polite">
               <div className="lobby-heading">
                 <div>
-                  <h2>Players</h2>
+                  <h2>{t("players")}</h2>
                   <p>
                     {lobby
                       ? `${lobby.players.length} / ${lobby.maxPlayers}`
-                      : "Connecting…"}
+                      : t("connecting")}
                   </p>
                 </div>
                 <span className="lobby-requirement">
-                  {lobby ? `${lobby.minPlayers} to start` : ""}
+                  {lobby ? t("playersToStart", { count: lobby.minPlayers }) : ""}
                 </span>
               </div>
               <ol className="player-grid">
@@ -661,19 +666,20 @@ export default function RoomHost({
                           onClick={() => void chooseSeat(seat)}
                           aria-label={
                             isSpectating
-                              ? `Join seat ${seat}`
-                              : `Move to seat ${seat}`
+                              ? t("joinSeat", { seat })
+                              : t("moveToSeat", { seat })
                           }
                         >
                           <Armchair aria-hidden="true" />
                         </button>
                         <span className="player-card-copy">
-                          <strong className="player-name">Sit here</strong>
+                          <strong className="player-name">{t("sitHere")}</strong>
                         </span>
                       </li>
                     );
                   const isSelf = player.id === selfId;
                   const isHost = player.id === lobby?.ownerId;
+                  const playerName = player.name || t("player", { seat });
                   return (
                     <li
                       key={player.id}
@@ -681,14 +687,14 @@ export default function RoomHost({
                     >
                       <span
                         className={`player-avatar avatar-${(seat - 1) % 4} ${isSelf ? "player-avatar-self" : ""}`}
-                        title={isSelf ? "You" : undefined}
+                        title={isSelf ? t("you") : undefined}
                       >
                         P{seat}
                         {!isHost && (
                           <span
                             className={`player-ready-marker ${player.ready ? "player-ready-marker-ready" : "player-ready-marker-pending"}`}
-                            title={player.ready ? "Ready" : "Not ready"}
-                            aria-label={player.ready ? "Ready" : "Not ready"}
+                            title={player.ready ? t("ready") : t("notReady")}
+                            aria-label={player.ready ? t("ready") : t("notReady")}
                           >
                             {player.ready && <Check aria-hidden="true" />}
                           </span>
@@ -696,12 +702,12 @@ export default function RoomHost({
                       </span>
                       <span className="player-card-copy">
                         <strong className="player-name" title={player.name}>
-                          {player.name || `Player ${seat}`}
+                          {playerName}
                           {isHost && (
                             <span
                               className="host-crown"
-                              title="Host"
-                              aria-label="Host"
+                              title={t("host")}
+                              aria-label={t("host")}
                             >
                               <Crown aria-hidden="true" />
                             </span>
@@ -714,14 +720,14 @@ export default function RoomHost({
                             <button
                               className={`player-menu-backdrop ${playerMenuClosing ? "player-menu-backdrop-closing" : ""}`}
                               type="button"
-                              aria-label="Close player menu"
+                              aria-label={t("closePlayerMenu")}
                               onClick={() => closePlayerMenu()}
                             />
                           )}
                           <button
                             className="player-menu-toggle"
                             type="button"
-                            aria-label={`Player options for ${player.name || `Player ${seat}`}`}
+                            aria-label={t("playerOptions", { name: playerName })}
                             aria-expanded={playerMenuId === player.id}
                             onClick={() => {
                               if (playerMenuId === player.id) closePlayerMenu();
@@ -747,7 +753,7 @@ export default function RoomHost({
                                   )
                                 }
                               >
-                                Make host
+                                {t("makeHost")}
                               </button>
                               <button
                                 className="player-menu-remove"
@@ -757,7 +763,7 @@ export default function RoomHost({
                                   closePlayerMenu(() => void kick(player.id))
                                 }
                               >
-                                Remove
+                                {t("remove")}
                               </button>
                             </div>
                           )}
@@ -772,20 +778,22 @@ export default function RoomHost({
                       className="player-avatar player-avatar-invite"
                       type="button"
                       onClick={() => setInviteDialogOpen(true)}
-                      aria-label="Invite a player"
+                      aria-label={t("invitePlayer")}
                     >
                       <Plus aria-hidden="true" />
                     </button>
                     <span className="player-card-copy">
-                      <strong className="player-name">Invite</strong>
+                      <strong className="player-name">{t("invite")}</strong>
                     </span>
                   </li>
                 )}
               </ol>
               <div className="spectator-controls">
                 <p className="spectator-count">
-                  {lobby?.spectators.length ?? 0} spectator
-                  {lobby?.spectators.length === 1 ? "" : "s"}
+                  {t("spectatorCount", {
+                    count: lobby?.spectators.length ?? 0,
+                    suffix: locale === "en" && lobby?.spectators.length !== 1 ? "s" : "",
+                  })}
                 </p>
                 {!isOwner && selfId && (
                   <span className="spectator-button-wrap">
@@ -801,7 +809,7 @@ export default function RoomHost({
                         spectatorHintOpen ? "spectator-hint" : undefined
                       }
                     >
-                      {isSpectating ? "Spectating" : "Spectate"}
+                      {isSpectating ? t("spectating") : t("spectate")}
                     </button>
                     {spectatorHintOpen && (
                       <span
@@ -809,7 +817,7 @@ export default function RoomHost({
                         id="spectator-hint"
                         role="tooltip"
                       >
-                        Choose an empty seat to play.
+                        {t("chooseEmptySeat")}
                       </span>
                     )}
                   </span>
@@ -823,7 +831,7 @@ export default function RoomHost({
                   disabled={starting || !canStart}
                   onClick={() => void start()}
                 >
-                  {starting ? "Starting…" : "Start game"}
+                  {starting ? t("starting") : t("startGame")}
                 </button>
               )}
               {!isOwner && selfPlayer && (
@@ -833,7 +841,7 @@ export default function RoomHost({
                   }
                   onClick={() => void setReady()}
                 >
-                  {selfPlayer.ready ? "Cancel ready" : "Ready"}
+                  {selfPlayer.ready ? t("cancelReady") : t("ready")}
                 </button>
               )}
               {!isOwner && isSpectating && (
@@ -842,11 +850,11 @@ export default function RoomHost({
                   disabled={firstOpenSeat === undefined}
                   onClick={() => void joinFirstOpenSeat()}
                 >
-                  Join
+                  {t("joinRoom")}
                 </button>
               )}
               <button onClick={() => void copyInvite()}>
-                {copied ? "Invite link copied" : "Copy invite link"}
+                {copied ? t("inviteLinkCopied") : t("copyInviteLink")}
               </button>
             </div>
           </>
@@ -873,46 +881,45 @@ export default function RoomHost({
       )}
       {leaveDialogOpen && (
         <Dialog
-          title="Leave room?"
+          title={t("leaveRoom")}
           onDismiss={() => setLeaveDialogOpen(false)}
           actions={[
-            { label: "Cancel" },
-            { label: "Leave", variant: "danger", onSelect: onBack },
+            { label: t("cancel") },
+            { label: t("leave"), variant: "danger", onSelect: onBack },
           ]}
         >
           <p className="leave-dialog-copy">
-            You will need the room link to return.
+            {t("needRoomLinkToReturn")}
           </p>
         </Dialog>
       )}
       {dissolveDialogOpen && (
         <Dialog
-          title="Dissolve room?"
+          title={t("dissolveRoom")}
           onDismiss={() => setDissolveDialogOpen(false)}
           actions={[
-            { label: "Cancel" },
+            { label: t("cancel") },
             {
-              label: "Dissolve room",
+              label: t("dissolveRoomAction"),
               variant: "danger",
               onSelect: () => void dissolve(),
             },
           ]}
         >
           <p className="leave-dialog-copy">
-            This closes the room for everyone and the invite link will stop
-            working.
+            {t("dissolveRoomDescription")}
           </p>
         </Dialog>
       )}
       {gameHelpOpen && gameHelpHref && (
         <Dialog
-          title="Game help"
+          title={t("gameHelp")}
           size="large"
           onDismiss={() => setGameHelpOpen(false)}
         >
           <iframe
             className="game-help-frame"
-            title={`${gameName} help`}
+            title={t("gameHelpTitle", { name: gameName })}
             src={gameHelpHref}
           />
         </Dialog>
@@ -925,7 +932,7 @@ export default function RoomHost({
       )}
       {phase === "lobby" && lobbyMenuOpen && lobbyMenuAnchor && (
         <Menu
-          ariaLabel="Room options"
+          ariaLabel={t("roomOptions")}
           anchor={lobbyMenuAnchor}
           className="lobby-menu"
           onClose={() => setLobbyMenuOpen(false)}
@@ -938,7 +945,7 @@ export default function RoomHost({
               setGameInfoOpen(true);
             }}
           >
-            Game info
+            {t("gameInfo")}
           </button>
           {gameHelpHref && (
             <button
@@ -949,7 +956,7 @@ export default function RoomHost({
                 setGameHelpOpen(true);
               }}
             >
-              Game help
+              {t("gameHelp")}
             </button>
           )}
           {isOwner && (
@@ -961,7 +968,7 @@ export default function RoomHost({
                 setChangeGameOpen(true);
               }}
             >
-              Change game
+              {t("changeGame")}
             </button>
           )}
           {isOwner && (
@@ -974,7 +981,7 @@ export default function RoomHost({
                 setDissolveDialogOpen(true);
               }}
             >
-              Dissolve room
+              {t("dissolveRoomAction")}
             </button>
           )}
         </Menu>
@@ -993,7 +1000,7 @@ export default function RoomHost({
           <button
             className="game-options"
             type="button"
-            aria-label="Game information"
+            aria-label={t("gameInformation")}
             aria-expanded={gameInfoOpen}
             onClick={() => setGameInfoOpen(true)}
           >
@@ -1017,9 +1024,9 @@ function applyMembership(
   setLobby(lobby);
 }
 
-function initialization(value: unknown): RoomInitialization {
+function initialization(value: unknown, t: Translator): RoomInitialization {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Invalid game initialization message");
+    throw new Error(t("invalidInitialization"));
   }
   const input = value as Record<string, unknown>;
   if (
@@ -1029,9 +1036,7 @@ function initialization(value: unknown): RoomInitialization {
     !isLimit(input.maxPlayers) ||
     input.minPlayers > input.maxPlayers
   ) {
-    throw new Error(
-      "The game must provide a Lua script and valid minPlayers / maxPlayers",
-    );
+    throw new Error(t("invalidGameLimits"));
   }
   return {
     runtime: "lua",
@@ -1073,6 +1078,9 @@ function descriptor(
     return undefined;
   let icon: string | undefined;
   let helpUrl: string | undefined;
+  const translations = isGameTranslations(input.translations)
+    ? input.translations
+    : undefined;
   const modes = gameModes(input.modes);
   const liveRoom = input.liveRoom === true;
   if (typeof input.icon === "string") {
@@ -1094,6 +1102,7 @@ function descriptor(
   return {
     url: gameUrl,
     name: input.name,
+    ...(translations ? { translations } : {}),
     icon,
     helpUrl,
     ...(modes ? { modes } : {}),
@@ -1101,8 +1110,8 @@ function descriptor(
   };
 }
 
-function message(reason: unknown): string {
-  return reason instanceof Error ? reason.message : "Unexpected error";
+function message(reason: unknown, fallback: string): string {
+  return reason instanceof Error ? reason.message : fallback;
 }
 
 function gameModes(value: unknown): GameMode[] | undefined {

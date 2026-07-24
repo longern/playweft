@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useI18n } from "./i18n";
 
 export interface MenuPosition {
   left: number;
@@ -18,6 +19,7 @@ interface MenuProps {
 const MENU_GUTTER = 12;
 
 export default function Menu({ ariaLabel, children, anchor, className = "", position, style, onClose }: MenuProps) {
+  const { t } = useI18n();
   const menu = useRef<HTMLDivElement>(null);
   const [closing, setClosing] = useState(false);
   const [computedPosition, setComputedPosition] = useState<CSSProperties>();
@@ -91,7 +93,7 @@ export default function Menu({ ariaLabel, children, anchor, className = "", posi
       <button
         className={`menu-backdrop ${closing ? "menu-backdrop-closing" : ""}`}
         type="button"
-        aria-label={`Close ${ariaLabel}`}
+        aria-label={t("closeMenu", { label: ariaLabel })}
         onClick={close}
       />
       <div

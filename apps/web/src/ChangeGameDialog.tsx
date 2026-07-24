@@ -2,6 +2,7 @@ import { useState } from "react";
 import Dialog from "./Dialog";
 import { FEATURED_GAMES } from "./featured-games";
 import type { RecentGame } from "./RoomHost";
+import { localizeGameName, useI18n } from "./i18n";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
 
@@ -14,18 +15,19 @@ export default function ChangeGameDialog({
   onClose,
   onSubmit,
 }: ChangeGameDialogProps) {
+  const { locale, t } = useI18n();
   const [url, setUrl] = useState("");
   const recentGames = readRecentGames();
 
   return (
     <Dialog
-      title="Change game"
+      title={t("changeGame")}
       size="wide"
       onDismiss={onClose}
       actions={[
-        { label: "Cancel" },
+        { label: t("cancel") },
         {
-          label: "Change game",
+          label: t("changeGame"),
           variant: "primary",
           onSelect: () => onSubmit(url),
         },
@@ -38,14 +40,14 @@ export default function ChangeGameDialog({
           onSubmit(url);
         }}
       >
-        <label htmlFor="change-game-url">Game URL</label>
+        <label htmlFor="change-game-url">{t("gameUrl")}</label>
         <div className="change-game-url-input">
           <input
             id="change-game-url"
             type="url"
             required
             autoFocus
-            placeholder="Paste a static game URL"
+            placeholder={t("pasteStaticGameUrl")}
             value={url}
             onChange={(event) => setUrl(event.target.value)}
           />
@@ -53,14 +55,14 @@ export default function ChangeGameDialog({
       </form>
       {recentGames.length > 0 && (
         <GameChoices
-          title="Recently played"
+          title={t("recentlyPlayed")}
           games={recentGames}
           selectedUrl={url}
           onSelect={setUrl}
         />
       )}
       <GameChoices
-        title="Recommended"
+        title={t("recommended")}
         games={FEATURED_GAMES}
         selectedUrl={url}
         onSelect={setUrl}
@@ -80,6 +82,7 @@ function GameChoices({
   selectedUrl: string;
   onSelect(url: string): void;
 }) {
+  const { locale } = useI18n();
   return (
     <section
       className="change-game-choices"
@@ -99,10 +102,14 @@ function GameChoices({
               {game.icon ? (
                 <img src={game.icon} alt="" referrerPolicy="no-referrer" />
               ) : (
-                <span>{game.name.slice(0, 2).toUpperCase()}</span>
+                <span>
+                  {localizeGameName(game, locale).slice(0, 2).toUpperCase()}
+                </span>
               )}
             </span>
-            <span className="shelf-game-name">{game.name}</span>
+            <span className="shelf-game-name">
+              {localizeGameName(game, locale)}
+            </span>
           </button>
         ))}
       </div>

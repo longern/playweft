@@ -28,6 +28,9 @@ window.addEventListener("message", (event) => {
     type: "descriptor",
     descriptor: {
       name: "Rock Paper Scissors",
+      translations: {
+        "zh-CN": { name: "石头剪刀布" },
+      },
       icon: "/rps.svg",
       modes: ["room"],
       liveRoom: false,

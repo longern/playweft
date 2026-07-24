@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
+import { useI18n } from "./i18n";
 
 export interface GameInfoAction {
   label: string;
@@ -22,6 +23,7 @@ export default function GameInfoPanel({
   url,
   onClose,
 }: GameInfoPanelProps) {
+  const { t } = useI18n();
   const [closing, setClosing] = useState(false);
   const afterClose = useRef<(() => void) | undefined>(undefined);
 
@@ -49,7 +51,7 @@ export default function GameInfoPanel({
       <button
         className={`game-info-backdrop ${closing ? "game-info-backdrop-closing" : ""}`}
         type="button"
-        aria-label="Close game information"
+        aria-label={t("closeGameInformation")}
         onClick={() => close()}
       />
       <section
@@ -59,10 +61,10 @@ export default function GameInfoPanel({
         aria-labelledby="game-info-title"
       >
         <header className="game-info-header">
-          <h2 id="game-info-title">Game information</h2>
+          <h2 id="game-info-title">{t("gameInformation")}</h2>
           <button
             type="button"
-            aria-label="Close game information"
+            aria-label={t("closeGameInformation")}
             onClick={() => close()}
           >
             <X aria-hidden="true" />

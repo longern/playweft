@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useI18n } from "./i18n";
 
 interface ErrorToastProps {
   message: string;
@@ -6,6 +7,7 @@ interface ErrorToastProps {
 }
 
 export default function ErrorToast({ message, onDismiss }: ErrorToastProps) {
+  const { t } = useI18n();
   const [closing, setClosing] = useState(false);
 
   useEffect(() => {
@@ -25,6 +27,6 @@ export default function ErrorToast({ message, onDismiss }: ErrorToastProps) {
   return <div className={`error-toast ${closing ? "error-toast-closing" : ""}`} role="alert" aria-live="assertive">
     <span className="error-toast-icon" aria-hidden="true">!</span>
     <p>{message}</p>
-    <button type="button" onClick={() => setClosing(true)} aria-label="Dismiss error">×</button>
+    <button type="button" onClick={() => setClosing(true)} aria-label={t("dismissError")}>×</button>
   </div>;
 }

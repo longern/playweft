@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
+import { useI18n } from "./i18n";
 
 export interface DialogAction {
   label: string;
@@ -22,6 +23,7 @@ export default function Dialog({
   actions,
   size = "default",
 }: DialogProps) {
+  const { t } = useI18n();
   const [closing, setClosing] = useState(false);
   const afterClose = useRef<(() => void) | undefined>(undefined);
 
@@ -52,7 +54,7 @@ export default function Dialog({
       <button
         className="dialog-backdrop"
         type="button"
-        aria-label={`Close ${title} dialog`}
+        aria-label={t("closeDialog", { title })}
         onClick={() => close()}
       />
       <section
@@ -66,7 +68,7 @@ export default function Dialog({
           <button
             type="button"
             onClick={() => close()}
-            aria-label={`Close ${title} dialog`}
+            aria-label={t("closeDialog", { title })}
           >
             <X aria-hidden="true" />
           </button>

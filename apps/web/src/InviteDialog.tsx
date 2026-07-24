@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import Dialog from "./Dialog";
+import { useI18n } from "./i18n";
 
 interface InviteDialogProps {
   url: string;
@@ -8,6 +9,7 @@ interface InviteDialogProps {
 }
 
 export default function InviteDialog({ url, onClose }: InviteDialogProps) {
+  const { t } = useI18n();
   const [qrCode, setQrCode] = useState<string>();
 
   useEffect(() => {
@@ -22,9 +24,9 @@ export default function InviteDialog({ url, onClose }: InviteDialogProps) {
     return () => { cancelled = true; };
   }, [url]);
 
-  return <Dialog title="Invite players" onDismiss={onClose}>
+  return <Dialog title={t("invitePlayers")} onDismiss={onClose}>
     <div className="invite-dialog-content">
-      {qrCode ? <img src={qrCode} alt="QR code for the room link" /> : <span className="invite-dialog-loading" aria-label="Generating QR code" />}
+      {qrCode ? <img src={qrCode} alt={t("qrCodeForRoomLink")} /> : <span className="invite-dialog-loading" aria-label={t("generatingQrCode")} />}
     </div>
   </Dialog>;
 }

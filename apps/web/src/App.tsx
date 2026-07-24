@@ -14,6 +14,7 @@ import ErrorToast from "./ErrorToast";
 import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
 import type { MenuPosition } from "./Menu";
+import { isGameTranslations, localizeGameName, useI18n, type Translator } from "./i18n";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
 const FAVORITE_GAMES_KEY = "playweft:favorite-games:v1";
@@ -31,6 +32,7 @@ type RoomIdFormat =
   | { kind: "code" | "digits" | "base64url"; length: number };
 
 export default function App() {
+  const { t } = useI18n();
   const [path, setPath] = useState(window.location.pathname);
   const [entryStatus, setEntryStatus] = useState<string>();
   const [settledRoomId, setSettledRoomId] = useState<string>();
@@ -55,7 +57,7 @@ export default function App() {
 
   const beginEntry = useCallback(() => {
     const generation = ++entryGeneration.current;
-    setEntryStatus("Creating room");
+    setEntryStatus(t("creatingRoom"));
     return () => entryGeneration.current !== generation;
   }, []);
 
@@ -76,7 +78,7 @@ export default function App() {
 
   const overlayStatus =
     entryStatus ??
-    (roomId && settledRoomId !== roomId ? "Loading game" : undefined);
+    (roomId && settledRoomId !== roomId ? t("loadingGame") : undefined);
 
   if (soloGame) {
     return (
@@ -130,6 +132,7 @@ function Home({
   onEntryStatus,
   onPlaySolo,
 }: HomeProps) {
+  const { locale, t } = useI18n();
   const [gameUrl, setGameUrl] = useState("");
   const [recentGames, setRecentGames] = useState(readRecentGames);
   const [favoriteGames, setFavoriteGames] = useState(readFavoriteGames);
@@ -171,12 +174,12 @@ function Home({
     try {
       await createGuestSession();
       if (cancelled()) return;
-      onEntryStatus("Loading game");
+      onEntryStatus(t("loadingGame"));
       onNavigate(`/r/${roomId}`);
     } catch (reason) {
       if (cancelled()) return;
       onEntryStatus(undefined);
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -190,12 +193,12 @@ function Home({
       const room = await createRoom(game.url);
       if (cancelled()) return;
       rememberGame(game);
-      onEntryStatus("Loading game");
+      onEntryStatus(t("loadingGame"));
       onNavigate(`/r/${room.roomId}`);
     } catch (reason) {
       if (cancelled()) return;
       onEntryStatus(undefined);
-      setError(message(reason));
+      setError(message(reason, t("unexpectedError")));
     }
   };
 
@@ -233,7 +236,7 @@ function Home({
     setError(undefined);
     setUnsupportedGame(undefined);
     try {
-      const game = await probeGame(trimmed, (status) => onEntryStatus(status));
+      const game = await probeGame(trimmed, (status) => onEntryStatus(status), t);
       if (cancelled()) return;
       onEntryStatus(undefined);
       launchGame(game);
@@ -243,7 +246,7 @@ function Home({
       if (reason instanceof UnsupportedGameUrlError) {
         setUnsupportedGame({ url: reason.url, error: reason.message });
       } else {
-        setError(message(reason));
+        setError(message(reason, t("unexpectedError")));
       }
     }
   };
@@ -285,7 +288,7 @@ function Home({
   return (
     <div className="site-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Playweft home">
+        <a className="brand" href="/" aria-label={t("playweftHome")}>
           <span className="brand-mark">
             <i />
             <i />
@@ -293,7 +296,7 @@ function Home({
           </span>
           <span>playweft</span>
         </a>
-        <span className="topbar-label">Play games together</span>
+        <span className="topbar-label">{t("playGamesTogether")}</span>
       </header>
       <main className="home">
         <section
@@ -302,7 +305,7 @@ function Home({
           aria-labelledby="launch-title"
         >
           <h1 id="launch-title" className="sr-only">
-            Create a room
+            {t("createRoom")}
           </h1>
           <form
             className="launch-form"
@@ -312,7 +315,7 @@ function Home({
             }}
           >
             <label className="sr-only" htmlFor="game-url">
-              Game URL or room code
+              {t("gameUrlOrRoomCode")}
             </label>
             <div className="url-input">
               <span className="url-icon" aria-hidden="true">
@@ -322,7 +325,7 @@ function Home({
                 id="game-url"
                 type="text"
                 required
-                placeholder="Paste a static game URL or room code"
+                placeholder={t("pasteGameUrlOrRoomCode")}
                 value={gameUrl}
                 onChange={(event) => setGameUrl(event.target.value)}
               />
@@ -332,14 +335,14 @@ function Home({
               disabled={!gameUrl.trim()}
               type="submit"
             >
-              {roomIdInput ? "Join room" : "Create room"}
+              {roomIdInput ? t("joinRoom") : t("createRoom")}
             </button>
           </form>
         </section>
 
         {favoriteGames.length > 0 && (
           <GameShelf
-            title="Favorites"
+            title={t("favorites")}
             kind="favorite"
             games={favoriteGames}
             onSelect={launchGame}
@@ -348,7 +351,7 @@ function Home({
         )}
         {recentGames.length > 0 && (
           <GameShelf
-            title="Recently played"
+            title={t("recentlyPlayed")}
             kind="recent"
             games={recentGames}
             onSelect={launchGame}
@@ -356,7 +359,7 @@ function Home({
           />
         )}
         <GameShelf
-          title="Recommended"
+          title={t("recommended")}
           kind="recommended"
           games={FEATURED_GAMES}
           onSelect={launchGame}
@@ -382,7 +385,7 @@ function Home({
       {gameInfo && (
         <GameInfoPanel
           icon={gameInfo.icon}
-          name={gameInfo.name}
+          name={localizeGameName(gameInfo, locale)}
           url={gameInfo.url}
           onClose={() => setGameInfo(undefined)}
         />
@@ -425,27 +428,29 @@ function SoloHost({
   game: RecentGame;
   onBack(): void;
 }) {
+  const { locale, t } = useI18n();
   const [gameInfoOpen, setGameInfoOpen] = useState(false);
+  const gameName = localizeGameName(game, locale);
 
   useEffect(() => {
-    document.title = `${game.name} | Playweft`;
+    document.title = `${gameName} | Playweft`;
     return () => {
       document.title = "Playweft";
     };
-  }, [game.name]);
+  }, [gameName]);
 
   return (
     <div className="room-shell room-playing solo-host">
       <iframe
         className="game-frame"
-        title={game.name}
+        title={gameName}
         src={game.url}
         sandbox="allow-scripts allow-same-origin"
       />
       <button
         className="game-options"
         type="button"
-        aria-label="Game information"
+        aria-label={t("gameInformation")}
         aria-expanded={gameInfoOpen}
         onClick={() => setGameInfoOpen(true)}
       >
@@ -457,13 +462,13 @@ function SoloHost({
         <GameInfoPanel
           actions={[
             {
-              label: "Back home",
+              label: t("backHome"),
               variant: "primary",
               onSelect: onBack,
             },
           ]}
           icon={game.icon}
-          name={game.name}
+          name={gameName}
           url={game.url}
           onClose={() => setGameInfoOpen(false)}
         />
@@ -479,6 +484,7 @@ function EntryOverlay({
   status: string;
   onCancel(): void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="creating-overlay">
       <div className="creating-status" role="status" aria-live="polite">
@@ -486,7 +492,7 @@ function EntryOverlay({
         <span>{status}</span>
       </div>
       <button className="creating-cancel" type="button" onClick={onCancel}>
-        Cancel
+        {t("cancel")}
       </button>
     </div>
   );
@@ -511,6 +517,7 @@ function GameShelf({
   onSelect,
   onContextMenu,
 }: GameShelfProps) {
+  const { locale } = useI18n();
   return (
     <section
       className="game-shelf"
@@ -533,10 +540,10 @@ function GameShelf({
               {game.icon ? (
                 <img src={game.icon} alt="" referrerPolicy="no-referrer" />
               ) : (
-                <span>{game.name.slice(0, 2).toUpperCase()}</span>
+                <span>{localizeGameName(game, locale).slice(0, 2).toUpperCase()}</span>
               )}
             </span>
-            <span className="shelf-game-name">{game.name}</span>
+            <span className="shelf-game-name">{localizeGameName(game, locale)}</span>
           </button>
         ))}
       </div>
@@ -561,27 +568,29 @@ function LaunchChoiceDialog({
   onCreateRoom(): void;
   onJoinRoom(roomId: string): void;
 }) {
+  const { locale, t } = useI18n();
   const roomId = roomIdFromInput(roomCode);
+  const gameName = localizeGameName(game, locale);
 
   return (
-    <Dialog title="Play game" onDismiss={onClose}>
+    <Dialog title={t("playGame")} onDismiss={onClose}>
       <div className="launch-choice">
         <div className="launch-choice-game">
           <span className="shelf-art">
             {game.icon ? (
               <img src={game.icon} alt="" referrerPolicy="no-referrer" />
             ) : (
-              <span>{game.name.slice(0, 2).toUpperCase()}</span>
+              <span>{gameName.slice(0, 2).toUpperCase()}</span>
             )}
           </span>
-          <strong>{game.name}</strong>
+          <strong>{gameName}</strong>
         </div>
         <div className="launch-choice-actions">
           <button type="button" onClick={onPlaySolo}>
-            Play solo
+            {t("playSolo")}
           </button>
           <button type="button" onClick={onCreateRoom}>
-            Create room
+            {t("createRoom")}
           </button>
         </div>
         <form
@@ -593,12 +602,12 @@ function LaunchChoiceDialog({
         >
           <input
             type="text"
-            placeholder="Enter room code"
+            placeholder={t("enterRoomCode")}
             value={roomCode}
             onChange={(event) => onRoomCodeChange(event.target.value)}
           />
           <button type="submit" disabled={!roomId}>
-            Join room
+            {t("joinRoom")}
           </button>
         </form>
       </div>
@@ -615,14 +624,15 @@ function UnsupportedGameDialog({
   url: string;
   onClose(): void;
 }) {
+  const { t } = useI18n();
   return (
     <Dialog
-      title="Game not supported"
+      title={t("gameNotSupported")}
       onDismiss={onClose}
       actions={[
-        { label: "Back" },
+        { label: t("back") },
         {
-          label: "Open site",
+          label: t("openSite"),
           variant: "primary",
           onSelect: () => {
             window.location.href = url;
@@ -712,6 +722,7 @@ function isStoredRecentGame(value: unknown): value is StoredRecentGame {
   return (
     typeof item.url === "string" &&
     typeof item.name === "string" &&
+    (item.translations === undefined || isGameTranslations(item.translations)) &&
     (item.icon === undefined || typeof item.icon === "string") &&
     (item.helpUrl === undefined || typeof item.helpUrl === "string") &&
     (item.modes === undefined || isGameModes(item.modes)) &&
@@ -724,6 +735,7 @@ function toRecentGame(game: ShelfGame): RecentGame {
   return {
     url: game.url,
     name: game.name,
+    ...(game.translations ? { translations: game.translations } : {}),
     ...(game.icon ? { icon: game.icon } : {}),
     ...("helpUrl" in game && game.helpUrl ? { helpUrl: game.helpUrl } : {}),
     ...(game.modes ? { modes: supportedModes(game) } : {}),
@@ -746,7 +758,7 @@ function isGameModes(value: unknown): value is GameMode[] {
 class UnsupportedGameUrlError extends Error {
   constructor(
     readonly url: string,
-    message = "This URL does not expose the Playweft game bridge.",
+    message: string,
   ) {
     super(message);
   }
@@ -755,10 +767,11 @@ class UnsupportedGameUrlError extends Error {
 function probeGame(
   value: string,
   onStatus: (status: string) => void,
+  t: Translator,
 ): Promise<RecentGame> {
-  const gameUrl = normalizeGameUrl(value);
+  const gameUrl = normalizeGameUrl(value, t);
   const gameOrigin = new URL(gameUrl).origin;
-  onStatus("Checking game");
+  onStatus(t("checkingGame"));
   return new Promise((resolve, reject) => {
     let settled = false;
     let bridgeReady = false;
@@ -767,7 +780,7 @@ function probeGame(
     let port: MessagePort | undefined;
     const iframe = document.createElement("iframe");
     iframe.src = gameUrl;
-    iframe.title = "Game compatibility check";
+    iframe.title = t("gameCompatibilityCheck");
     iframe.tabIndex = -1;
     iframe.setAttribute("aria-hidden", "true");
     iframe.className = "game-probe-frame";
@@ -801,8 +814,8 @@ function probeGame(
         new UnsupportedGameUrlError(
           gameUrl,
           bridgeReady
-            ? "This game did not describe how Playweft should launch it."
-            : "This URL does not expose the Playweft game bridge.",
+            ? t("gameLaunchMissing")
+            : t("gameBridgeUnavailable"),
         ),
       );
     }, GAME_PROBE_TIMEOUT_MS);
@@ -859,7 +872,7 @@ function probeGame(
         fail(
           new UnsupportedGameUrlError(
             gameUrl,
-            "This game opened the Playweft bridge but did not describe how to launch.",
+            t("gameBridgeLaunchMissing"),
           ),
         );
       }, GAME_PROBE_METADATA_TIMEOUT_MS);
@@ -870,11 +883,11 @@ function probeGame(
   });
 }
 
-function normalizeGameUrl(value: string): string {
+function normalizeGameUrl(value: string, t: Translator): string {
   try {
     return new URL(value).toString();
   } catch {
-    throw new Error("Enter a full game URL, including https://.");
+    throw new Error(t("enterFullGameUrl"));
   }
 }
 
@@ -894,6 +907,9 @@ function gameDescriptor(
     return undefined;
   let icon: string | undefined;
   let helpUrl: string | undefined;
+  const translations = isGameTranslations(input.translations)
+    ? input.translations
+    : undefined;
   if (typeof input.icon === "string") {
     try {
       const resolved = new URL(input.icon, gameUrl);
@@ -917,6 +933,7 @@ function gameDescriptor(
   return {
     url: gameUrl,
     name: input.name,
+    ...(translations ? { translations } : {}),
     ...(icon ? { icon } : {}),
     ...(helpUrl ? { helpUrl } : {}),
     ...(modes ? { modes } : {}),
@@ -970,6 +987,6 @@ function roomIdFormat(value: string | undefined): RoomIdFormat {
   };
 }
 
-function message(reason: unknown): string {
-  return reason instanceof Error ? reason.message : "Unexpected error";
+function message(reason: unknown, fallback: string): string {
+  return reason instanceof Error ? reason.message : fallback;
 }

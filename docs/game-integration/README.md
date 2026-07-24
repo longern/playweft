@@ -73,6 +73,9 @@ window.addEventListener("message", (event) => {
     type: "descriptor",
     descriptor: {
       name: "My Game",
+      translations: {
+        "zh-CN": { name: "我的游戏" },
+      },
       icon: "/icon.svg",
       helpUrl: "/help.html",
       modes: ["solo", "room"],
@@ -95,7 +98,11 @@ window.addEventListener("message", (event) => {
 });
 ```
 
-`descriptor` is optional. `name` must contain 1–100 characters. `icon` and
+`descriptor` is optional. `name` must contain 1–100 characters and is the
+default game name. `translations` is an optional locale dictionary; use
+`translations[locale].name` to provide a translated name, for example
+`{ "zh-CN": { name: "我的游戏" } }`. Playweft selects the browser's language,
+then falls back to `name` when a locale or translation is absent. `icon` and
 `helpUrl` must be relative URLs or absolute URLs hosted on the game's own origin.
 `modes` may include `"solo"` and/or `"room"`; omitted modes default to room
 play. `liveRoom: true` declares that room play needs a non-hibernating,
