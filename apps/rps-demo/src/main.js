@@ -31,7 +31,7 @@ window.addEventListener("message", (event) => {
       translations: {
         "zh-CN": { name: "石头剪刀布" },
       },
-      icon: "/rps.svg",
+      icon: "rps.svg",
       modes: ["room"],
       liveRoom: false,
     },

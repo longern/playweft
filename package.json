@@ -9,11 +9,11 @@
   ],
   "scripts": {
     "postinstall": "patch-package",
-    "check": "npm run check --workspace @playweft/worker && npm run check --workspace @playweft/web && npm run check --workspace @playweft/rps-demo",
+    "check": "npm run check --workspace @playweft/worker && npm run build:web",
     "dev:worker": "npm run dev --workspace @playweft/worker --",
     "dev:web": "npm run dev --workspace @playweft/web",
     "dev:rps": "npm run dev --workspace @playweft/rps-demo",
-    "build:web": "npm run build --workspace @playweft/web",
+    "build:web": "npm run build --workspace @playweft/web && npm run build --workspace @playweft/rps-demo",
     "build:rps": "npm run build --workspace @playweft/rps-demo",
     "deploy:platform": "npm run build:web && npm run deploy --workspace @playweft/worker",
     "deploy:worker": "npm run deploy:platform"

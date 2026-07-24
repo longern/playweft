@@ -11,7 +11,7 @@ events.
 
 ```text
 apps/web                 React room launcher, invitation host, and local game history
-apps/rps-demo            Standalone untrusted static Rock-Paper-Scissors game
+apps/rps-demo            Static Rock-Paper-Scissors example, bundled under /games/rps/
 apps/worker              Cloudflare HTTP API, Durable Objects, deployment config
 packages/game-protocol   JSON values and wire-message contract shared by both apps
 packages/runtime-core    Runtime interface independent of Lua and Cloudflare
@@ -90,27 +90,29 @@ viewport once the roster is locked.
 
 ## Rock-Paper-Scissors example
 
-The game page is a fully static independent entry in `apps/rps-demo`. It has no
-direct API access and cannot be meaningfully opened as a standalone game page.
-The platform homepage creates an ordinary room for it; there is no dedicated
-demo route.
+The game page is a static entry in `apps/rps-demo`, bundled with the platform at
+`/games/rps/`. It has no direct API access and cannot be meaningfully opened as
+a standalone game page. The platform homepage creates an ordinary room for it;
+there is no dedicated demo route.
 
 ```sh
 # Terminal 1: the trusted Worker. No game script needs pre-seeding.
 npm run dev:worker -- --var AUTH_SECRET:local-session-secret
 
-# Terminal 2: untrusted static game page (normally a different origin).
+# Terminal 2: the static game example.
 npm run dev:rps
 
 # Terminal 3: trusted platform page.
 npm run dev:web
 ```
 
-Open `http://localhost:9133`, enter `http://localhost:9139`, then create a
-room. Copy the resulting `/r/<roomId>` link to another browser or device. Each
-browser receives an anonymous platform session. The first player chooses one of
-three buttons; the server reveals both choices only after a second player
-chooses. A draw clears both choices and starts the next round.
+For local development, open `http://localhost:9133`, enter
+`http://localhost:9139`, then create a room. In a deployed build, select the
+built-in game from the homepage, which resolves to `/games/rps/`. Copy the
+resulting `/r/<roomId>` link to another browser or device. Each browser receives
+an anonymous platform session. The first player chooses one of three buttons;
+the server reveals both choices only after a second player chooses. A draw clears
+both choices and starts the next round.
 
 The platform keeps a browser-local list of recently used game URLs. A game may
 send `{ name, icon }` through the bridge after loading; those labels improve the
@@ -128,26 +130,14 @@ for an hour, it calls `storage.deleteAll()` and the invite link becomes invalid.
 
 ## Deploy to Cloudflare
 
-Use two public origins:
+Use one public origin, `https://play.example.com`, for the trusted platform
+app, Worker API, WebSocket, Durable Object, and the bundled RPS sample at
+`/games/rps/`. `npm run build:web` builds both frontend entries into
+`apps/web/dist`, which is uploaded by the Worker configuration.
 
-- `https://play.example.com`: the trusted platform app, Worker API, WebSocket,
-  and Durable Object. They are deployed together by the Worker.
-- `https://rps-demo.pages.dev` (or another site): the untrusted static game
-  page, hosted separately and communicating only through the iframe bridge.
-
-Do not host the game page on `play.example.com` or one of its subdomains. A
-separate site (for example, a distinct Pages `*.pages.dev` project or a
-different registrable domain) keeps third-party content out of the platform
-cookie's same-site context; the Worker's same-origin check remains the second
-defence.
-
-First publish the static game and note the URL printed by Wrangler:
-
-```sh
-npx wrangler login
-npm run build:rps
-npx wrangler pages deploy apps/rps-demo/dist --project-name playweft-rps-demo
-```
+Third-party games should still use a separate origin. That keeps untrusted game
+content out of the platform cookie's same-site context; the Worker's same-origin
+check remains the second defence.
 
 Write the Worker session secret interactively. Do not put it in Git; `secret
 put` immediately creates a new Worker version:
@@ -164,9 +154,9 @@ Room ID generation is optional to configure. By default, the Worker uses
 configured, set `VITE_ROOM_ID_FORMAT` to the same value so the home input can
 recognize room codes without an extra config request.
 
-Deploy the platform. The Worker configuration uploads `apps/web/dist`; `/api/*`
-runs the Worker first while other navigation requests are handled by the React
-SPA.
+Deploy the platform. The Worker configuration uploads `apps/web/dist`, including
+the RPS files under `/games/rps/`; `/api/*` runs the Worker first while other
+navigation requests are handled by the React SPA.
 
 ```sh
 npm run deploy:platform
@@ -176,11 +166,9 @@ After the first Worker deployment, bind `play.example.com` to that Worker in
 the Cloudflare Dashboard. Browser requests are accepted only when their origin
 matches the Worker endpoint they reach.
 
-`VITE_RPS_DEMO_ORIGIN` is no longer required by the platform frontend. Publish
-the static game first, then paste its Pages URL into the platform homepage to
-create an inviteable room. Redeploy the game page whenever its bridge metadata
-or Lua source changes; redeploy the platform whenever its host or Worker code
-changes.
+The built-in game uses relative paths, so no game-origin environment variable is
+required. Redeploy the platform whenever its frontend, bundled game, or Worker
+code changes.
 
 ## Lua game contract
 
@@ -239,6 +227,5 @@ should use a custom Lua Wasm build with a statically linked quota allocator.
 ```sh
 npm run check
 npm run build:web
-npm run build:rps
 npx wrangler deploy --config apps/worker/wrangler.jsonc --dry-run
 ```

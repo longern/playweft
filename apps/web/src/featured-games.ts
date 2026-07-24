@@ -20,8 +20,8 @@ export const FEATURED_GAMES: FeaturedGame[] = [
   {
     name: "Rock Paper Scissors",
     translations: { "zh-CN": { name: "石头剪刀布" } },
-    url: "https://playweft-rps-demo.pages.dev/",
-    icon: "https://playweft-rps-demo.pages.dev/rps.svg",
+    url: "/games/rps/",
+    icon: "/games/rps/rps.svg",
     description: "A quick two-player round.",
     category: "Quick match",
     modes: ["room"],

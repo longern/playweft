@@ -733,7 +733,7 @@ function isStoredRecentGame(value: unknown): value is StoredRecentGame {
 
 function toRecentGame(game: ShelfGame): RecentGame {
   return {
-    url: game.url,
+    url: new URL(game.url, window.location.origin).toString(),
     name: game.name,
     ...(game.translations ? { translations: game.translations } : {}),
     ...(game.icon ? { icon: game.icon } : {}),
