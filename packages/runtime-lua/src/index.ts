@@ -1,7 +1,12 @@
 import { LuaFactory, LuaGlobal, LuaLibraries, LuaType } from "wasmoon";
 import type LuaWasm from "wasmoon/dist/luawasm";
 import { assertJson, assertJsonSize, JSON_MAX_DEPTH, type JsonValue } from "@playweft/game-protocol";
-import { GameRuntimeError, type GameActionResult, type GameRuntime } from "@playweft/runtime-core";
+import {
+  GameRuntimeError,
+  type GameActionResult,
+  type GameRuntime,
+  type GameTransitionResult,
+} from "@playweft/runtime-core";
 import "./wasm";
 
 const LUA_REGISTRY_INDEX = -1_001_000;
@@ -61,6 +66,10 @@ math.randomseed = nil
 
 ${source}
 
+if type(setup) ~= "function" or type(on_action) ~= "function" or type(view) ~= "function" then
+  error("Lua game must define setup(context), on_action(state, action, context), and view(state, events, context)", 0)
+end
+
 return function(kind, state, action, context)
   __playweft_fuel = 0
   if kind == "setup" then
@@ -73,10 +82,7 @@ return function(kind, state, action, context)
     return on_player_left(state, context)
   end
   if kind == "view" then
-    if view == nil then
-      return state
-    end
-    return view(state, context)
+    return view(state, action, context)
   end
   if kind == "return_to_room" then
     if on_return_to_room == nil then
@@ -261,7 +267,9 @@ export class LuaGameRuntime implements GameRuntime {
       }
 
       if (module.lua_type(global.address, -1) !== LuaType.Function) {
-        throw new LuaScriptError("Lua game must define setup(context) and on_action(state, action, context)");
+        throw new LuaScriptError(
+          "Lua game must define setup(context), on_action(state, action, context), and view(state, events, context)",
+        );
       }
 
       const functionRef = module.luaL_ref(global.address, LUA_REGISTRY_INDEX);
@@ -279,19 +287,56 @@ export class LuaGameRuntime implements GameRuntime {
     return state;
   }
 
-  applyAction(state: JsonValue, action: JsonValue, context: JsonValue): GameActionResult {
-    return this.resultFor("action", state, action, context, "on_action");
+  applyAction(
+    state: JsonValue,
+    action: JsonValue,
+    context: JsonValue,
+  ): GameActionResult {
+    const result = this.invoke("action", state, action, context)[0];
+    if (!isPlainObject(result) || typeof result.accepted !== "boolean") {
+      throw new LuaScriptError(
+        "on_action must return either { accepted = true, state = ..., events = {...} } or { accepted = false, error = { code = ..., message = ... } }",
+      );
+    }
+    if (!result.accepted) {
+      if (
+        !isPlainObject(result.error) ||
+        typeof result.error.code !== "string" ||
+        !/^[A-Z][A-Z0-9_]{0,63}$/.test(result.error.code) ||
+        typeof result.error.message !== "string" ||
+        result.error.message.length === 0 ||
+        result.error.message.length > 500
+      ) {
+        throw new LuaScriptError(
+          "rejected on_action result.error must contain an uppercase code and a 1-500 character message",
+        );
+      }
+      return {
+        accepted: false,
+        error: {
+          code: result.error.code,
+          message: result.error.message,
+        },
+      };
+    }
+    return {
+      accepted: true,
+      ...this.transitionResult(result, "on_action"),
+    };
   }
 
-  view(state: JsonValue, context: JsonValue): JsonValue {
-    const visibleState = this.invoke("view", state, null, context)[0] ?? null;
-    assertJson(visibleState, "view result");
-    assertJsonSize(visibleState, "view result", MAX_VALUE_BYTES);
-    return visibleState;
+  view(
+    state: JsonValue,
+    events: JsonValue[],
+    context: JsonValue,
+  ): GameTransitionResult {
+    const result = this.invoke("view", state, events, context)[0];
+    return this.transitionResult(result, "view");
   }
 
-  playerLeft(state: JsonValue, context: JsonValue): GameActionResult {
-    return this.resultFor("player_left", state, null, context, "on_player_left");
+  playerLeft(state: JsonValue, context: JsonValue): GameTransitionResult {
+    const result = this.invoke("player_left", state, null, context)[0];
+    return this.transitionResult(result, "on_player_left");
   }
 
   returnToRoom(state: JsonValue, context: JsonValue): boolean {
@@ -300,8 +345,10 @@ export class LuaGameRuntime implements GameRuntime {
     return result;
   }
 
-  private resultFor(kind: "action" | "player_left", state: JsonValue, action: JsonValue, context: JsonValue, handler: string): GameActionResult {
-    const result = this.invoke(kind, state, action, context)[0];
+  private transitionResult(
+    result: JsonValue | undefined,
+    handler: string,
+  ): GameTransitionResult {
     if (!isPlainObject(result) || !("state" in result)) {
       throw new LuaScriptError(`${handler} must return { state = ..., events = {...} }`);
     }
@@ -309,7 +356,8 @@ export class LuaGameRuntime implements GameRuntime {
     // Lua has no native distinction between {} and an empty array. In the
     // explicitly array-shaped `events` field, treat an empty table as [].
     const events = isEmptyObject(result.events) ? [] : (result.events ?? []);
-    if (!Array.isArray(events)) throw new LuaScriptError("on_action result.events must be an array");
+    if (!Array.isArray(events))
+      throw new LuaScriptError(`${handler} result.events must be an array`);
     assertJson(result.state, `${handler} result.state`);
     assertJson(events, `${handler} result.events`);
     assertJsonSize(result.state, `${handler} result.state`, MAX_VALUE_BYTES);

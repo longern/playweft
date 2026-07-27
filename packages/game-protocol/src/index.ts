@@ -38,9 +38,39 @@ export function isJson(value: unknown, depth = 0): value is JsonValue {
 export interface RoomSnapshot {
   type: "snapshot" | "state";
   state: JsonValue;
+  matchId: string;
   version: number;
+  serverTime: number;
   scriptHash: string;
   events?: JsonValue[];
+}
+
+export interface ActionError {
+  code: string;
+  message: string;
+}
+
+export type RoomActionResult =
+  | {
+      type: "action-result";
+      requestId: string;
+      accepted: true;
+      matchId: string;
+      version: number;
+    }
+  | {
+      type: "action-result";
+      requestId: string;
+      accepted: false;
+      matchId: string;
+      version: number;
+      error: ActionError;
+    };
+
+export interface RoomActionResponse {
+  result: RoomActionResult;
+  /** Present when this request produced a new authoritative state version. */
+  update?: RoomSnapshot;
 }
 
 export interface RoomPlayer {

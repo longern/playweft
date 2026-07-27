@@ -8,7 +8,7 @@ import {
 } from "react";
 import { createGuestSession, createRoom } from "./platform-api";
 import RoomHost, { type GameMode, type RecentGame } from "./RoomHost";
-import { FEATURED_GAMES, type FeaturedGame } from "./featured-games";
+import { useFeaturedGames, type FeaturedGame } from "./featured-games";
 import Dialog from "./Dialog";
 import ErrorToast from "./ErrorToast";
 import GameInfoPanel from "./GameInfoPanel";
@@ -136,6 +136,7 @@ function Home({
   const [gameUrl, setGameUrl] = useState("");
   const [recentGames, setRecentGames] = useState(readRecentGames);
   const [favoriteGames, setFavoriteGames] = useState(readFavoriteGames);
+  const featuredGames = useFeaturedGames();
   const [error, setError] = useState<string>();
   const [gameMenu, setGameMenu] = useState<{
     game: ShelfGame;
@@ -361,7 +362,7 @@ function Home({
         <GameShelf
           title={t("recommended")}
           kind="recommended"
-          games={FEATURED_GAMES}
+          games={featuredGames}
           onSelect={launchGame}
           onContextMenu={openGameMenu}
         />
@@ -445,7 +446,7 @@ function SoloHost({
         className="game-frame"
         title={gameName}
         src={game.url}
-        sandbox="allow-scripts allow-same-origin"
+        sandbox="allow-scripts allow-same-origin allow-forms"
       />
       <button
         className="game-options"
@@ -784,6 +785,7 @@ function probeGame(
     iframe.tabIndex = -1;
     iframe.setAttribute("aria-hidden", "true");
     iframe.className = "game-probe-frame";
+    iframe.sandbox.add("allow-scripts", "allow-same-origin", "allow-forms");
 
     const cleanup = () => {
       window.clearTimeout(timeout);

@@ -1,11 +1,15 @@
 import type {
   JsonValue,
+  RoomActionResponse,
+  RoomActionResult,
   RoomJoin,
   RoomLobby,
   RoomSnapshot,
 } from "@playweft/game-protocol";
 
 export type {
+  RoomActionResponse,
+  RoomActionResult,
   RoomJoin,
   RoomLobby,
   RoomSnapshot,
@@ -191,14 +195,15 @@ export function createGuestSession(): Promise<void> {
 
 export function sendAction(
   roomId: string,
+  requestId: string,
   action: JsonValue,
-): Promise<RoomSnapshot> {
+): Promise<RoomActionResponse> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/actions`), {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action }),
-  }).then(responseJson<RoomSnapshot>);
+    body: JSON.stringify({ requestId, action }),
+  }).then(responseJson<RoomActionResponse>);
 }
 
 export function connectRoom(roomId: string): WebSocket {

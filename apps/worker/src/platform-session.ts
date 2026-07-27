@@ -2,10 +2,12 @@ import type { Env } from "./env";
 
 const COOKIE_NAME = "playweft_session";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
+const MAX_DISPLAY_NAME_LENGTH = 100;
 
-interface SessionPayload {
+export interface PlatformSession {
   sub: string;
   exp: number;
+  name?: string;
 }
 
 export class PlatformSessionError extends Error {
@@ -25,7 +27,7 @@ export async function issueGuestSession(request: Request, env: Env): Promise<Res
   if (existing && existing.exp > Math.floor(Date.now() / 1000)) {
     return Response.json({ authenticated: true }, { headers: { "Cache-Control": "no-store" } });
   }
-  const payload: SessionPayload = {
+  const payload: PlatformSession = {
     sub: `guest_${crypto.randomUUID()}`,
     exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
   };
@@ -39,7 +41,7 @@ export async function issueGuestSession(request: Request, env: Env): Promise<Res
   });
 }
 
-export async function requirePlatformSession(request: Request, env: Env): Promise<SessionPayload> {
+export async function requirePlatformSession(request: Request, env: Env): Promise<PlatformSession> {
   const token = readCookie(request.headers.get("Cookie"), COOKIE_NAME);
   if (!token) throw new PlatformSessionError(401, "platform session required");
   const payload = await verify(token, requireSecret(env));
@@ -63,21 +65,40 @@ function requireSecret(env: Env): string {
   return env.AUTH_SECRET;
 }
 
-async function sign(payload: SessionPayload, secret: string): Promise<string> {
+async function sign(payload: PlatformSession, secret: string): Promise<string> {
   const body = base64Url(new TextEncoder().encode(JSON.stringify(payload)));
   const signature = await hmac(body, secret);
   return `${body}.${base64Url(signature)}`;
 }
 
-async function verify(token: string, secret: string): Promise<SessionPayload | undefined> {
+async function verify(token: string, secret: string): Promise<PlatformSession | undefined> {
   const [body, signature] = token.split(".");
   if (!body || !signature || !constantTimeEqual(base64UrlDecode(signature), await hmac(body, secret))) return undefined;
   try {
-    const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(body))) as SessionPayload;
-    return typeof payload.sub === "string" && typeof payload.exp === "number" ? payload : undefined;
+    const payload = JSON.parse(
+      new TextDecoder().decode(base64UrlDecode(body)),
+    ) as Record<string, unknown>;
+    if (typeof payload.sub !== "string" || typeof payload.exp !== "number") {
+      return undefined;
+    }
+    const name = displayName(payload.name);
+    if (payload.name !== undefined && !name) return undefined;
+    return {
+      sub: payload.sub,
+      exp: payload.exp,
+      ...(name ? { name } : {}),
+    };
   } catch {
     return undefined;
   }
+}
+
+function displayName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const name = value.trim();
+  return name.length > 0 && name.length <= MAX_DISPLAY_NAME_LENGTH
+    ? name
+    : undefined;
 }
 
 async function hmac(value: string, secret: string): Promise<Uint8Array> {

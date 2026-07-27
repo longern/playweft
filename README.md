@@ -60,9 +60,11 @@ npm run dev:web
 `AUTH_SECRET` signs the HttpOnly demo guest session and must be a
 Worker secret in a real deployment. The guest issuer is only a minimal
 local/demo identity provider and should be replaced with the platform's real
-account/session issuer. Browser-facing mutations and WebSocket upgrades must
-have an `Origin` equal to the Worker endpoint origin. Authenticated read
-requests remain usable in browsers that omit `Origin` for a same-origin GET.
+account/session issuer. Demo guests have no display name; a real issuer may
+attach an optional display name to the signed platform session. Browser-facing
+mutations and WebSocket upgrades must have an `Origin` equal to the Worker
+endpoint origin. Authenticated read requests remain usable in browsers that
+omit `Origin` for a same-origin GET.
 
 ## Room API
 
@@ -76,20 +78,20 @@ requests remain usable in browsers that omit `Origin` for a same-origin GET.
 | `POST /api/rooms/:roomId/ready` | Set a seated non-host player's readiness with `{ ready }`. |
 | `POST /api/rooms/:roomId/kick` | Room-host-only lobby action with `{ playerId }`. |
 | `POST /api/rooms/:roomId/dissolve` | Room-host-only lobby action that closes the room for everyone and invalidates its invite link. |
-| `POST /api/rooms/:roomId/start` | Room-host-only action; requires the minimum seated players and every seated non-host player ready, then locks the roster and calls Lua `setup({ players })`. |
+| `POST /api/rooms/:roomId/start` | Room-host-only action; locks the seated roster and calls Lua `setup({ protocolVersion, match, players })`. |
 | `POST /api/platform/guest` | Platform-only demo bootstrap; sets an HttpOnly guest session. |
 | `GET /api/rooms/:roomId/state` | Read persisted state; requires a platform session. |
-| `POST /api/rooms/:roomId/actions` | Submit `{ action }`; player identity comes from the platform session. |
+| `POST /api/rooms/:roomId/actions` | Submit `{ requestId, action }`; player identity comes from the platform session and `requestId` makes retries idempotent. |
 | `GET /api/rooms/:roomId/connect` | Open a platform-owned WebSocket; requires a platform session. |
 
 Before start, HTTP/WebSocket updates use `type: "lobby"` with the opaque
 player list, host, phase, and player limits. After start they contain `type`,
-the requesting player's visible `state`, `version`, and `scriptHash`; action
-updates also include `events`. When a game defines `view(state, context)`, the
-platform invokes it separately for each room member at every state-delivery
-boundary. The authoritative state remains server-only. The platform shows the
-lobby itself, then makes the untrusted iframe fill the viewport once the roster
-is locked.
+`matchId`, the requesting player's visible `state` and `events`, `version`,
+`serverTime`, and `scriptHash`. The required `view(state, events, context)`
+callback runs separately for each recipient at every state-delivery boundary,
+so neither authoritative state nor private events have an unfiltered delivery
+path. The platform shows the lobby itself, then makes the untrusted iframe fill
+the viewport once the roster is locked.
 
 ## Rock-Paper-Scissors example
 
@@ -122,6 +124,53 @@ send `{ name, icon }` through the bridge after loading; those labels improve the
 local history but are not stored as a global catalogue. The room Durable Object
 stores only the entry URL, fixed Lua configuration and player limits, game
 state, the room creator, and opaque room-scoped player membership.
+
+## Recommended games
+
+Recommended games can be supplied at deployment time without changing tracked
+source. Copy the example to the ignored local configuration and edit it:
+
+```sh
+cp apps/web/featured-games.example.json apps/web/featured-games.local.json
+npm run deploy:platform
+```
+
+Vite reads `apps/web/featured-games.local.json` while building and embeds its
+contents into the frontend bundle. The file is not uploaded separately and
+changes take effect only after rebuilding. Do not put secrets in it: all
+embedded configuration is public in the browser.
+
+The JSON root is an array. Each item is either a game object or the URL of
+another JSON list:
+
+```json
+[
+  {
+    "name": "Rock Paper Scissors",
+    "translations": {
+      "zh-CN": { "name": "石头剪刀布" }
+    },
+    "url": "/games/rps/",
+    "icon": "/games/rps/rps.svg",
+    "description": "A quick two-player round.",
+    "category": "Quick match",
+    "modes": ["room"],
+    "liveRoom": false
+  },
+  "https://catalog.example.com/playweft-games.json"
+]
+```
+
+Remote lists use the same array format and may reference more lists. Relative
+game and icon URLs in a remote list resolve against that list's URL. Remote
+servers must allow the Playweft frontend origin through CORS. The loader
+deduplicates games by URL and limits recursion, total list requests, response
+size, and request duration.
+
+When the deployment file is elsewhere, set
+`PLAYWEFT_FEATURED_GAMES_FILE=/path/to/games.json`. A configured path that does
+not exist or contains invalid JSON fails the build. Without a configuration
+file, the built-in RPS recommendation remains as the default.
 
 ## Room cleanup
 
@@ -177,55 +226,67 @@ code changes.
 
 ```lua
 function setup(context)
-  -- context.players is the platform-locked anonymous roster.
-  -- context.randomSeed is a cryptographically generated, stable integer for this room.
-  return { score = 0, players = context.players, seed = context.randomSeed }
-end
-
-function on_action(state, action, context)
-  if action.type == "add" then
-    state.score = state.score + action.amount
-  end
   return {
-    state = state,
-    events = { { player = context.playerId, score = state.score } },
+    score = 0,
+    players = context.players,
+    match = context.match,
   }
 end
 
-function view(state, context)
-  -- Return exactly the state this player may receive. This may be a completely
-  -- different object; it does not replace or mutate the authoritative state.
+function on_action(state, action, context)
+  if action.type ~= "add" then
+    return {
+      accepted = false,
+      error = { code = "INVALID_ACTION", message = "Expected add" },
+    }
+  end
+  state.score = state.score + action.amount
   return {
-    score = state.score,
-    ownHand = state.hands[context.playerId],
+    accepted = true,
+    state = state,
+    events = { { player = context.actor.id, score = state.score } },
+  }
+end
+
+function view(state, events, context)
+  return {
+    state = {
+      score = state.score,
+      ownHand = state.hands[context.viewer.id],
+    },
+    events = events,
   }
 end
 ```
 
-`view(state, context)` is optional for games with no hidden information. If it
-is omitted, the complete authoritative state is sent for backward
-compatibility. Its context is `{ playerId, version }`; `playerId` can identify
-a seated player or a spectator. The returned JSON is used for HTTP action
-responses, state reads, initial WebSocket snapshots, and WebSocket broadcasts,
-so there is no unfiltered state-delivery path. Events are public and identical
-for every recipient; secret information belongs only in authoritative state
-and must be filtered by `view`.
+`view(state, events, context)` is required. It returns `{ state, events }` for
+one `context.viewer`, which contains `{ id, role, seat?, name?, isOwner }`.
+Games without hidden information may return both inputs unchanged. The result
+is used for HTTP action responses, state reads, initial WebSocket snapshots,
+and WebSocket broadcasts.
 
 An optional `on_player_left(state, context)` callback runs when a player uses
-the platform's **Leave game** action during play. It receives `{ playerId,
-version }` and returns `{ state, events }`, allowing the game to continue with
-the remaining players or expose its own ended/disbanded state.
+the platform's **Leave game** action during play. It receives the leaving
+`actor`, `matchId`, `version`, and `leftAt`, then returns `{ state, events }`.
 
 An optional `on_return_to_room(state, context)` callback controls whether the
 room host may end the current session and return every player to the lobby. It
 must return `true` to permit the transition; omitted callbacks deny it.
 
 Values crossing the Lua boundary must be JSON-compatible: null, booleans,
-finite numbers, strings, arrays, and objects with string keys. `context` for an
-action is `{ playerId, version }`. `setup` receives `{ players, randomSeed }`
-only after the room host starts the game. `randomSeed` is generated once by the
-platform and is intended for a deterministic PRNG stored in game state; Lua
-does not expose `math.random`.
+finite numbers, strings, arrays, and objects with string keys. `setup` receives
+`{ protocolVersion, match, players }` after the roster locks. `players` is the
+seat-ordered `{ id, seat, name? }` roster. `match` contains `{ id, ownerId,
+startedAt, randomSeed }`; it is regenerated whenever the room starts another
+game. Action context contains `{ protocolVersion, matchId, actionId, actionAt,
+version, actor }`. `actor` has `{ id, role, seat?, name?, isOwner }`.
+
+`on_action` must explicitly return either `{ accepted = true, state, events }`
+or `{ accepted = false, error = { code, message } }`. Rejected actions do not
+change state or increment the version. `actionId` is scoped to the actor:
+repeating the same ID and action returns the stored result without executing
+Lua again, while reusing it for different content is rejected. The platform
+keeps the most recent 256 results for the active match.
 
 ## Runtime boundaries
 

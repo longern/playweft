@@ -5,8 +5,12 @@ import {
   PlatformSessionError,
   requirePlatformOrigin,
   requirePlatformSession,
+  type PlatformSession,
 } from "./platform-session";
 import { generateRoomId, roomIdMaxAttempts } from "./room-id";
+
+const PLAYER_ID_HEADER = "X-Playweft-Player-Id";
+const PLAYER_NAME_HEADER = "X-Playweft-Player-Name";
 
 export { GameRoom };
 export type { Env };
@@ -30,7 +34,7 @@ export default {
             headers: request.headers,
             method: request.method,
           });
-          forwarded.headers.set("X-Playweft-Player-Id", session.sub);
+          setForwardedIdentity(forwarded, session);
           const response =
             await env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
           if (response.status === 409) {
@@ -91,7 +95,7 @@ export default {
         requirePlatformOrigin(request);
       }
       const session = await requirePlatformSession(request, env);
-      forwarded.headers.set("X-Playweft-Player-Id", session.sub);
+      setForwardedIdentity(forwarded, session);
       return env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
     } catch (error) {
       if (error instanceof PlatformSessionError)
@@ -104,3 +108,14 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+function setForwardedIdentity(
+  request: Request,
+  session: PlatformSession,
+): void {
+  request.headers.set(PLAYER_ID_HEADER, session.sub);
+  request.headers.delete(PLAYER_NAME_HEADER);
+  if (session.name) {
+    request.headers.set(PLAYER_NAME_HEADER, encodeURIComponent(session.name));
+  }
+}

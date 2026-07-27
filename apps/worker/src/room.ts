@@ -3,6 +3,8 @@ import {
   assertJson,
   assertJsonSize,
   JsonValidationError,
+  type RoomActionResponse,
+  type RoomActionResult,
   type JsonValue,
   type RoomLobby,
   type RoomPlayer,
@@ -17,11 +19,14 @@ import {
 } from "./runtime-registry";
 
 const MAX_ACTION_BYTES = 8 * 1024;
+const MAX_RECENT_ACTIONS = 256;
 const MAX_PLAYER_ID_LENGTH = 64;
+const MAX_PLAYER_NAME_LENGTH = 100;
 const MAX_STATE_BYTES = 64 * 1024;
 const ROOM_IDLE_TTL_MS = 60 * 60 * 1_000;
 const HOST_OFFLINE_TIMEOUT_MS = 45_000;
 const MAX_PLAYERS = 32;
+const GAME_PROTOCOL_VERSION = 1;
 
 interface RoomConfig {
   runtime: RuntimeKind;
@@ -29,7 +34,6 @@ interface RoomConfig {
   scriptHash: string;
   minPlayers: number;
   maxPlayers: number;
-  randomSeed: number;
   liveRoom: boolean;
 }
 
@@ -40,7 +44,27 @@ interface RoomLaunch {
 interface RoomState {
   state: JsonValue;
   version: number;
+  match: {
+    id: string;
+    startedAt: number;
+    randomSeed: number;
+  };
+  recentActions: StoredAction[];
 }
+
+interface StoredAction {
+  actorId: string;
+  requestId: string;
+  actionHash: string;
+  result: RoomActionResult;
+}
+
+type GameActor = {
+  [key: string]: JsonValue;
+  id: string;
+  role: "player" | "spectator";
+  isOwner: boolean;
+};
 
 interface RoomMeta {
   gameUrl: string;
@@ -60,6 +84,7 @@ interface SocketAttachment {
 
 interface RoomMember {
   actorId: string;
+  name?: string;
   joinedAt: number;
   seat?: number;
   ready?: boolean;
@@ -198,31 +223,20 @@ export class GameRoom extends DurableObject<Env> {
       if (!isRecord(input) || input.type !== "action") {
         throw new RoomHttpError(
           400,
-          "expected { type: 'heartbeat' } or { type: 'action', action }",
+          "expected { type: 'heartbeat' } or { type: 'action', requestId, action }",
         );
       }
-      requestId =
-        typeof input.requestId === "string" &&
-        input.requestId.length > 0 &&
-        input.requestId.length <= 128
-          ? input.requestId
-          : undefined;
-      const update = await this.enqueue(() =>
+      const actionId = validateActionId(input.requestId);
+      requestId = actionId;
+      const response = await this.enqueue(() =>
         this.applyActionInput({
           playerId: attachment.playerId,
           actorId: attachment.actorId,
+          requestId: actionId,
           action: input.action,
         }),
       );
-      if (requestId) {
-        webSocket.send(
-          JSON.stringify({
-            type: "action-result",
-            requestId,
-            version: update.version,
-          }),
-        );
-      }
+      webSocket.send(JSON.stringify(response.result));
     } catch (error) {
       webSocket.send(
         JSON.stringify({
@@ -337,7 +351,6 @@ export class GameRoom extends DurableObject<Env> {
         scriptHash,
         minPlayers,
         maxPlayers,
-        randomSeed: secureRandomSeed(),
         liveRoom,
       };
       await this.saveMeta(meta);
@@ -359,6 +372,8 @@ export class GameRoom extends DurableObject<Env> {
     const phase = await this.phase();
     const members = await this.members();
     const existing = members[playerId];
+    const name = this.playerName(request);
+    let membershipChanged = false;
     if (!existing) {
       if (phase === "playing")
         throw new RoomHttpError(403, "the game has already started");
@@ -373,10 +388,18 @@ export class GameRoom extends DurableObject<Env> {
       ).find((number) => !occupiedSeats.has(number));
       members[playerId] = {
         actorId: await this.actorId(request),
+        ...(name ? { name } : {}),
         joinedAt: Date.now(),
         seat,
         ready: false,
       };
+      membershipChanged = true;
+    } else if (phase === "lobby" && existing.name !== name) {
+      if (name) existing.name = name;
+      else delete existing.name;
+      membershipChanged = true;
+    }
+    if (membershipChanged) {
       await this.saveMembers(members);
       await this.touch();
       this.broadcast(await this.lobby());
@@ -399,7 +422,11 @@ export class GameRoom extends DurableObject<Env> {
     const players = Object.values(members)
       .filter((member) => member.seat !== undefined)
       .sort((a, b) => a.seat! - b.seat!)
-      .map((member) => member.actorId);
+      .map((member) => ({
+        id: member.actorId,
+        ...(member.name ? { name: member.name } : {}),
+        seat: member.seat!,
+      }));
     if (players.length < config.minPlayers)
       throw new RoomHttpError(
         409,
@@ -415,24 +442,51 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(409, "waiting for all players to get ready");
     }
     const engine = await this.engine(config);
-    const state = engine.setup({ players, randomSeed: config.randomSeed });
+    const startedAt = Date.now();
+    const match = {
+      id: `match_${crypto.randomUUID().replaceAll("-", "")}`,
+      startedAt,
+      randomSeed: secureRandomSeed(),
+    };
+    const state = engine.setup({
+      protocolVersion: GAME_PROTOCOL_VERSION,
+      match: {
+        id: match.id,
+        ownerId: members[ownerPlayerId]!.actorId,
+        startedAt: match.startedAt,
+        randomSeed: match.randomSeed,
+      },
+      players,
+    });
     assertJsonSize(state, "initial state", MAX_STATE_BYTES);
     const snapshot: RoomSnapshot = {
       type: "snapshot",
       state,
+      matchId: match.id,
       version: 0,
+      serverTime: startedAt,
       scriptHash: config.scriptHash,
     };
-    const visibleSnapshot = this.snapshotForPlayer(
+    const visibleSnapshot = this.snapshotForViewer(
       snapshot,
-      await this.memberActorId(playerId),
+      this.gameActor(members[playerId]!, true),
       engine,
     );
-    const messages = this.prepareStateBroadcast(snapshot, engine);
+    const messages = this.prepareStateBroadcast(
+      snapshot,
+      engine,
+      members,
+      ownerPlayerId,
+    );
     const meta = await this.meta();
     meta.phase = "playing";
     await this.saveMeta(meta);
-    await this.saveRoomState({ state, version: 0 });
+    await this.saveRoomState({
+      state,
+      version: 0,
+      match,
+      recentActions: [],
+    });
     await this.touch();
     this.sendPreparedBroadcast(messages);
     return visibleSnapshot;
@@ -547,11 +601,23 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(409, "the room is already in the lobby");
     }
 
-    const [config, room] = await Promise.all([this.config(), this.roomState()]);
+    const [config, room, members, ownerPlayerId] = await Promise.all([
+      this.config(),
+      this.roomState(),
+      this.members(),
+      this.ownerPlayerId(),
+    ]);
     const engine = await this.engine(config);
+    const serverTime = Date.now();
     const allowed = engine.returnToRoom(room.state, {
-      playerId: await this.memberActorId(playerId),
+      protocolVersion: GAME_PROTOCOL_VERSION,
+      matchId: room.match.id,
       version: room.version,
+      serverTime,
+      actor: this.gameActor(
+        members[playerId]!,
+        playerId === ownerPlayerId,
+      ),
     });
     if (!allowed) {
       throw new RoomHttpError(
@@ -560,7 +626,6 @@ export class GameRoom extends DurableObject<Env> {
       );
     }
 
-    const members = await this.members();
     for (const [memberId, member] of Object.entries(members)) {
       if (memberId !== playerId) member.ready = false;
     }
@@ -579,7 +644,11 @@ export class GameRoom extends DurableObject<Env> {
   private async leave(request: Request): Promise<RoomLobby | RoomSnapshot> {
     await this.launch();
     const playerId = this.playerId(request);
-    const [phase, members] = await Promise.all([this.phase(), this.members()]);
+    const [phase, members, ownerPlayerId] = await Promise.all([
+      this.phase(),
+      this.members(),
+      this.ownerPlayerId(),
+    ]);
     const member = members[playerId];
     if (!member) throw new RoomHttpError(404, "player is not in this room");
 
@@ -595,26 +664,37 @@ export class GameRoom extends DurableObject<Env> {
 
     const [config, room] = await Promise.all([this.config(), this.roomState()]);
     const engine = await this.engine(config);
+    const leftAt = Date.now();
     const result = engine.playerLeft(room.state, {
-      playerId: member.actorId,
+      protocolVersion: GAME_PROTOCOL_VERSION,
+      matchId: room.match.id,
       version: room.version,
+      leftAt,
+      actor: this.gameActor(member, playerId === ownerPlayerId),
     });
     const version = room.version + 1;
     const snapshot: RoomSnapshot = {
       type: "snapshot",
       state: result.state,
       events: result.events,
+      matchId: room.match.id,
       version,
+      serverTime: leftAt,
       scriptHash: config.scriptHash,
     };
-    const visibleSnapshot = this.snapshotForPlayer(
+    const visibleSnapshot = this.snapshotForViewer(
       snapshot,
-      member.actorId,
+      this.gameActor(member, playerId === ownerPlayerId),
       engine,
     );
-    const messages = this.prepareStateBroadcast(snapshot, engine);
+    const messages = this.prepareStateBroadcast(
+      snapshot,
+      engine,
+      members,
+      ownerPlayerId,
+    );
     delete members[playerId];
-    await this.saveRoomState({ state: result.state, version });
+    await this.saveRoomState({ ...room, state: result.state, version });
     await this.saveMembers(members);
     await this.touch();
     this.sendPreparedBroadcast(messages);
@@ -700,12 +780,13 @@ export class GameRoom extends DurableObject<Env> {
   private async applyAction(request: Request): Promise<object> {
     const input = await parseRequestJson(request);
     if (!isRecord(input) || !("action" in input)) {
-      throw new RoomHttpError(400, "expected { action }");
+      throw new RoomHttpError(400, "expected { requestId, action }");
     }
     const playerId = this.playerId(request);
     return this.applyActionInput({
       playerId,
       actorId: await this.memberActorId(playerId),
+      requestId: validateActionId(input.requestId),
       action: input.action,
     });
   }
@@ -713,8 +794,9 @@ export class GameRoom extends DurableObject<Env> {
   private async applyActionInput(input: {
     playerId: string;
     actorId: string;
+    requestId: string;
     action: unknown;
-  }): Promise<RoomSnapshot> {
+  }): Promise<RoomActionResponse> {
     if (!input.actorId || input.actorId.length > MAX_PLAYER_ID_LENGTH) {
       throw new RoomHttpError(
         400,
@@ -729,42 +811,125 @@ export class GameRoom extends DurableObject<Env> {
     assertJson(input.action, "action");
     assertJsonSize(input.action, "action", MAX_ACTION_BYTES);
 
-    const config = await this.config();
-    const room = await this.roomState();
+    const [config, room, meta] = await Promise.all([
+      this.config(),
+      this.roomState(),
+      this.meta(),
+    ]);
+    const actionHash = await hash(canonicalJson(input.action));
+    const previous = room.recentActions.find(
+      (item) =>
+        item.actorId === input.actorId && item.requestId === input.requestId,
+    );
+    if (previous) {
+      if (previous.actionHash !== actionHash) {
+        throw new RoomHttpError(
+          409,
+          "requestId was already used for a different action",
+        );
+      }
+      return { result: previous.result };
+    }
+
     const engine = await this.engine(config);
+    const member = meta.members[input.playerId]!;
+    const actionAt = Date.now();
     const result = engine.applyAction(room.state, input.action, {
-      playerId: input.actorId,
+      protocolVersion: GAME_PROTOCOL_VERSION,
+      matchId: room.match.id,
+      actionId: input.requestId,
+      actionAt,
       version: room.version,
+      actor: this.gameActor(
+        member,
+        input.playerId === meta.ownerPlayerId,
+      ),
     });
+    if (!result.accepted) {
+      const actionResult: RoomActionResult = {
+        type: "action-result",
+        requestId: input.requestId,
+        accepted: false,
+        matchId: room.match.id,
+        version: room.version,
+        error: result.error,
+      };
+      await this.saveRoomState({
+        ...room,
+        recentActions: this.rememberAction(room, {
+          actorId: input.actorId,
+          requestId: input.requestId,
+          actionHash,
+          result: actionResult,
+        }),
+      });
+      await this.touch();
+      return { result: actionResult };
+    }
+
     const version = room.version + 1;
     const update: RoomSnapshot = {
       type: "state",
       state: result.state,
       events: result.events,
+      matchId: room.match.id,
       version,
+      serverTime: actionAt,
       scriptHash: config.scriptHash,
     };
-    const visibleUpdate = this.snapshotForPlayer(
+    const visibleUpdate = this.snapshotForViewer(
       update,
-      input.actorId,
+      this.gameActor(member, input.playerId === meta.ownerPlayerId),
       engine,
     );
-    const messages = this.prepareStateBroadcast(update, engine);
-    await this.saveRoomState({ state: result.state, version });
+    const messages = this.prepareStateBroadcast(
+      update,
+      engine,
+      meta.members,
+      meta.ownerPlayerId,
+    );
+    const actionResult: RoomActionResult = {
+      type: "action-result",
+      requestId: input.requestId,
+      accepted: true,
+      matchId: room.match.id,
+      version,
+    };
+    await this.saveRoomState({
+      ...room,
+      state: result.state,
+      version,
+      recentActions: this.rememberAction(room, {
+        actorId: input.actorId,
+        requestId: input.requestId,
+        actionHash,
+        result: actionResult,
+      }),
+    });
     await this.touch();
     this.sendPreparedBroadcast(messages);
-    return visibleUpdate;
+    return { result: actionResult, update: visibleUpdate };
   }
 
   private async snapshot(actorId: string): Promise<RoomSnapshot> {
-    const [config, room] = await Promise.all([this.config(), this.roomState()]);
+    const [config, room, meta] = await Promise.all([
+      this.config(),
+      this.roomState(),
+      this.meta(),
+    ]);
     const snapshot: RoomSnapshot = {
       type: "snapshot",
       state: room.state,
+      matchId: room.match.id,
       version: room.version,
+      serverTime: Date.now(),
       scriptHash: config.scriptHash,
     };
-    return this.snapshotForPlayer(snapshot, actorId, await this.engine(config));
+    return this.snapshotForViewer(
+      snapshot,
+      this.viewerForActor(actorId, meta.members, meta.ownerPlayerId),
+      await this.engine(config),
+    );
   }
 
   private async stateFor(request: Request): Promise<RoomSnapshot> {
@@ -878,20 +1043,10 @@ export class GameRoom extends DurableObject<Env> {
     }
     const stored = await this.ctx.storage.get<RoomState>("gameState");
     if (stored !== undefined) return stored;
-    const [state, version] = await Promise.all([
-      this.ctx.storage.get<JsonValue>("state"),
-      this.ctx.storage.get<number>("version"),
-    ]);
-    if (state === undefined || version === undefined) {
-      throw new RoomHttpError(
-        409,
-        "room has no persisted state; initialize it first",
-      );
-    }
-    const room = { state, version };
-    await this.ctx.storage.put("gameState", room);
-    await this.ctx.storage.delete(["state", "version"]);
-    return room;
+    throw new RoomHttpError(
+      409,
+      "room has no persisted state; start a new match first",
+    );
   }
 
   private async saveRoomState(room: RoomState): Promise<void> {
@@ -935,7 +1090,6 @@ export class GameRoom extends DurableObject<Env> {
       scriptHash,
       minPlayers,
       maxPlayers,
-      randomSeed,
       liveRoom,
     ] = await Promise.all([
         this.ctx.storage.get<string>("runtime"),
@@ -943,7 +1097,6 @@ export class GameRoom extends DurableObject<Env> {
         this.ctx.storage.get<string>("scriptHash"),
         this.ctx.storage.get<number>("minPlayers"),
         this.ctx.storage.get<number>("maxPlayers"),
-        this.ctx.storage.get<number>("randomSeed"),
         this.ctx.storage.get<boolean>("liveRoom"),
       ]);
     const config = configFromStoredValues({
@@ -952,7 +1105,6 @@ export class GameRoom extends DurableObject<Env> {
       scriptHash,
       minPlayers,
       maxPlayers,
-      randomSeed,
       liveRoom,
     });
     const meta: RoomMeta = {
@@ -1121,23 +1273,34 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
-  private snapshotForPlayer(
+  private snapshotForViewer(
     snapshot: RoomSnapshot,
-    actorId: string,
+    viewer: GameActor,
     engine: GameRuntime,
   ): RoomSnapshot {
+    const visible = engine.view(
+      snapshot.state,
+      snapshot.events ?? [],
+      {
+        protocolVersion: GAME_PROTOCOL_VERSION,
+        matchId: snapshot.matchId,
+        version: snapshot.version,
+        serverTime: snapshot.serverTime,
+        viewer,
+      },
+    );
     return {
       ...snapshot,
-      state: engine.view(snapshot.state, {
-        playerId: actorId,
-        version: snapshot.version,
-      }),
+      state: visible.state,
+      events: visible.events,
     };
   }
 
   private prepareStateBroadcast(
     snapshot: RoomSnapshot,
     engine: GameRuntime,
+    members: Record<string, RoomMember>,
+    ownerPlayerId: string,
   ): Array<[WebSocket, string]> {
     const serializedByActor = new Map<string, string>();
     const messages: Array<[WebSocket, string]> = [];
@@ -1146,14 +1309,52 @@ export class GameRoom extends DurableObject<Env> {
       if (!attachment) continue;
       let serialized = serializedByActor.get(attachment.actorId);
       if (!serialized) {
+        const member = members[attachment.playerId];
+        if (!member) continue;
         serialized = JSON.stringify(
-          this.snapshotForPlayer(snapshot, attachment.actorId, engine),
+          this.snapshotForViewer(
+            snapshot,
+            this.gameActor(
+              member,
+              attachment.playerId === ownerPlayerId,
+            ),
+            engine,
+          ),
         );
         serializedByActor.set(attachment.actorId, serialized);
       }
       messages.push([socket, serialized]);
     }
     return messages;
+  }
+
+  private gameActor(member: RoomMember, isOwner: boolean): GameActor {
+    return {
+      id: member.actorId,
+      ...(member.name ? { name: member.name } : {}),
+      role: member.seat === undefined ? "spectator" : "player",
+      ...(member.seat === undefined ? {} : { seat: member.seat }),
+      isOwner,
+    };
+  }
+
+  private viewerForActor(
+    actorId: string,
+    members: Record<string, RoomMember>,
+    ownerPlayerId: string,
+  ): GameActor {
+    const entry = Object.entries(members).find(
+      ([, member]) => member.actorId === actorId,
+    );
+    if (!entry) throw new RoomHttpError(403, "player is not in this game");
+    return this.gameActor(entry[1], entry[0] === ownerPlayerId);
+  }
+
+  private rememberAction(
+    room: RoomState,
+    action: StoredAction,
+  ): StoredAction[] {
+    return [...(room.recentActions ?? []), action].slice(-MAX_RECENT_ACTIONS);
   }
 
   private sendPreparedBroadcast(messages: Array<[WebSocket, string]>): void {
@@ -1242,6 +1443,19 @@ export class GameRoom extends DurableObject<Env> {
     return playerId;
   }
 
+  private playerName(request: Request): string | undefined {
+    const encoded = request.headers.get("X-Playweft-Player-Name");
+    if (!encoded) return undefined;
+    try {
+      const name = decodeURIComponent(encoded).trim();
+      return name.length > 0 && name.length <= MAX_PLAYER_NAME_LENGTH
+        ? name
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async actorId(request: Request): Promise<string> {
     const playerId = this.playerId(request);
     const actors =
@@ -1286,6 +1500,7 @@ export class GameRoom extends DurableObject<Env> {
       .sort((left, right) => left.seat! - right.seat!)
       .map((member) => ({
         id: member.actorId,
+        ...(member.name ? { name: member.name } : {}),
         seat: member.seat!,
         ready: member.ready === true,
       }));
@@ -1318,7 +1533,6 @@ function configFromStoredValues(values: {
   scriptHash: string | undefined;
   minPlayers: number | undefined;
   maxPlayers: number | undefined;
-  randomSeed: number | undefined;
   liveRoom: boolean | undefined;
 }): RoomConfig | undefined {
   const {
@@ -1327,7 +1541,6 @@ function configFromStoredValues(values: {
     scriptHash,
     minPlayers,
     maxPlayers,
-    randomSeed,
     liveRoom,
   } = values;
   if (
@@ -1352,16 +1565,12 @@ function configFromStoredValues(values: {
       "room has invalid persisted game configuration",
     );
   }
-  if (randomSeed !== undefined && !isRandomSeed(randomSeed)) {
-    throw new RoomHttpError(500, "room has invalid persisted random seed");
-  }
   return {
     runtime,
     script,
     scriptHash,
     minPlayers,
     maxPlayers,
-    randomSeed: randomSeed ?? secureRandomSeed(),
     liveRoom: liveRoom === true,
   };
 }
@@ -1405,20 +1614,25 @@ function isPlayerLimit(value: unknown): value is number {
   );
 }
 
+function validateActionId(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 128
+  ) {
+    throw new RoomHttpError(
+      400,
+      "requestId must be a 1-128 character string",
+    );
+  }
+  return value;
+}
+
 function secureRandomSeed(): number {
   const values = new Uint32Array(1);
   crypto.getRandomValues(values);
   // Avoid zero so games can safely use xorshift-style PRNGs as well as LCGs.
   return values[0] || 1;
-}
-
-function isRandomSeed(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 1 &&
-    value <= 0xffff_ffff
-  );
 }
 
 async function parseRequestJson(request: Request): Promise<unknown> {
@@ -1451,4 +1665,20 @@ async function hash(value: string): Promise<string> {
   return [...new Uint8Array(digest)]
     .map((value) => value.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function canonicalJson(value: JsonValue): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`,
+      )
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

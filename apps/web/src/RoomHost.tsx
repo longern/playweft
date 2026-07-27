@@ -16,6 +16,7 @@ import {
   transferRoomHost,
   returnRoomToLobby,
   type RoomInitialization,
+  type RoomActionResult,
   type RoomJoin,
   type RoomLobby,
   type RoomSnapshot,
@@ -152,6 +153,7 @@ export default function RoomHost({
     let metadataReady = false;
     let membershipReady = false;
     let entryComplete = false;
+    let lastPublishedMatchId: string | undefined;
     let lastPublishedVersion = -1;
     const gameOrigin = new URL(gameUrl).origin;
     const finishEntryIfReady = () => {
@@ -165,6 +167,10 @@ export default function RoomHost({
     }, 5_000);
 
     const publish = (snapshot: RoomSnapshot) => {
+      if (snapshot.matchId !== lastPublishedMatchId) {
+        lastPublishedMatchId = snapshot.matchId;
+        lastPublishedVersion = -1;
+      }
       if (snapshot.version <= lastPublishedVersion) return;
       lastPublishedVersion = snapshot.version;
       bridgePort.current?.postMessage({
@@ -172,7 +178,9 @@ export default function RoomHost({
         phase: "playing",
         state: snapshot.state,
         events: snapshot.events ?? [],
+        matchId: snapshot.matchId,
         version: snapshot.version,
+        serverTime: snapshot.serverTime,
       });
     };
 
@@ -217,7 +225,7 @@ export default function RoomHost({
         const payload = JSON.parse(event.data as string) as
           | RoomSnapshot
           | RoomLobby
-          | { type: "action-result"; requestId: string; version: number }
+          | RoomActionResult
           | { type: "game_changed"; gameUrl: string }
           | { type: "room_dissolved"; error: string }
           | { type: "error"; error: string; requestId?: string };
@@ -404,13 +412,9 @@ export default function RoomHost({
             );
             return;
           }
-          const snapshot = await sendAction(roomId, data.action);
-          publish(snapshot);
-          channel.port1.postMessage({
-            type: "action-result",
-            requestId,
-            version: snapshot.version,
-          });
+          const response = await sendAction(roomId, requestId, data.action);
+          if (response.update) publish(response.update);
+          channel.port1.postMessage(response.result);
         } catch (reason) {
           channel.port1.postMessage({
             type: "error",
@@ -468,7 +472,15 @@ export default function RoomHost({
     try {
       setError(undefined);
       const snapshot = await startRoom(roomId);
-      bridgePort.current?.postMessage({ type: "state", state: snapshot.state });
+      bridgePort.current?.postMessage({
+        type: "state",
+        phase: "playing",
+        state: snapshot.state,
+        events: snapshot.events ?? [],
+        matchId: snapshot.matchId,
+        version: snapshot.version,
+        serverTime: snapshot.serverTime,
+      });
       setLobby((current) =>
         current ? { ...current, phase: "playing" } : current,
       );
@@ -866,7 +878,7 @@ export default function RoomHost({
             ref={iframe}
             title={gameName}
             src={gameUrl}
-            sandbox="allow-scripts allow-same-origin"
+            sandbox="allow-scripts allow-same-origin allow-forms"
           />
         )}
       </main>

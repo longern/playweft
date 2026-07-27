@@ -1,6 +1,6 @@
 import { useState } from "react";
 import Dialog from "./Dialog";
-import { FEATURED_GAMES } from "./featured-games";
+import { useFeaturedGames, type FeaturedGame } from "./featured-games";
 import type { RecentGame } from "./RoomHost";
 import { localizeGameName, useI18n } from "./i18n";
 
@@ -18,6 +18,7 @@ export default function ChangeGameDialog({
   const { locale, t } = useI18n();
   const [url, setUrl] = useState("");
   const recentGames = readRecentGames();
+  const featuredGames = useFeaturedGames();
 
   return (
     <Dialog
@@ -63,7 +64,7 @@ export default function ChangeGameDialog({
       )}
       <GameChoices
         title={t("recommended")}
-        games={FEATURED_GAMES}
+        games={featuredGames}
         selectedUrl={url}
         onSelect={setUrl}
       />
@@ -78,7 +79,7 @@ function GameChoices({
   onSelect,
 }: {
   title: string;
-  games: Array<RecentGame | (typeof FEATURED_GAMES)[number]>;
+  games: Array<RecentGame | FeaturedGame>;
   selectedUrl: string;
   onSelect(url: string): void;
 }) {

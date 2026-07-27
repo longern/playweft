@@ -1,9 +1,17 @@
 local choices = { rock = true, paper = true, scissors = true }
 
-local function sorted_players(played)
+local function reject(code, message)
+  return {
+    accepted = false,
+    error = { code = code, message = message },
+  }
+end
+
+local function played_players(state)
   local players = {}
-  for player_id, _ in pairs(played) do table.insert(players, player_id) end
-  table.sort(players)
+  for _, player in ipairs(state.players) do
+    if state.choices[player.id] then table.insert(players, player.id) end
+  end
   return players
 end
 
@@ -16,34 +24,43 @@ local function winner(a, b)
 end
 
 function setup(context)
-  return { round = 1, players = context.players, choices = {} }
+  return {
+    round = 1,
+    players = context.players,
+    match = context.match,
+    choices = {},
+  }
 end
 
 function on_action(state, action, context)
   if action.type ~= "choose" or not choices[action.choice] then
-    return { state = state, events = { { type = "invalid_choice" } } }
+    return reject("INVALID_CHOICE", "Choose rock, paper, or scissors")
   end
-  if state.choices[context.playerId] then
-    return { state = state, events = { { type = "already_chosen" } } }
+  if state.choices[context.actor.id] then
+    return reject("ALREADY_CHOSEN", "A move is already locked in")
   end
 
   local allowed = false
-  for _, player_id in ipairs(state.players) do
-    if player_id == context.playerId then allowed = true end
+  for _, player in ipairs(state.players) do
+    if player.id == context.actor.id then allowed = true end
   end
   if not allowed then
-    return { state = state, events = { { type = "not_a_player" } } }
+    return reject("NOT_A_PLAYER", "Spectators cannot choose a move")
   end
 
-  local players = sorted_players(state.choices)
+  local players = played_players(state)
   if #players >= #state.players then
-    return { state = state, events = { { type = "room_full" } } }
+    return reject("ROUND_FULL", "Every player has already chosen")
   end
 
-  state.choices[context.playerId] = action.choice
-  players = sorted_players(state.choices)
+  state.choices[context.actor.id] = action.choice
+  players = played_players(state)
   if #players < 2 then
-    return { state = state, events = { { type = "waiting", player = context.playerId } } }
+    return {
+      accepted = true,
+      state = state,
+      events = { { type = "waiting", player = context.actor.id } },
+    }
   end
 
   local first, second = players[1], players[2]
@@ -58,14 +75,25 @@ function on_action(state, action, context)
   }
   state.round = state.round + 1
   state.choices = {}
-  return { state = state, events = { { type = "revealed", result = state.lastResult } } }
+  return {
+    accepted = true,
+    state = state,
+    events = { { type = "revealed", result = state.lastResult } },
+  }
 end
 
-function view(state, context)
-  local has_chosen = state.choices[context.playerId] ~= nil
+function view(state, events, context)
+  local has_chosen = state.choices[context.viewer.id] ~= nil
   state.choices = {}
-  if has_chosen then state.choices[context.playerId] = true end
-  return state
+  if has_chosen then state.choices[context.viewer.id] = true end
+
+  local visible_events = {}
+  for _, event in ipairs(events) do
+    if event.type ~= "waiting" or event.player == context.viewer.id then
+      table.insert(visible_events, event)
+    end
+  end
+  return { state = state, events = visible_events }
 end
 
 function on_return_to_room(state, context)

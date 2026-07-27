@@ -10,6 +10,7 @@ let state;
 let hasChosen = false;
 let pendingActionId;
 let playerId;
+let matchId;
 let latestVersion = -1;
 const announceBridgeReady = () => window.parent.postMessage({ type: "playweft:bridge-ready", version: 1 }, "*");
 const bridgeProbe = window.setInterval(announceBridgeReady, 500);
@@ -72,7 +73,13 @@ function onPlatformMessage(event) {
     return;
   }
   if (payload.type === "action-result") {
-    if (payload.requestId === pendingActionId) pendingActionId = undefined;
+    if (payload.requestId !== pendingActionId) return;
+    pendingActionId = undefined;
+    if (!payload.accepted) {
+      hasChosen = false;
+      buttons.forEach((button) => { button.disabled = false; });
+      showError(payload.error.message);
+    }
     return;
   }
   if (payload.type === "error") {
@@ -84,6 +91,10 @@ function onPlatformMessage(event) {
     return showError(payload.error);
   }
   if (payload.type !== "state") return;
+  if (payload.matchId !== matchId) {
+    matchId = payload.matchId;
+    latestVersion = -1;
+  }
   if (typeof payload.version === "number" && payload.version <= latestVersion) return;
   if (typeof payload.version === "number") latestVersion = payload.version;
   state = payload.state;
