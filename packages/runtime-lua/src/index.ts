@@ -72,6 +72,12 @@ return function(kind, state, action, context)
     end
     return on_player_left(state, context)
   end
+  if kind == "view" then
+    if view == nil then
+      return state
+    end
+    return view(state, context)
+  end
   if kind == "return_to_room" then
     if on_return_to_room == nil then
       return false
@@ -277,6 +283,13 @@ export class LuaGameRuntime implements GameRuntime {
     return this.resultFor("action", state, action, context, "on_action");
   }
 
+  view(state: JsonValue, context: JsonValue): JsonValue {
+    const visibleState = this.invoke("view", state, null, context)[0] ?? null;
+    assertJson(visibleState, "view result");
+    assertJsonSize(visibleState, "view result", MAX_VALUE_BYTES);
+    return visibleState;
+  }
+
   playerLeft(state: JsonValue, context: JsonValue): GameActionResult {
     return this.resultFor("player_left", state, null, context, "on_player_left");
   }
@@ -309,7 +322,7 @@ export class LuaGameRuntime implements GameRuntime {
     this.global.close();
   }
 
-  private invoke(kind: "setup" | "action" | "player_left" | "return_to_room", state: JsonValue, action: JsonValue, context: JsonValue): JsonValue[] {
+  private invoke(kind: "setup" | "action" | "view" | "player_left" | "return_to_room", state: JsonValue, action: JsonValue, context: JsonValue): JsonValue[] {
     const base = this.global.getTop();
     try {
       this.module.lua_rawgeti(this.global.address, LUA_REGISTRY_INDEX, BigInt(this.functionRef));

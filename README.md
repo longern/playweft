@@ -84,9 +84,12 @@ requests remain usable in browsers that omit `Origin` for a same-origin GET.
 
 Before start, HTTP/WebSocket updates use `type: "lobby"` with the opaque
 player list, host, phase, and player limits. After start they contain `type`,
-`state`, `version`, and `scriptHash`; action updates also include `events`.
-The platform shows this lobby itself, then makes the untrusted iframe fill the
-viewport once the roster is locked.
+the requesting player's visible `state`, `version`, and `scriptHash`; action
+updates also include `events`. When a game defines `view(state, context)`, the
+platform invokes it separately for each room member at every state-delivery
+boundary. The authoritative state remains server-only. The platform shows the
+lobby itself, then makes the untrusted iframe fill the viewport once the roster
+is locked.
 
 ## Rock-Paper-Scissors example
 
@@ -188,7 +191,25 @@ function on_action(state, action, context)
     events = { { player = context.playerId, score = state.score } },
   }
 end
+
+function view(state, context)
+  -- Return exactly the state this player may receive. This may be a completely
+  -- different object; it does not replace or mutate the authoritative state.
+  return {
+    score = state.score,
+    ownHand = state.hands[context.playerId],
+  }
+end
 ```
+
+`view(state, context)` is optional for games with no hidden information. If it
+is omitted, the complete authoritative state is sent for backward
+compatibility. Its context is `{ playerId, version }`; `playerId` can identify
+a seated player or a spectator. The returned JSON is used for HTTP action
+responses, state reads, initial WebSocket snapshots, and WebSocket broadcasts,
+so there is no unfiltered state-delivery path. Events are public and identical
+for every recipient; secret information belongs only in authoritative state
+and must be filtered by `view`.
 
 An optional `on_player_left(state, context)` callback runs when a player uses
 the platform's **Leave game** action during play. It receives `{ playerId,

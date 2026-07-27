@@ -61,6 +61,13 @@ function on_action(state, action, context)
   return { state = state, events = { { type = "revealed", result = state.lastResult } } }
 end
 
+function view(state, context)
+  local has_chosen = state.choices[context.playerId] ~= nil
+  state.choices = {}
+  if has_chosen then state.choices[context.playerId] = true end
+  return state
+end
+
 function on_return_to_room(state, context)
   return true
 end

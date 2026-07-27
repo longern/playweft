@@ -88,7 +88,7 @@ function onPlatformMessage(event) {
   if (typeof payload.version === "number") latestVersion = payload.version;
   state = payload.state;
   status.textContent = "Game started";
-  if (state.choices && Object.keys(state.choices).length === 0) hasChosen = false;
+  hasChosen = state.choices?.[playerId] === true;
   buttons.forEach((button) => { button.disabled = hasChosen; });
   waiting.textContent = hasChosen ? "Move locked in. Waiting for the other player…" : "Choose rock, paper, or scissors.";
   if (!state.lastResult) return;

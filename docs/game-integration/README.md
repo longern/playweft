@@ -262,6 +262,37 @@ game state and use a deterministic PRNG when the game needs random outcomes.
 values must be JSON-serializable. Lua has no network, file-system, random,
 module-loading, or debug APIs.
 
+### Give each player a private state view
+
+The state returned by `setup`, `on_action`, and `on_player_left` is the
+server's authoritative state. Games with hidden information should define
+`view(state, context)` and return exactly what the current recipient may see:
+
+```lua
+function view(state, context)
+  local hand = state.hands[context.playerId]
+  return {
+    turn = state.turn,
+    board = state.board,
+    ownHand = hand,
+    opponentCardCounts = state.opponentCardCounts,
+  }
+end
+```
+
+`context` is `{ playerId, version }`. The player may be seated or spectating,
+so games that support spectators should return an appropriate public view for
+IDs outside the locked roster. A view can freely build a new value, not only
+remove fields. It runs independently for each recipient before every HTTP
+response, state read, initial WebSocket snapshot, and WebSocket update. Its
+result is never persisted, and mutating the `state` table inside `view` does
+not mutate the authoritative state.
+
+If `view` is omitted, Playweft sends the complete state. This is convenient for
+games without hidden information but is unsafe for hands, secret roles,
+unrevealed moves, or other private data. Events are broadcast identically to
+all recipients, so they must not contain secret information.
+
 ## Constraints and security boundary
 
 - Do not create `fetch`, WebSocket, or EventSource connections to Playweft.

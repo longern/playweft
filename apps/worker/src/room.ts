@@ -423,13 +423,19 @@ export class GameRoom extends DurableObject<Env> {
       version: 0,
       scriptHash: config.scriptHash,
     };
+    const visibleSnapshot = this.snapshotForPlayer(
+      snapshot,
+      await this.memberActorId(playerId),
+      engine,
+    );
+    const messages = this.prepareStateBroadcast(snapshot, engine);
     const meta = await this.meta();
     meta.phase = "playing";
     await this.saveMeta(meta);
     await this.saveRoomState({ state, version: 0 });
     await this.touch();
-    this.broadcast(snapshot);
-    return snapshot;
+    this.sendPreparedBroadcast(messages);
+    return visibleSnapshot;
   }
 
   private async kick(request: Request): Promise<RoomLobby> {
@@ -594,10 +600,6 @@ export class GameRoom extends DurableObject<Env> {
       version: room.version,
     });
     const version = room.version + 1;
-    delete members[playerId];
-    await this.saveRoomState({ state: result.state, version });
-    await this.saveMembers(members);
-    await this.touch();
     const snapshot: RoomSnapshot = {
       type: "snapshot",
       state: result.state,
@@ -605,9 +607,19 @@ export class GameRoom extends DurableObject<Env> {
       version,
       scriptHash: config.scriptHash,
     };
-    this.broadcast(snapshot);
+    const visibleSnapshot = this.snapshotForPlayer(
+      snapshot,
+      member.actorId,
+      engine,
+    );
+    const messages = this.prepareStateBroadcast(snapshot, engine);
+    delete members[playerId];
+    await this.saveRoomState({ state: result.state, version });
+    await this.saveMembers(members);
+    await this.touch();
+    this.sendPreparedBroadcast(messages);
     this.closePlayerSockets(playerId);
-    return snapshot;
+    return visibleSnapshot;
   }
 
   private async setSeat(request: Request): Promise<RoomLobby> {
@@ -725,9 +737,6 @@ export class GameRoom extends DurableObject<Env> {
       version: room.version,
     });
     const version = room.version + 1;
-    await this.saveRoomState({ state: result.state, version });
-    await this.touch();
-
     const update: RoomSnapshot = {
       type: "state",
       state: result.state,
@@ -735,25 +744,34 @@ export class GameRoom extends DurableObject<Env> {
       version,
       scriptHash: config.scriptHash,
     };
-    this.broadcast(update);
-    return update;
+    const visibleUpdate = this.snapshotForPlayer(
+      update,
+      input.actorId,
+      engine,
+    );
+    const messages = this.prepareStateBroadcast(update, engine);
+    await this.saveRoomState({ state: result.state, version });
+    await this.touch();
+    this.sendPreparedBroadcast(messages);
+    return visibleUpdate;
   }
 
-  private async snapshot(): Promise<RoomSnapshot> {
+  private async snapshot(actorId: string): Promise<RoomSnapshot> {
     const [config, room] = await Promise.all([this.config(), this.roomState()]);
-    return {
+    const snapshot: RoomSnapshot = {
       type: "snapshot",
       state: room.state,
       version: room.version,
       scriptHash: config.scriptHash,
     };
+    return this.snapshotForPlayer(snapshot, actorId, await this.engine(config));
   }
 
   private async stateFor(request: Request): Promise<RoomSnapshot> {
-    await this.memberActorId(this.playerId(request));
+    const actorId = await this.memberActorId(this.playerId(request));
     if ((await this.phase()) !== "playing")
       throw new RoomHttpError(409, "the game has not started");
-    return this.snapshot();
+    return this.snapshot(actorId);
   }
 
   private async connectWebSocket(request: Request): Promise<Response> {
@@ -784,7 +802,7 @@ export class GameRoom extends DurableObject<Env> {
     } else {
       this.acceptHibernatingWebSocket(server, attachment);
     }
-    this.sendInitialSocketMessage(server);
+    this.sendInitialSocketMessage(server, attachment.actorId);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -814,14 +832,17 @@ export class GameRoom extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
   }
 
-  private sendInitialSocketMessage(server: WebSocket): void {
+  private sendInitialSocketMessage(
+    server: WebSocket,
+    actorId: string,
+  ): void {
     this.ctx.waitUntil(
       this.enqueue(async () => {
         try {
           server.send(
             JSON.stringify(
               (await this.phase()) === "playing"
-                ? await this.snapshot()
+                ? await this.snapshot(actorId)
                 : await this.lobby(),
             ),
           );
@@ -1096,6 +1117,51 @@ export class GameRoom extends DurableObject<Env> {
         socket.send(serialized);
       } catch {
         // A peer may close between getWebSockets() and send().
+      }
+    }
+  }
+
+  private snapshotForPlayer(
+    snapshot: RoomSnapshot,
+    actorId: string,
+    engine: GameRuntime,
+  ): RoomSnapshot {
+    return {
+      ...snapshot,
+      state: engine.view(snapshot.state, {
+        playerId: actorId,
+        version: snapshot.version,
+      }),
+    };
+  }
+
+  private prepareStateBroadcast(
+    snapshot: RoomSnapshot,
+    engine: GameRuntime,
+  ): Array<[WebSocket, string]> {
+    const serializedByActor = new Map<string, string>();
+    const messages: Array<[WebSocket, string]> = [];
+    for (const socket of this.sockets()) {
+      const attachment = this.socketAttachment(socket);
+      if (!attachment) continue;
+      let serialized = serializedByActor.get(attachment.actorId);
+      if (!serialized) {
+        serialized = JSON.stringify(
+          this.snapshotForPlayer(snapshot, attachment.actorId, engine),
+        );
+        serializedByActor.set(attachment.actorId, serialized);
+      }
+      messages.push([socket, serialized]);
+    }
+    return messages;
+  }
+
+  private sendPreparedBroadcast(messages: Array<[WebSocket, string]>): void {
+    for (const [socket, serialized] of messages) {
+      try {
+        socket.send(serialized);
+      } catch {
+        // A peer may close between preparing and sending an update.
       }
     }
   }
