@@ -92,28 +92,9 @@ p {
 }
 
 .brand-mark {
-  display: inline-grid;
-  grid-template-columns: repeat(3, 4px);
-  gap: 3px;
-  align-items: end;
-  width: 19px;
-  height: 20px;
-}
-
-.brand-mark i {
   display: block;
-  border-radius: 1px;
-  background: #b6f39a;
-}
-
-.brand-mark i:nth-child(1) {
-  height: 10px;
-}
-.brand-mark i:nth-child(2) {
-  height: 16px;
-}
-.brand-mark i:nth-child(3) {
-  height: 12px;
+  width: 28px;
+  height: 28px;
 }
 
 .topbar-label {

@@ -194,9 +194,8 @@ export default function RoomHost({
     let membershipReady = false;
     let entryComplete = false;
     let joinedPlayerId: string | undefined;
-    const clipboardDeclared = loadedGame.game.permissions.includes(
-      "clipboard.readText",
-    );
+    const clipboardDeclared =
+      loadedGame.game.permissions.includes("clipboard.readText");
     const clipboardReason = manifestPermissionReason(
       loadedGame.manifest,
       "clipboard.readText",
@@ -405,10 +404,7 @@ export default function RoomHost({
         return;
 
       clipboard.cancelPending();
-      rejectLiveActions(
-        "BRIDGE_REPLACED",
-        "The game bridge was replaced",
-      );
+      rejectLiveActions("BRIDGE_REPLACED", "The game bridge was replaced");
       bridgePort.current?.close();
       bridgeConnected = true;
       const channel = new MessageChannel();
@@ -420,8 +416,7 @@ export default function RoomHost({
               if (joined && joinedPlayerId) {
                 if (latestSnapshot) {
                   window.setTimeout(() => {
-                    if (!closed && latestSnapshot)
-                      sendSnapshot(latestSnapshot);
+                    if (!closed && latestSnapshot) sendSnapshot(latestSnapshot);
                   }, 0);
                 }
                 return {
@@ -470,10 +465,7 @@ export default function RoomHost({
                 };
               } catch (reason) {
                 window.clearTimeout(handshakeTimeout);
-                const error = message(
-                  reason,
-                  tRef.current("unexpectedError"),
-                );
+                const error = message(reason, tRef.current("unexpectedError"));
                 setError(error);
                 onEntryFailed();
                 if (reason instanceof RpcFault) throw reason;
@@ -734,11 +726,7 @@ export default function RoomHost({
             onClick={requestBack}
             aria-label={t("backToPlayweftHome")}
           >
-            <span className="brand-mark">
-              <i />
-              <i />
-              <i />
-            </span>
+            <img className="brand-mark" src="/favicon.svg" alt="" />
             <span className="room-brand-name">playweft</span>
           </button>
           <span className="room-mobile-game-name" title={gameName}>
@@ -789,7 +777,9 @@ export default function RoomHost({
                   </p>
                 </div>
                 <span className="lobby-requirement">
-                  {lobby ? t("playersToStart", { count: lobby.minPlayers }) : ""}
+                  {lobby
+                    ? t("playersToStart", { count: lobby.minPlayers })
+                    : ""}
                 </span>
               </div>
               <ol className="player-grid">
@@ -817,7 +807,9 @@ export default function RoomHost({
                           <Armchair aria-hidden="true" />
                         </button>
                         <span className="player-card-copy">
-                          <strong className="player-name">{t("sitHere")}</strong>
+                          <strong className="player-name">
+                            {t("sitHere")}
+                          </strong>
                         </span>
                       </li>
                     );
@@ -838,7 +830,9 @@ export default function RoomHost({
                           <span
                             className={`player-ready-marker ${player.ready ? "player-ready-marker-ready" : "player-ready-marker-pending"}`}
                             title={player.ready ? t("ready") : t("notReady")}
-                            aria-label={player.ready ? t("ready") : t("notReady")}
+                            aria-label={
+                              player.ready ? t("ready") : t("notReady")
+                            }
                           >
                             {player.ready && <Check aria-hidden="true" />}
                           </span>
@@ -871,7 +865,9 @@ export default function RoomHost({
                           <button
                             className="player-menu-toggle"
                             type="button"
-                            aria-label={t("playerOptions", { name: playerName })}
+                            aria-label={t("playerOptions", {
+                              name: playerName,
+                            })}
                             aria-expanded={playerMenuId === player.id}
                             onClick={() => {
                               if (playerMenuId === player.id) closePlayerMenu();
@@ -936,7 +932,10 @@ export default function RoomHost({
                 <p className="spectator-count">
                   {t("spectatorCount", {
                     count: lobby?.spectators.length ?? 0,
-                    suffix: locale === "en" && lobby?.spectators.length !== 1 ? "s" : "",
+                    suffix:
+                      locale === "en" && lobby?.spectators.length !== 1
+                        ? "s"
+                        : "",
                   })}
                 </p>
                 {!isOwner && selfId && (
@@ -1040,9 +1039,7 @@ export default function RoomHost({
             { label: t("leave"), variant: "danger", onSelect: onBack },
           ]}
         >
-          <p className="leave-dialog-copy">
-            {t("needRoomLinkToReturn")}
-          </p>
+          <p className="leave-dialog-copy">{t("needRoomLinkToReturn")}</p>
         </Dialog>
       )}
       {dissolveDialogOpen && (
@@ -1058,9 +1055,7 @@ export default function RoomHost({
             },
           ]}
         >
-          <p className="leave-dialog-copy">
-            {t("dissolveRoomDescription")}
-          </p>
+          <p className="leave-dialog-copy">{t("dissolveRoomDescription")}</p>
         </Dialog>
       )}
       {gameHelpOpen && gameHelpHref && (

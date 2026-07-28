@@ -307,11 +307,7 @@ function Home({
     <div className="site-shell">
       <header className="topbar">
         <a className="brand" href="/" aria-label={t("playweftHome")}>
-          <span className="brand-mark">
-            <i />
-            <i />
-            <i />
-          </span>
+          <img className="brand-mark" src="/favicon.svg" alt="" />
           <span>playweft</span>
         </a>
         <span className="topbar-label">{t("playGamesTogether")}</span>
@@ -476,9 +472,8 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
 
   useEffect(() => {
     if (!loaded) return;
-    const clipboardDeclared = loaded.game.permissions.includes(
-      "clipboard.readText",
-    );
+    const clipboardDeclared =
+      loaded.game.permissions.includes("clipboard.readText");
     const clipboardReason = manifestPermissionReason(
       loaded.manifest,
       "clipboard.readText",
@@ -549,12 +544,7 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
       port.current = undefined;
       window.removeEventListener("message", onMessage);
     };
-  }, [
-    clipboard.cancelPending,
-    clipboard.requestReadText,
-    gameOrigin,
-    loaded,
-  ]);
+  }, [clipboard.cancelPending, clipboard.requestReadText, gameOrigin, loaded]);
 
   return (
     <div className="room-shell room-playing solo-host">
@@ -569,7 +559,10 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
         />
       )}
       {loadError && (
-        <ErrorToast message={loadError} onDismiss={() => setLoadError(undefined)} />
+        <ErrorToast
+          message={loadError}
+          onDismiss={() => setLoadError(undefined)}
+        />
       )}
       <ClipboardPrompt
         prompt={clipboard.prompt}
@@ -885,12 +878,14 @@ function probeGame(
 ): Promise<RecentGame> {
   const manifestUrl = normalizeGameUrl(value, t);
   onStatus(t("checkingGame"));
-  return loadGameManifest(manifestUrl).then((loaded) => loaded.game).catch((reason) => {
-    throw new UnsupportedGameUrlError(
-      manifestUrl,
-      reason instanceof Error ? reason.message : t("gameBridgeUnavailable"),
-    );
-  });
+  return loadGameManifest(manifestUrl)
+    .then((loaded) => loaded.game)
+    .catch((reason) => {
+      throw new UnsupportedGameUrlError(
+        manifestUrl,
+        reason instanceof Error ? reason.message : t("gameBridgeUnavailable"),
+      );
+    });
 }
 
 function normalizeGameUrl(value: string, t: Translator): string {
