@@ -630,6 +630,7 @@ main.room-host {
   place-items: center;
   border-radius: 16px;
   background: #f3f6f2;
+  box-shadow: var(--game-icon-shadow);
   color: #17221a;
   font-size: 1rem;
   font-weight: 900;

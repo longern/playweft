@@ -232,6 +232,7 @@
 
 .change-game-list .shelf-art {
   width: 80px;
+  border-radius: 16px;
 }
 
 .change-game-list .shelf-game.change-game-choice-selected {
