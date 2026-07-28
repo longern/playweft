@@ -373,6 +373,121 @@
   animation: error-toast-out 0.2s ease-in both;
 }
 
+.clipboard-prompt,
+.clipboard-notice {
+  position: fixed;
+  z-index: 50;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
+  width: min(560px, calc(100vw - 24px));
+  border: 1px solid #dfe4e1;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 50px rgba(32, 38, 34, 0.22);
+  color: #202124;
+  transform: translateX(-50%);
+  animation: clipboard-prompt-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+  backdrop-filter: blur(12px);
+}
+
+.clipboard-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px;
+}
+
+.clipboard-prompt > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.clipboard-prompt strong {
+  font-size: 0.94rem;
+  line-height: 1.35;
+}
+
+.clipboard-prompt span {
+  overflow: hidden;
+  color: #737a76;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clipboard-prompt p {
+  margin: 5px 0 0;
+  color: #4b514d;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.clipboard-prompt small {
+  margin-top: 2px;
+  color: #737a76;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.clipboard-prompt-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.clipboard-prompt-actions button {
+  min-width: 70px;
+  padding: 8px 12px;
+  border: 1px solid #dce1de;
+  border-radius: 9px;
+  background: #fff;
+  color: #343936;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.clipboard-prompt-actions button.primary {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.clipboard-prompt-actions button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.clipboard-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(420px, calc(100vw - 24px));
+  padding: 12px 12px 12px 16px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.clipboard-notice button {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #687078;
+  font-size: 1.2rem;
+}
+
+.clipboard-notice button:hover {
+  background: #eef2ef;
+}
+
 .creating-overlay {
   position: fixed;
   z-index: 10;
@@ -448,6 +563,28 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes clipboard-prompt-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -10px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (max-width: 560px) {
+  .clipboard-prompt {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .clipboard-prompt-actions {
+    justify-content: flex-end;
   }
 }
 @keyframes game-menu-backdrop-in {

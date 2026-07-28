@@ -1,0 +1,42 @@
+{
+  "$schema": "https://playweft.dev/schemas/game-manifest-v1.json",
+  "manifestVersion": 1,
+  "id": "dev.playweft.rock-paper-scissors",
+  "version": "1.0.0",
+  "protocol": {
+    "min": 1,
+    "max": 1
+  },
+  "client": {
+    "entry": "./"
+  },
+  "display": {
+    "defaultLocale": "en",
+    "locales": {
+      "en": {
+        "name": "Rock Paper Scissors",
+        "description": "A quick two-player round.",
+        "category": "Quick match"
+      },
+      "zh-CN": {
+        "name": "石头剪刀布",
+        "description": "快速的双人对局。",
+        "category": "快速对战"
+      }
+    },
+    "icon": "./rps.svg"
+  },
+  "modes": {
+    "room": {
+      "players": {
+        "min": 2,
+        "max": 2
+      },
+      "server": {
+        "runtime": "lua",
+        "entry": "./game.lua",
+        "persistence": "durable"
+      }
+    }
+  }
+}

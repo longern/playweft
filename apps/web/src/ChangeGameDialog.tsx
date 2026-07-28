@@ -1,7 +1,10 @@
 import { useState } from "react";
 import Dialog from "./Dialog";
 import { useFeaturedGames, type FeaturedGame } from "./featured-games";
-import type { RecentGame } from "./RoomHost";
+import {
+  isStoredDiscoveredGame,
+  type DiscoveredGame as RecentGame,
+} from "./game-manifest";
 import { localizeGameName, useI18n } from "./i18n";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
@@ -93,11 +96,11 @@ function GameChoices({
       <div className="change-game-list">
         {games.map((game) => (
           <button
-            key={game.url}
-            className={`shelf-game ${game.url === selectedUrl ? "change-game-choice-selected" : ""}`}
+            key={game.manifestUrl}
+            className={`shelf-game ${game.manifestUrl === selectedUrl ? "change-game-choice-selected" : ""}`}
             type="button"
-            aria-pressed={game.url === selectedUrl}
-            onClick={() => onSelect(game.url)}
+            aria-pressed={game.manifestUrl === selectedUrl}
+            onClick={() => onSelect(game.manifestUrl)}
           >
             <span className="shelf-art">
               {game.icon ? (
@@ -131,10 +134,5 @@ function readRecentGames(): RecentGame[] {
 }
 
 function isRecentGame(value: unknown): value is RecentGame {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as RecentGame).url === "string" &&
-    typeof (value as RecentGame).name === "string"
-  );
+  return isStoredDiscoveredGame(value);
 }

@@ -45,8 +45,8 @@ export default {
             );
           }
           if (!response.ok) return response;
-          const launch = (await response.json()) as { gameUrl: string };
-          return Response.json({ roomId, gameUrl: launch.gameUrl });
+          const launch = (await response.json()) as { manifestUrl: string };
+          return Response.json({ roomId, manifestUrl: launch.manifestUrl });
         }
       }
       if (request.method === "GET" && url.pathname === "/") {

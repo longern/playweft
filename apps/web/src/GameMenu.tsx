@@ -1,6 +1,6 @@
 import type { FeaturedGame } from "./featured-games";
 import Menu, { type MenuPosition } from "./Menu";
-import type { RecentGame } from "./RoomHost";
+import type { DiscoveredGame as RecentGame } from "./game-manifest";
 import { localizeGameName, useI18n } from "./i18n";
 
 type MenuGame = RecentGame | FeaturedGame;

@@ -36,8 +36,10 @@ async function responseJson<T>(response: Response): Promise<T> {
 }
 
 export interface RoomInitialization {
-  runtime?: "lua";
-  script: string;
+  gameId: string;
+  gameVersion: string;
+  runtime: "lua";
+  serverUrl: string;
   minPlayers: number;
   maxPlayers: number;
   liveRoom?: boolean;
@@ -45,11 +47,11 @@ export interface RoomInitialization {
 
 export interface CreatedRoom {
   roomId: string;
-  gameUrl: string;
+  manifestUrl: string;
 }
 
 export interface RoomLaunch {
-  gameUrl: string;
+  manifestUrl: string;
 }
 
 export function initializeRoom(
@@ -153,12 +155,12 @@ export function returnRoomToLobby(roomId: string): Promise<RoomLobby> {
   ).then(responseJson<RoomLobby>);
 }
 
-export function createRoom(gameUrl: string): Promise<CreatedRoom> {
+export function createRoom(manifestUrl: string): Promise<CreatedRoom> {
   return fetch(endpoint("/api/rooms"), {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ gameUrl }),
+    body: JSON.stringify({ manifestUrl }),
   }).then(responseJson<CreatedRoom>);
 }
 
@@ -170,13 +172,13 @@ export function getRoomLaunch(roomId: string): Promise<RoomLaunch> {
 
 export function changeRoomGame(
   roomId: string,
-  gameUrl: string,
+  manifestUrl: string,
 ): Promise<RoomLaunch> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/game`), {
     method: "PUT",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ gameUrl }),
+    body: JSON.stringify({ manifestUrl }),
   }).then(responseJson<RoomLaunch>);
 }
 

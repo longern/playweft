@@ -23,12 +23,17 @@ const MAX_RECENT_ACTIONS = 256;
 const MAX_PLAYER_ID_LENGTH = 64;
 const MAX_PLAYER_NAME_LENGTH = 100;
 const MAX_STATE_BYTES = 64 * 1024;
+const MAX_SERVER_SOURCE_BYTES = 1024 * 1024;
+const SERVER_FETCH_TIMEOUT_MS = 8_000;
 const ROOM_IDLE_TTL_MS = 60 * 60 * 1_000;
 const HOST_OFFLINE_TIMEOUT_MS = 45_000;
 const MAX_PLAYERS = 32;
 const GAME_PROTOCOL_VERSION = 1;
 
 interface RoomConfig {
+  gameId: string;
+  gameVersion: string;
+  serverUrl: string;
   runtime: RuntimeKind;
   script: string;
   scriptHash: string;
@@ -38,7 +43,7 @@ interface RoomConfig {
 }
 
 interface RoomLaunch {
-  gameUrl: string;
+  manifestUrl: string;
 }
 
 interface RoomState {
@@ -67,7 +72,7 @@ type GameActor = {
 };
 
 interface RoomMeta {
-  gameUrl: string;
+  manifestUrl: string;
   ownerPlayerId: string;
   phase: "lobby" | "playing";
   lastActivity?: number;
@@ -105,6 +110,7 @@ class RoomHttpError extends Error {
  * resulting state before accepting the next action.
  */
 export class GameRoom extends DurableObject<Env> {
+  private readonly bindings: Env;
   private runtime?: {
     kind: RuntimeKind;
     scriptHash: string;
@@ -114,6 +120,11 @@ export class GameRoom extends DurableObject<Env> {
   private liveSockets = new Set<WebSocket>();
   private liveSocketAttachments = new Map<WebSocket, SocketAttachment>();
   private tail: Promise<void> = Promise.resolve();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.bindings = env;
+  }
 
   async fetch(request: Request): Promise<Response> {
     try {
@@ -250,28 +261,28 @@ export class GameRoom extends DurableObject<Env> {
 
   private async create(request: Request): Promise<RoomLaunch> {
     const input = await parseRequestJson(request);
-    if (!isRecord(input) || typeof input.gameUrl !== "string") {
-      throw new RoomHttpError(400, "expected { gameUrl }");
+    if (!isRecord(input) || typeof input.manifestUrl !== "string") {
+      throw new RoomHttpError(400, "expected { manifestUrl }");
     }
-    const gameUrl = normalizeGameUrl(input.gameUrl);
+    const manifestUrl = normalizeManifestUrl(input.manifestUrl);
     const existing = await this.ctx.storage.get<RoomMeta>("roomMeta");
     if (existing !== undefined) {
       throw new RoomHttpError(409, "room has already been created");
     }
     await this.ctx.storage.put("roomMeta", {
-      gameUrl,
+      manifestUrl,
       ownerPlayerId: this.playerId(request),
       phase: "lobby",
       members: {},
     });
     await this.touch();
-    return { gameUrl };
+    return { manifestUrl };
   }
 
   private async launch(): Promise<RoomLaunch> {
-    const { gameUrl } = await this.meta();
+    const { manifestUrl } = await this.meta();
     await this.touch();
-    return { gameUrl };
+    return { manifestUrl };
   }
 
   private async changeGame(request: Request): Promise<RoomLaunch> {
@@ -285,32 +296,41 @@ export class GameRoom extends DurableObject<Env> {
         "the game cannot be changed after it starts",
       );
     const input = await parseRequestJson(request);
-    if (!isRecord(input) || typeof input.gameUrl !== "string")
-      throw new RoomHttpError(400, "expected { gameUrl }");
-    const gameUrl = normalizeGameUrl(input.gameUrl);
+    if (!isRecord(input) || typeof input.manifestUrl !== "string")
+      throw new RoomHttpError(400, "expected { manifestUrl }");
+    const manifestUrl = normalizeManifestUrl(input.manifestUrl);
 
     this.disposeRuntime();
     this.liveRoomState = undefined;
     const meta = await this.meta();
-    meta.gameUrl = gameUrl;
+    meta.manifestUrl = manifestUrl;
     meta.phase = "lobby";
     meta.config = undefined;
     await this.saveMeta(meta);
     await this.ctx.storage.delete(["gameState", "state", "version"]);
     await this.touch();
-    this.broadcast({ type: "game_changed", gameUrl });
-    return { gameUrl };
+    this.broadcast({ type: "game_changed", manifestUrl });
+    return { manifestUrl };
   }
 
   private async initialize(request: Request): Promise<RoomLobby> {
     await this.launch();
     const input = await parseRequestJson(request);
-    if (!isRecord(input) || typeof input.script !== "string") {
+    if (
+      !isRecord(input) ||
+      typeof input.serverUrl !== "string" ||
+      typeof input.gameId !== "string" ||
+      typeof input.gameVersion !== "string"
+    ) {
       throw new RoomHttpError(
         400,
-        "expected { runtime?: 'lua', script, minPlayers, maxPlayers, liveRoom? }",
+        "expected { gameId, gameVersion, serverUrl, runtime, minPlayers, maxPlayers, liveRoom? }",
       );
     }
+    const gameId = validateGameId(input.gameId);
+    const gameVersion = validateGameVersion(input.gameVersion);
+    const meta = await this.meta();
+    const serverUrl = validateServerUrl(input.serverUrl, meta.manifestUrl);
 
     const runtime = input.runtime ?? "lua";
     if (typeof runtime !== "string" || !isRuntimeKind(runtime)) {
@@ -323,11 +343,13 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(400, "minPlayers must not exceed maxPlayers");
     const liveRoom = input.liveRoom === true;
 
-    const scriptHash = await hash(input.script);
     const existing = await this.storedConfig();
     if (existing) {
       if (
-        existing.scriptHash !== scriptHash ||
+        existing.gameId !== gameId ||
+        existing.gameVersion !== gameVersion ||
+        existing.serverUrl !== serverUrl ||
+        existing.runtime !== runtime ||
         existing.minPlayers !== minPlayers ||
         existing.maxPlayers !== maxPlayers ||
         existing.liveRoom !== liveRoom
@@ -340,14 +362,22 @@ export class GameRoom extends DurableObject<Env> {
       return this.lobby();
     }
 
-    const engine = await createRuntime(runtime, input.script);
+    const script = await fetchServerSource(
+      serverUrl,
+      new URL(request.url).origin,
+      this.bindings.ASSETS,
+    );
+    const scriptHash = await hash(script);
+    const engine = await createRuntime(runtime, script);
     try {
       // Compile once now so an invalid script fails before anybody joins.
       // setup() runs only after the platform locks the roster at game start.
-      const meta = await this.meta();
       meta.config = {
+        gameId,
+        gameVersion,
+        serverUrl,
         runtime,
-        script: input.script,
+        script,
         scriptHash,
         minPlayers,
         maxPlayers,
@@ -1071,20 +1101,23 @@ export class GameRoom extends DurableObject<Env> {
     const stored = await this.ctx.storage.get<RoomMeta>("roomMeta");
     if (stored !== undefined) return stored;
 
-    const [gameUrl, ownerPlayerId, phase, lastActivity, members] =
+    const [manifestUrl, ownerPlayerId, phase, lastActivity, members] =
       await Promise.all([
-        this.ctx.storage.get<string>("gameUrl"),
+        this.ctx.storage.get<string>("manifestUrl"),
         this.ctx.storage.get<string>("ownerPlayerId"),
         this.ctx.storage.get<"lobby" | "playing">("phase"),
         this.ctx.storage.get<number>("lastActivity"),
         this.ctx.storage.get<Record<string, RoomMember>>("members"),
       ]);
-    if (!gameUrl || !ownerPlayerId)
+    if (!manifestUrl || !ownerPlayerId)
       throw new RoomHttpError(404, "room does not exist");
     if (phase !== "lobby" && phase !== "playing")
       throw new RoomHttpError(500, "room has invalid phase");
 
     const [
+      gameId,
+      gameVersion,
+      serverUrl,
       runtime,
       script,
       scriptHash,
@@ -1092,6 +1125,9 @@ export class GameRoom extends DurableObject<Env> {
       maxPlayers,
       liveRoom,
     ] = await Promise.all([
+        this.ctx.storage.get<string>("gameId"),
+        this.ctx.storage.get<string>("gameVersion"),
+        this.ctx.storage.get<string>("serverUrl"),
         this.ctx.storage.get<string>("runtime"),
         this.ctx.storage.get<string>("script"),
         this.ctx.storage.get<string>("scriptHash"),
@@ -1100,6 +1136,9 @@ export class GameRoom extends DurableObject<Env> {
         this.ctx.storage.get<boolean>("liveRoom"),
       ]);
     const config = configFromStoredValues({
+      gameId,
+      gameVersion,
+      serverUrl,
       runtime,
       script,
       scriptHash,
@@ -1108,7 +1147,7 @@ export class GameRoom extends DurableObject<Env> {
       liveRoom,
     });
     const meta: RoomMeta = {
-      gameUrl,
+      manifestUrl,
       ownerPlayerId,
       phase,
       lastActivity,
@@ -1117,12 +1156,15 @@ export class GameRoom extends DurableObject<Env> {
     };
     await this.saveMeta(meta);
     await this.ctx.storage.delete([
-      "gameUrl",
+      "manifestUrl",
       "ownerPlayerId",
       "phase",
       "lastActivity",
       "members",
       "runtime",
+      "gameId",
+      "gameVersion",
+      "serverUrl",
       "script",
       "scriptHash",
       "minPlayers",
@@ -1528,6 +1570,9 @@ function isRecent(
 }
 
 function configFromStoredValues(values: {
+  gameId: string | undefined;
+  gameVersion: string | undefined;
+  serverUrl: string | undefined;
   runtime: string | undefined;
   script: string | undefined;
   scriptHash: string | undefined;
@@ -1536,6 +1581,9 @@ function configFromStoredValues(values: {
   liveRoom: boolean | undefined;
 }): RoomConfig | undefined {
   const {
+    gameId,
+    gameVersion,
+    serverUrl,
     runtime,
     script,
     scriptHash,
@@ -1544,6 +1592,9 @@ function configFromStoredValues(values: {
     liveRoom,
   } = values;
   if (
+    gameId === undefined &&
+    gameVersion === undefined &&
+    serverUrl === undefined &&
     runtime === undefined &&
     script === undefined &&
     scriptHash === undefined &&
@@ -1552,6 +1603,9 @@ function configFromStoredValues(values: {
   )
     return undefined;
   if (
+    !gameId ||
+    !gameVersion ||
+    !serverUrl ||
     !runtime ||
     !isRuntimeKind(runtime) ||
     !script ||
@@ -1566,6 +1620,9 @@ function configFromStoredValues(values: {
     );
   }
   return {
+    gameId,
+    gameVersion,
+    serverUrl,
     runtime,
     script,
     scriptHash,
@@ -1575,12 +1632,160 @@ function configFromStoredValues(values: {
   };
 }
 
-function normalizeGameUrl(value: string): string {
+function validateGameId(value: string): string {
+  if (
+    value.length > 128 ||
+    !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(value)
+  ) {
+    throw new RoomHttpError(400, "gameId must be a reverse-domain identifier");
+  }
+  return value;
+}
+
+function validateGameVersion(value: string): string {
+  if (
+    value.length > 64 ||
+    !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
+      value,
+    )
+  ) {
+    throw new RoomHttpError(400, "gameVersion must be a semantic version");
+  }
+  return value;
+}
+
+function validateServerUrl(value: string, manifestUrl: string): string {
+  let server: URL;
+  let manifest: URL;
+  try {
+    server = new URL(value);
+    manifest = new URL(manifestUrl);
+  } catch {
+    throw new RoomHttpError(400, "serverUrl must be an absolute URL");
+  }
+  if (
+    server.origin !== manifest.origin ||
+    server.username.length > 0 ||
+    server.password.length > 0
+  ) {
+    throw new RoomHttpError(
+      400,
+      "serverUrl must use the Manifest origin without credentials",
+    );
+  }
+  const isLocalHttp =
+    server.protocol === "http:" &&
+    (server.hostname === "localhost" || server.hostname === "127.0.0.1");
+  if (server.protocol !== "https:" && !isLocalHttp) {
+    throw new RoomHttpError(
+      400,
+      "serverUrl must use HTTPS (or localhost HTTP during development)",
+    );
+  }
+  server.hash = "";
+  return server.toString();
+}
+
+async function fetchServerSource(
+  serverUrl: string,
+  platformOrigin: string,
+  assets: Fetcher,
+): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    SERVER_FETCH_TIMEOUT_MS,
+  );
+  try {
+    const request = new Request(serverUrl, {
+      headers: { Accept: "text/plain" },
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    let response: Response;
+    try {
+      response =
+        new URL(serverUrl).origin === platformOrigin
+          ? await assets.fetch(request)
+          : await fetch(request);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new RoomHttpError(504, "game server entry request timed out");
+      }
+      throw new RoomHttpError(
+        502,
+        `could not fetch game server entry: ${errorMessage(error)}`,
+      );
+    }
+    if (!response.ok) {
+      throw new RoomHttpError(
+        502,
+        `game server entry request failed (${response.status})`,
+      );
+    }
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (
+      Number.isFinite(declaredLength) &&
+      declaredLength > MAX_SERVER_SOURCE_BYTES
+    ) {
+      throw new RoomHttpError(413, "game server entry exceeds the size limit");
+    }
+    if (!response.body) {
+      throw new RoomHttpError(502, "game server entry response has no body");
+    }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_SERVER_SOURCE_BYTES) {
+        await reader.cancel();
+        throw new RoomHttpError(
+          413,
+          "game server entry exceeds the size limit",
+        );
+      }
+      chunks.push(value);
+    }
+    if (totalBytes === 0) {
+      throw new RoomHttpError(400, "game server entry is empty");
+    }
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      return new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: false,
+      }).decode(bytes);
+    } catch {
+      throw new RoomHttpError(400, "game server entry must be valid UTF-8");
+    }
+  } catch (error) {
+    if (error instanceof RoomHttpError) throw error;
+    if (controller.signal.aborted) {
+      throw new RoomHttpError(504, "game server entry request timed out");
+    }
+    throw new RoomHttpError(
+      502,
+      `could not read game server entry: ${errorMessage(error)}`,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function normalizeManifestUrl(value: string): string {
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new RoomHttpError(400, "gameUrl must be an absolute URL");
+    throw new RoomHttpError(400, "manifestUrl must be an absolute URL");
   }
   const isLocalHttp =
     url.protocol === "http:" &&
@@ -1588,11 +1793,11 @@ function normalizeGameUrl(value: string): string {
   if (url.protocol !== "https:" && !isLocalHttp) {
     throw new RoomHttpError(
       400,
-      "gameUrl must use HTTPS (or localhost HTTP during development)",
+      "manifestUrl must use HTTPS (or localhost HTTP during development)",
     );
   }
   if (url.username || url.password)
-    throw new RoomHttpError(400, "gameUrl must not include credentials");
+    throw new RoomHttpError(400, "manifestUrl must not include credentials");
   return url.toString();
 }
 

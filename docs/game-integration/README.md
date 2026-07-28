@@ -1,55 +1,133 @@
 # Integrate a Static Game with Playweft
 
-Playweft loads your static game page in a cross-site iframe. Your page renders
-the game and sends game intents; Playweft owns the room, anonymous players,
-invite links, WebSocket, Lua execution, and permissions.
+Playweft treats a game as a static, versioned package described by one
+Manifest. The platform fetches and validates that Manifest before it executes
+the game client in a sandboxed iframe.
 
-You do not need to install an npm package or call the Playweft API directly.
-The complete integration surface is one browser-native `MessagePort`.
+The platform owns rooms, identity, the lobby, permissions, networking and
+authoritative Lua execution. The game client renders player-specific state and
+sends intents over a transferred `MessagePort`.
 
-## Protocol at a glance
+## 1. Publish a game package
+
+A package contains at least:
 
 ```text
-game iframe                   Playweft platform
-───────────                   ─────────────────
-bridge-ready       ────────>  validates game origin
-                     <──────  bridge + transferred MessagePort
-descriptor         ────────>
-initialize         ────────>
-                     <──────  ready
-action             ────────>
-                     <──────  action-result | state | error
+my-game/
+├── playweft.json
+├── index.html
+├── icon.svg
+└── game.lua
 ```
 
-All messages after `bridge` travel through the transferred port. Message names
-and the `version: 1` handshake are part of the protocol.
+When a user enters `https://games.example.com/my-game/`, Playweft fetches
+`https://games.example.com/my-game/playweft.json`. A pasted URL whose path ends
+in `.json` is treated as an explicit Manifest URL.
 
-## 1. Publish the game page
+The Manifest is fetched by the browser before the iframe opens, so its response
+must allow the Playweft origin through CORS, for example:
 
-- Publish the game as an HTTPS static site, such as a Cloudflare Pages project.
-- Use a site different from the Playweft platform. Do not deploy it to the
-  platform domain or a subdomain of that domain.
-- A user pastes this page's URL into the platform home page to create a room.
+```http
+Access-Control-Allow-Origin: https://play.example.com
+```
 
-The page must work inside an iframe. It must not depend on third-party cookies,
-a Playweft account, or its own WebSocket service.
+The Lua entry is fetched server-side by Playweft's Worker and does **not** need
+CORS. The Worker requires it to share the Manifest origin, enforces the size
+limit, compiles it and locks its source hash in the room. The client entry is
+opened as an iframe and also does not need CORS.
+Production resources must use HTTPS. Local development may use `http://localhost`
+or `http://127.0.0.1`.
 
-The game iframe allows scripts, same-origin access to the game's own origin,
-and form submission. It does not allow top-level navigation, popups, or
-downloads. A form that submits to the current page reloads the iframe and must
-establish the Playweft bridge again; use `type="button"` or prevent the submit
-event when a form is only being used for in-game controls.
+## 2. Define `playweft.json`
 
-## 2. Establish the bridge and register the game
+Manifest v1 is strict: unknown fields and malformed values are rejected. The
+JSON Schema is
+[`game-manifest-v1.schema.json`](game-manifest-v1.schema.json).
 
-When the game loads, repeatedly announce that it is ready to its parent window.
-The platform validates the iframe origin and replies with a `MessagePort`.
+```json
+{
+  "$schema": "https://playweft.dev/schemas/game-manifest-v1.json",
+  "manifestVersion": 1,
+  "id": "com.example.my-game",
+  "version": "1.2.0",
+  "protocol": {
+    "min": 1,
+    "max": 1
+  },
+  "client": {
+    "entry": "./index.html"
+  },
+  "display": {
+    "defaultLocale": "en",
+    "locales": {
+      "en": {
+        "name": "My Game",
+        "description": "A short catalogue description.",
+        "category": "Strategy"
+      },
+      "zh-CN": {
+        "name": "我的游戏",
+        "description": "用于目录展示的简短介绍。",
+        "category": "策略"
+      }
+    },
+    "icon": "./icon.svg",
+    "help": "./help.html"
+  },
+  "modes": {
+    "solo": {},
+    "room": {
+      "players": {
+        "min": 2,
+        "max": 4
+      },
+      "server": {
+        "runtime": "lua",
+        "entry": "./game.lua",
+        "persistence": "durable"
+      }
+    }
+  },
+  "permissions": {
+    "clipboard.readText": {
+      "reason": "Import a saved game configuration"
+    }
+  }
+}
+```
+
+Key rules:
+
+- `id` is a stable reverse-domain identifier. It does not change between
+  releases of the same game.
+- `version` is SemVer. Playweft locks `id`, `version`, Lua source hash, player
+  limits and persistence mode when a room initializes.
+- `protocol.min/max` is the range of Playweft bridge versions the package
+  supports. The current version is `1`.
+- `client.entry`, `display.icon`, `display.help` and the Lua `server.entry`
+  resolve relative to the Manifest URL and must remain on its origin.
+- Presence of `modes.solo` or `modes.room` determines where the game may run.
+- `persistence: "durable"` persists authoritative state after each accepted
+  action and permits Durable Object hibernation. `"live"` keeps active state in
+  memory and routes actions over the room WebSocket.
+- Permissions must be declared before use. The platform exposes only the
+  declared, supported capabilities.
+
+The platform limits a Manifest to 64 KiB and a Lua entry to 1 MiB.
+
+## 3. Establish bridge v1
+
+After the browser has validated the Manifest and the Worker has installed any
+room server entry, Playweft opens `client.entry`. The iframe repeatedly
+announces readiness. The platform validates its origin and transfers a
+`MessagePort`.
 
 ```js
 let gamePort;
 let ownPlayerId;
 let latestMatchId;
 let latestVersion = -1;
+const pendingRpc = new Map();
 
 const announceReady = () => {
   window.parent.postMessage(
@@ -66,144 +144,131 @@ window.addEventListener("message", (event) => {
   if (event.data?.type !== "playweft:bridge" || event.data?.version !== 1) {
     return;
   }
-
   const [port] = event.ports;
   if (!port) return;
 
   gamePort = port;
   window.clearInterval(probe);
-  gamePort.onmessage = onPlatformMessage;
+  gamePort.onmessage = onRpcMessage;
   gamePort.start();
 
-  // Optional local-history metadata.
-  gamePort.postMessage({
-    type: "descriptor",
-    descriptor: {
-      name: "My Game",
-      translations: {
-        "zh-CN": { name: "我的游戏" },
-      },
-      icon: "/icon.svg",
-      helpUrl: "/help.html",
-      modes: ["solo", "room"],
-      liveRoom: false,
-    },
-  });
-
-  // Required room configuration. This compiles the Lua source but does not
-  // start the game.
-  gamePort.postMessage({
-    type: "initialize",
-    initialization: {
-      runtime: "lua",
-      script: gameLuaSource,
-      minPlayers: 2,
-      maxPlayers: 4,
-      liveRoom: false,
-    },
-  });
+  rpcCall("game.initialize").then((context) => {
+    // context.mode is "solo" or "room".
+    // room mode also returns phase and this room-scoped playerId.
+    ownPlayerId = context.playerId;
+    showWaitingForState();
+  }).catch(showRpcError);
 });
+
+function rpcCall(method, params) {
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    pendingRpc.set(id, { resolve, reject });
+    gamePort.postMessage({
+      jsonrpc: "2.0",
+      id,
+      method,
+      ...(params === undefined ? {} : { params }),
+    });
+  });
+}
 ```
 
-`descriptor` is optional. `name` must contain 1–100 characters and is the
-default game name. `translations` is an optional locale dictionary; use
-`translations[locale].name` to provide a translated name, for example
-`{ "zh-CN": { name: "我的游戏" } }`. Playweft selects the browser's language,
-then falls back to `name` when a locale or translation is absent. `icon` and
-`helpUrl` must be relative URLs or absolute URLs hosted on the game's own origin.
-`modes` may include `"solo"` and/or `"room"`; omitted modes default to room
-play. `liveRoom: true` declares that room play needs a non-hibernating,
-always-live room connection. Live room state is kept in Durable Object memory
-instead of being persisted after every action, so it is best for games that
-need lower latency while players are actively connected. The game-facing
-message protocol stays the same; the platform routes actions over the live
-connection internally.
+The window-level messages only transfer the port. Every port message uses
+JSON-RPC 2.0. Batch messages are unsupported, and request IDs must be strings
+containing 1–128 characters.
 
-`initialize` is required. `minPlayers` and `maxPlayers` must be integers from
-1 to 32, with `minPlayers <= maxPlayers`. The room atomically fixes the Lua
-source, runtime, player limits, and `liveRoom` setting. Repeating the exact
-same configuration is safe; submitting a different configuration fails.
-
-## 3. Receive platform messages
-
-The platform sends one of the following messages through the port.
-
-| Message | Meaning |
-| --- | --- |
-| `{ type: "ready", phase, playerId }` | Registration and lobby join succeeded. `playerId` is this browser's opaque, room-scoped ID. |
-| `{ type: "state", phase: "playing", state, events, matchId, version, serverTime }` | Player-specific game update. `version` only increases within one `matchId`; `serverTime` is Unix time in milliseconds. |
-| `{ type: "action-result", requestId, accepted: true, matchId, version }` | The action was accepted. The accompanying `state` message remains the rendering source of truth. |
-| `{ type: "action-result", requestId, accepted: false, matchId, version, error }` | The game rejected the action without changing state or incrementing `version`. |
-| `{ type: "error", code, error, requestId? }` | A protocol or room operation failed. Action errors include their originating `requestId`; platform errors do not. `code` is stable enough for UI branching and `error` is human-readable. |
+`game.initialize` takes no params. It is the only runtime registration call:
+the platform has already loaded the package contract. Its result is:
 
 ```js
-function onPlatformMessage(event) {
-  const message = event.data;
+{
+  mode: "solo" | "room",
+  protocolVersion: 1,
+  capabilities: ["clipboard.readText"],
+  // room only:
+  phase: "lobby" | "playing",
+  playerId: "actor_..."
+}
+```
 
-  if (message?.type === "ready") {
-    ownPlayerId = message.playerId;
-    showWaitingForHost();
+The game is in the platform-owned lobby after this request resolves. Do not
+enable gameplay until the first `game.state` notification.
+
+## 4. Receive state and submit actions
+
+The platform sends:
+
+| Method | Params |
+| --- | --- |
+| `game.state` | `{ phase, state, events, matchId, version, serverTime }`; state and events have already been projected for this player. |
+| `platform.error` | `{ error: { code, message, retryable } }` for a failure not tied to an outstanding request. |
+
+```js
+function onRpcMessage(event) {
+  const message = event.data;
+  if (message?.jsonrpc !== "2.0") return;
+
+  if (Object.hasOwn(message, "id")) {
+    const pending = pendingRpc.get(message.id);
+    if (!pending) return;
+    pendingRpc.delete(message.id);
+    if (message.error) pending.reject(new PlayweftRpcError(message.error));
+    else pending.resolve(message.result);
     return;
   }
 
-  if (message?.type === "state") {
-    if (message.matchId !== latestMatchId) {
-      latestMatchId = message.matchId;
+  if (message.method === "game.state") {
+    const update = message.params;
+    if (update.matchId !== latestMatchId) {
+      latestMatchId = update.matchId;
       latestVersion = -1;
     }
-    if (message.version <= latestVersion) return;
-    latestVersion = message.version;
-    render(message.state, message.events);
-    enableGameControls();
-    return;
-  }
-
-  if (message?.type === "action-result" && !message.accepted) {
-    showError(message.error.message);
-    return;
-  }
-
-  if (message?.type === "error") {
-    showError(message.error);
+    if (update.version <= latestVersion) return;
+    latestVersion = update.version;
+    render(update.state, update.events);
   }
 }
-```
 
-The game is in the lobby after `ready`; it should not allow gameplay until its
-first `state` message. The platform owns the lobby, host privileges, player
-limits, kicking, and game start.
-
-Current error codes are `INITIALIZATION_REJECTED`, `INVALID_ACTION_REQUEST`,
-`GAME_NOT_STARTED`, `ACTION_REJECTED`, `ROOM_ERROR`, and
-`REALTIME_CONNECTION_FAILED`. These are platform/transport failures carried by
-`type: "error"`. Normal game-rule rejections use `type: "action-result"` with
-`accepted: false` and the game-defined `error.code`.
-
-## 4. Submit an action
-
-```js
-function chooseCard(card) {
-  const requestId = crypto.randomUUID();
-  gamePort?.postMessage({
-    type: "action",
-    requestId,
+async function chooseCard(card) {
+  const result = await rpcCall("room.action", {
     action: { type: "choose", card },
   });
+  if (!result.accepted) showError(result.error.message);
 }
 ```
 
-Every action requires a non-empty `requestId` up to 128 characters. Keep the
-action pending until its matching `action-result` or request-scoped platform
-`error`. Retrying the same ID with the same action is safe: Playweft returns
-the stored result without running Lua again. Reusing the ID with different
-content is an error. An action must be JSON-serializable and no larger than
-8 KiB. The platform derives player identity from the top-level page's HttpOnly
-session and ignores identity fields in the submitted action.
+The JSON-RPC ID also becomes the idempotent server action ID. Reusing it with
+different action content is an error. Actions must be JSON-compatible and no
+larger than 8 KiB. The platform derives player identity from its HttpOnly
+session; identity fields inside actions have no authority.
 
-## 5. Write the Lua game
+JSON-RPC failures use standard `-32600` through `-32603` codes. Platform
+failures use `-32000` with a stable string code and retry hint in `error.data`.
+A game-rule rejection is a successful RPC result with `accepted: false`.
 
-Initialization only compiles Lua. `setup(context)` runs only after the host
-starts the game and the player roster is locked:
+## 5. Use declared permissions
+
+The iframe is explicitly denied direct Async Clipboard access. A game that
+declares `permissions["clipboard.readText"]` may call:
+
+```js
+const text = await rpcCall("clipboard.readText");
+```
+
+The Manifest `reason` is displayed in the platform-controlled permission UI.
+The first approval is remembered per game origin. Later reads skip the custom
+approval prompt but still show a short top-level notice. Browser-native
+clipboard UI may still appear.
+
+The result is limited to 64 KiB. Stable failure codes include `USER_DENIED`,
+`REQUEST_EXPIRED`, `NOT_SUPPORTED`, `NOT_ALLOWED`, `TOO_LARGE`, `BUSY`,
+`RATE_LIMITED`, `READ_FAILED` and `PERMISSION_NOT_DECLARED`.
+
+## 6. Write the Lua game
+
+The platform compiles the fetched Lua entry while initializing the room.
+`setup(context)` runs only when the host starts and locks the seated roster:
 
 ```lua
 function setup(context)
@@ -226,55 +291,17 @@ function on_action(state, action, context)
   end
 
   state.moves[context.actor.id] = action.card
-
   return {
     accepted = true,
     state = state,
     events = {
-      {
-        type = "chosen",
-        player = context.actor.id,
-      },
+      { type = "chosen", player = context.actor.id },
     },
   }
 end
 ```
 
-When a player leaves an active game, Playweft calls the optional lifecycle
-handler below before removing that player from the room. Context contains
-`{ protocolVersion, matchId, version, leftAt, actor }`. Return the updated
-state and events needed to let remaining players continue.
-
-```lua
-function on_player_left(state, context)
-  state.disconnected = context.actor.id
-
-  return {
-    state = state,
-    events = {
-      {
-        type = "player_left",
-        player = context.actor.id,
-      },
-    },
-  }
-end
-```
-
-When the room host selects **Return to room**, the platform asks the game
-runtime whether the current session may be dissolved. Implement the optional
-`on_return_to_room(state, context)` callback and return `true` to allow the
-room to return to its lobby. Returning `false`, or omitting the callback,
-keeps the game running. It does not modify game state. Context contains
-`{ protocolVersion, matchId, version, serverTime, actor }`.
-
-```lua
-function on_return_to_room(state, context)
-  return state.lastResult ~= nil
-end
-```
-
-`setup` receives this context:
+`setup` receives:
 
 ```lua
 {
@@ -292,45 +319,41 @@ end
 }
 ```
 
-`players` contains only seated participants in seat order. `id` is an opaque,
-room-scoped identity. `name` is optional presentation data and never an
-authorization key. `match.id` is new for every game started in the room;
-`ownerId` refers to one player, `startedAt` is Unix time in milliseconds, and
-`randomSeed` is a positive 32-bit integer. Store any match metadata needed
-after setup in authoritative state.
+Player IDs are opaque and room-scoped. Names are optional presentation data,
+never authorization keys. `on_action` receives `{ protocolVersion, matchId,
+actionId, actionAt, version, actor }`; actor contains `{ id, role, seat?, name?,
+isOwner }`.
 
-`on_action` context contains `{ protocolVersion, matchId, actionId, actionAt,
-version, actor }`. `actor` is `{ id, role, seat?, name?, isOwner }`; `role` is
-`"player"` or `"spectator"`. `version` is the current version before applying
-the action and `actionAt` is authoritative Unix time in milliseconds.
-
-An action must explicitly return one of:
+An action must explicitly return:
 
 ```lua
--- Accepted: persists state, increments version, then projects state/events.
+-- Accepted: persists state and increments version.
 { accepted = true, state = state, events = events }
 
--- Rejected: requester-only result; state and version do not change.
+-- Rejected: state and version do not change.
 {
   accepted = false,
   error = { code = "NOT_YOUR_TURN", message = "Wait for the other player" },
 }
 ```
 
-Error codes must match `[A-Z][A-Z0-9_]{0,63}` and messages contain 1–500
-characters. All values must be JSON-serializable. Lua has no network,
-file-system, random, module-loading, or debug APIs.
+Error codes match `[A-Z][A-Z0-9_]{0,63}` and messages contain 1–500
+characters. All values must be JSON-compatible. Lua has no network,
+file-system, random, module-loading or debug APIs.
 
-### Give each recipient private state and events
+Optional lifecycle hooks:
 
-The state returned by `setup`, `on_action`, and `on_player_left` is the
-server's authoritative state. Every game must define
-`view(state, events, context)` and return exactly what the current recipient
-may see:
+- `on_player_left(state, context)` may update state after a player disconnects.
+- `on_return_to_room(state, context)` returns a boolean allowing or rejecting
+  the host's request to dissolve the current match and return to the lobby.
+
+### Project private state for every recipient
+
+Authoritative state and events are never sent directly. Every game defines
+`view(state, events, context)`:
 
 ```lua
 function view(state, events, context)
-  local hand = state.hands[context.viewer.id]
   local visible_events = {}
   for _, event in ipairs(events) do
     if event.player == nil or event.player == context.viewer.id then
@@ -341,7 +364,7 @@ function view(state, events, context)
     state = {
       turn = state.turn,
       board = state.board,
-      ownHand = hand,
+      ownHand = state.hands[context.viewer.id],
       opponentCardCounts = state.opponentCardCounts,
     },
     events = visible_events,
@@ -350,22 +373,22 @@ end
 ```
 
 Context is `{ protocolVersion, matchId, version, serverTime, viewer }`.
-`viewer` has the same structure as `actor`, so spectator views are explicit.
-The callback runs independently before every HTTP action response, state read,
-initial WebSocket snapshot, and WebSocket update. Both input tables are copies:
-mutating them in `view` cannot change authoritative state or the events seen by
-another recipient. Games with no private data may simply return
-`{ state = state, events = events }`.
+`viewer` has the same shape as an action actor, including spectator role.
+Projection runs independently for every HTTP response, state read, initial
+WebSocket snapshot and WebSocket update. Inputs are copies, so mutations in
+`view` cannot alter authoritative state or another recipient's view.
 
-## Constraints and security boundary
+## Security boundary
 
-- Do not create `fetch`, WebSocket, or EventSource connections to Playweft.
-  The platform does not enable CORS for the game page.
-- Do not implement authentication, host privileges, kicking, player limits, or
-  starting the game inside the game page. The platform lobby owns these rules.
-- Do not persist `playerId` as a long-lived identity. It is valid only within
-  the current room and Lua game.
-- The platform may load the game invisibly in the lobby to collect metadata and
-  Lua configuration. Do not allow actual play until the first `state` message.
+- Fetch and validate the Manifest in the browser, then install the Lua entry
+  through the Worker, before opening the iframe.
+- Keep all package resources on the Manifest origin.
+- Do not call Playweft HTTP or WebSocket APIs from the game. Only use the
+  transferred MessagePort.
+- Do not implement authentication, room host authority, kicking, readiness,
+  seating or game start inside the iframe.
+- Do not treat `playerId` as a long-lived identity.
+- Do not call `navigator.clipboard.readText()` directly; declare and use the
+  platform RPC.
 
-For a complete working reference, see [`apps/rps-demo`](../../apps/rps-demo).
+See [`apps/rps-demo`](../../apps/rps-demo) for a complete package.

@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Armchair, Check, Crown, MoreHorizontal, Plus } from "lucide-react";
 import {
+  JsonRpcErrorCode,
+  isJson,
+  type JsonValue,
+} from "@playweft/game-protocol";
+import {
   connectRoom,
   changeRoomGame,
   createGuestSession,
@@ -15,7 +20,6 @@ import {
   startRoom,
   transferRoomHost,
   returnRoomToLobby,
-  type RoomInitialization,
   type RoomActionResult,
   type RoomJoin,
   type RoomLobby,
@@ -27,27 +31,30 @@ import GameInfoPanel, { type GameInfoAction } from "./GameInfoPanel";
 import InviteDialog from "./InviteDialog";
 import Menu from "./Menu";
 import ChangeGameDialog from "./ChangeGameDialog";
-import { isGameTranslations, localizeGameName, useI18n, type GameTranslations, type Translator } from "./i18n";
+import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
+import {
+  PLAYWEFT_BRIDGE_VERSION,
+  RpcFault,
+  dispatchRpcMessage,
+  postRpcNotification,
+  rpcPlatformFault,
+} from "./json-rpc";
+import {
+  loadGameManifest,
+  manifestUrlFromInput,
+  manifestPermissionReason,
+  type DiscoveredGame,
+  type LoadedGame,
+} from "./game-manifest";
+import { localizeGameName, useI18n } from "./i18n";
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const ROOM_HANDSHAKE_TIMEOUT_MS = 10_000;
 
-export interface RecentGame {
-  url: string;
-  name: string;
-  translations?: GameTranslations;
-  icon?: string;
-  helpUrl?: string;
-  modes?: GameMode[];
-  liveRoom?: boolean;
-}
-
-export type GameMode = "solo" | "room";
-
 interface RoomHostProps {
   roomId: string;
   onBack(): void;
-  onGameDiscovered(game: RecentGame): void;
+  onGameDiscovered(game: DiscoveredGame): void;
   onEntryStatus(status: string): void;
   onEntryReady(): void;
   onEntryFailed(): void;
@@ -67,9 +74,11 @@ export default function RoomHost({
   const iframe = useRef<HTMLIFrameElement>(null);
   const bridgePort = useRef<MessagePort | undefined>(undefined);
   const phaseRef = useRef<"lobby" | "playing">("lobby");
+  const [manifestUrl, setManifestUrl] = useState<string>();
   const [gameUrl, setGameUrl] = useState<string>();
+  const [loadedGame, setLoadedGame] = useState<LoadedGame>();
   const [gameRevision, setGameRevision] = useState(0);
-  const [game, setGame] = useState<RecentGame>();
+  const [game, setGame] = useState<DiscoveredGame>();
   const [gameIconHref, setGameIconHref] = useState<string>();
   const [lobby, setLobby] = useState<RoomLobby>();
   const [selfId, setSelfId] = useState<string>();
@@ -89,6 +98,8 @@ export default function RoomHost({
   const [changeGameOpen, setChangeGameOpen] = useState(false);
   const [dissolveDialogOpen, setDissolveDialogOpen] = useState(false);
   const gameName = game ? localizeGameName(game, locale) : t("gameRoom");
+  const gameOrigin = gameUrl ? new URL(gameUrl).origin : undefined;
+  const clipboard = useClipboardRead(gameName, gameOrigin);
 
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
@@ -124,7 +135,7 @@ export default function RoomHost({
         await createGuestSession();
         const launch = await getRoomLaunch(roomId);
         if (cancelled) return;
-        setGameUrl(launch.gameUrl);
+        setManifestUrl(launch.manifestUrl);
       } catch (reason) {
         if (!cancelled) {
           setError(message(reason, tRef.current("unexpectedError")));
@@ -138,7 +149,37 @@ export default function RoomHost({
   }, [onEntryFailed, onEntryStatus, roomId]);
 
   useEffect(() => {
-    if (!gameUrl) return;
+    if (!manifestUrl) return;
+    let cancelled = false;
+    setGameUrl(undefined);
+    setLoadedGame(undefined);
+    void loadGameManifest(manifestUrl)
+      .then((loaded) => {
+        if (cancelled) return;
+        if (!loaded.room) {
+          throw new Error("The game Manifest does not declare room mode");
+        }
+        setGame(loaded.game);
+        setGameIconHref(loaded.game.icon);
+        setGameHelpHref(loaded.game.helpUrl);
+        onGameDiscovered(loaded.game);
+        setLoadedGame(loaded);
+        setGameUrl(loaded.game.url);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setError(message(reason, tRef.current("unexpectedError")));
+          onEntryFailed();
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [manifestUrl, onEntryFailed, onGameDiscovered]);
+
+  useEffect(() => {
+    if (!gameUrl || !loadedGame?.room) return;
+    const roomConfiguration = loadedGame.room;
     let socket: WebSocket | undefined;
     let heartbeatTimer: number | undefined;
     let reconnectTimer: number | undefined;
@@ -150,31 +191,34 @@ export default function RoomHost({
     let joined = false;
     let liveRoom = false;
     let bridgeConnected = false;
-    let metadataReady = false;
     let membershipReady = false;
     let entryComplete = false;
+    let joinedPlayerId: string | undefined;
+    const clipboardDeclared = loadedGame.game.permissions.includes(
+      "clipboard.readText",
+    );
+    const clipboardReason = manifestPermissionReason(
+      loadedGame.manifest,
+      "clipboard.readText",
+    );
     let lastPublishedMatchId: string | undefined;
     let lastPublishedVersion = -1;
-    const gameOrigin = new URL(gameUrl).origin;
+    let latestSnapshot: RoomSnapshot | undefined;
+    const liveActionRequests = new Map<
+      string,
+      {
+        resolve(value: JsonValue): void;
+        reject(reason: RpcFault): void;
+      }
+    >();
+    const currentGameOrigin = new URL(gameUrl).origin;
     const finishEntryIfReady = () => {
-      if (entryComplete || !metadataReady || !membershipReady) return;
+      if (entryComplete || !membershipReady) return;
       entryComplete = true;
       onEntryReady();
     };
-    const metadataFallback = window.setTimeout(() => {
-      metadataReady = true;
-      finishEntryIfReady();
-    }, 5_000);
-
-    const publish = (snapshot: RoomSnapshot) => {
-      if (snapshot.matchId !== lastPublishedMatchId) {
-        lastPublishedMatchId = snapshot.matchId;
-        lastPublishedVersion = -1;
-      }
-      if (snapshot.version <= lastPublishedVersion) return;
-      lastPublishedVersion = snapshot.version;
-      bridgePort.current?.postMessage({
-        type: "state",
+    const sendSnapshot = (snapshot: RoomSnapshot) => {
+      postRpcNotification(bridgePort.current, "game.state", {
         phase: "playing",
         state: snapshot.state,
         events: snapshot.events ?? [],
@@ -184,8 +228,28 @@ export default function RoomHost({
       });
     };
 
+    const publish = (snapshot: RoomSnapshot) => {
+      if (snapshot.matchId !== lastPublishedMatchId) {
+        lastPublishedMatchId = snapshot.matchId;
+        lastPublishedVersion = -1;
+      }
+      if (snapshot.version <= lastPublishedVersion) return;
+      lastPublishedVersion = snapshot.version;
+      latestSnapshot = snapshot;
+      sendSnapshot(snapshot);
+    };
+
     const reportBridgeError = (code: string, error: string) => {
-      bridgePort.current?.postMessage({ type: "error", code, error });
+      postRpcNotification(bridgePort.current, "platform.error", {
+        error: { code, message: error, retryable: false },
+      });
+    };
+
+    const rejectLiveActions = (code: string, error: string) => {
+      for (const pending of liveActionRequests.values()) {
+        pending.reject(rpcPlatformFault(code, error, true));
+      }
+      liveActionRequests.clear();
     };
 
     const handshakeTimeout = window.setTimeout(() => {
@@ -209,6 +273,10 @@ export default function RoomHost({
     const connect = () => {
       window.clearTimeout(reconnectTimer);
       window.clearInterval(heartbeatTimer);
+      rejectLiveActions(
+        "REALTIME_CONNECTION_INTERRUPTED",
+        tRef.current("liveConnectionNotReady"),
+      );
       socket?.close();
       const nextSocket = connectRoom(roomId);
       let receivedServerSignal = false;
@@ -226,7 +294,7 @@ export default function RoomHost({
           | RoomSnapshot
           | RoomLobby
           | RoomActionResult
-          | { type: "game_changed"; gameUrl: string }
+          | { type: "game_changed"; manifestUrl: string }
           | { type: "room_dissolved"; error: string }
           | { type: "error"; error: string; requestId?: string };
         if (payload.type === "room_dissolved") {
@@ -236,17 +304,22 @@ export default function RoomHost({
           return;
         }
         if (payload.type === "action-result") {
-          bridgePort.current?.postMessage(payload);
+          const pending = liveActionRequests.get(payload.requestId);
+          if (pending) {
+            liveActionRequests.delete(payload.requestId);
+            pending.resolve(actionResultForRpc(payload));
+          }
           return;
         }
         if (payload.type === "error") {
           if (payload.requestId) {
-            bridgePort.current?.postMessage({
-              type: "error",
-              code: "ACTION_REJECTED",
-              error: payload.error,
-              requestId: payload.requestId,
-            });
+            const pending = liveActionRequests.get(payload.requestId);
+            if (pending) {
+              liveActionRequests.delete(payload.requestId);
+              pending.reject(
+                rpcPlatformFault("ACTION_REJECTED", payload.error),
+              );
+            }
             return;
           }
           setError(payload.error);
@@ -261,7 +334,7 @@ export default function RoomHost({
           setGame(undefined);
           setGameHelpHref(undefined);
           setGameHelpOpen(false);
-          setGameUrl(payload.gameUrl);
+          setManifestUrl(payload.manifestUrl);
           setGameRevision((revision) => revision + 1);
         } else if (payload.type === "lobby") {
           setLobby(payload);
@@ -288,6 +361,10 @@ export default function RoomHost({
       nextSocket.onclose = (event) => {
         window.clearInterval(heartbeatTimer);
         if (closed || socket !== nextSocket) return;
+        rejectLiveActions(
+          "REALTIME_CONNECTION_INTERRUPTED",
+          tRef.current("liveConnectionNotReady"),
+        );
         if (event.code === 4004) {
           closed = true;
           onBack();
@@ -323,111 +400,159 @@ export default function RoomHost({
         return;
       if (
         event.data?.type !== "playweft:bridge-ready" ||
-        event.data?.version !== 1
+        event.data?.version !== PLAYWEFT_BRIDGE_VERSION
       )
         return;
 
+      clipboard.cancelPending();
+      rejectLiveActions(
+        "BRIDGE_REPLACED",
+        "The game bridge was replaced",
+      );
       bridgePort.current?.close();
       bridgeConnected = true;
       const channel = new MessageChannel();
       bridgePort.current = channel.port1;
-      channel.port1.onmessage = async (bridgeEvent) => {
-        const data = bridgeEvent.data;
-        if (data?.type === "descriptor") {
-          const game = descriptor(data.descriptor, gameOrigin, gameUrl);
-          if (!game) return;
-          setGame(game);
-          setGameIconHref(game.icon);
-          setGameHelpHref(game.helpUrl);
-          onGameDiscovered(game);
-          metadataReady = true;
-          window.clearTimeout(metadataFallback);
-          finishEntryIfReady();
-          return;
-        }
-        if (data?.type === "initialize") {
-          if (roomInitializing || joined) return;
-          roomInitializing = true;
-          try {
-            onEntryStatus(tRef.current("joiningRoom"));
-            setError(undefined);
-            const roomInitialization = initialization(data.initialization, tRef.current);
-            liveRoom = roomInitialization.liveRoom === true;
-            await initializeRoom(roomId, roomInitialization);
-            const membership = await joinRoom(roomId);
-            if (closed) return;
-            applyMembership(membership, setLobby, setSelfId);
-            joined = true;
-            window.clearTimeout(handshakeTimeout);
-            membershipReady = true;
-            channel.port1.postMessage({
-              type: "ready",
-              phase: membership.phase,
-              playerId: membership.selfId,
-            });
-            connect();
-            finishEntryIfReady();
-          } catch (reason) {
-            window.clearTimeout(handshakeTimeout);
-            setError(message(reason, tRef.current("unexpectedError")));
-            onEntryFailed();
-            channel.port1.postMessage({
-              type: "error",
-              code: "INITIALIZATION_REJECTED",
-              error: message(reason, tRef.current("unexpectedError")),
-            });
-          }
-          return;
-        }
-        if (data?.type !== "action") return;
-        const requestId = bridgeRequestId(data.requestId);
-        if (!requestId) {
-          channel.port1.postMessage({
-            type: "error",
-            code: "INVALID_ACTION_REQUEST",
-            error: tRef.current("actionRequestIdRequired"),
-          });
-          return;
-        }
-        if (!joined || phaseRef.current === "lobby") {
-          channel.port1.postMessage({
-            type: "error",
-            code: "GAME_NOT_STARTED",
-            error: tRef.current("gameNotStarted"),
-            requestId,
-          });
-          return;
-        }
-        try {
-          if (liveRoom) {
-            if (!socket || socket.readyState !== WebSocket.OPEN) {
-              throw new Error(tRef.current("liveConnectionNotReady"));
-            }
-            socket.send(
-              JSON.stringify({
-                type: "action",
-                requestId,
-                action: data.action,
-              }),
-            );
-            return;
-          }
-          const response = await sendAction(roomId, requestId, data.action);
-          if (response.update) publish(response.update);
-          channel.port1.postMessage(response.result);
-        } catch (reason) {
-          channel.port1.postMessage({
-            type: "error",
-            code: "ACTION_REJECTED",
-            error: message(reason, tRef.current("unexpectedError")),
-            requestId,
-          });
-        }
+      channel.port1.onmessage = (bridgeEvent) => {
+        void dispatchRpcMessage(channel.port1, bridgeEvent.data, {
+          "game.initialize": {
+            async handle() {
+              if (joined && joinedPlayerId) {
+                if (latestSnapshot) {
+                  window.setTimeout(() => {
+                    if (!closed && latestSnapshot)
+                      sendSnapshot(latestSnapshot);
+                  }, 0);
+                }
+                return {
+                  mode: "room",
+                  protocolVersion: PLAYWEFT_BRIDGE_VERSION,
+                  capabilities: loadedGame.game.permissions,
+                  phase: phaseRef.current,
+                  playerId: joinedPlayerId,
+                };
+              }
+              if (roomInitializing) {
+                throw rpcPlatformFault(
+                  "INITIALIZATION_IN_PROGRESS",
+                  "Room initialization is already in progress",
+                  true,
+                );
+              }
+              roomInitializing = true;
+              try {
+                onEntryStatus(tRef.current("joiningRoom"));
+                setError(undefined);
+                const roomInitialization = roomConfiguration;
+                liveRoom = roomInitialization.liveRoom === true;
+                await initializeRoom(roomId, roomInitialization);
+                const membership = await joinRoom(roomId);
+                if (closed) {
+                  throw rpcPlatformFault(
+                    "BRIDGE_CLOSED",
+                    "The game bridge was closed",
+                    true,
+                  );
+                }
+                applyMembership(membership, setLobby, setSelfId);
+                joined = true;
+                joinedPlayerId = membership.selfId;
+                window.clearTimeout(handshakeTimeout);
+                membershipReady = true;
+                connect();
+                finishEntryIfReady();
+                return {
+                  mode: "room",
+                  protocolVersion: PLAYWEFT_BRIDGE_VERSION,
+                  capabilities: loadedGame.game.permissions,
+                  phase: membership.phase,
+                  playerId: membership.selfId,
+                };
+              } catch (reason) {
+                window.clearTimeout(handshakeTimeout);
+                const error = message(
+                  reason,
+                  tRef.current("unexpectedError"),
+                );
+                setError(error);
+                onEntryFailed();
+                if (reason instanceof RpcFault) throw reason;
+                throw rpcPlatformFault("INITIALIZATION_REJECTED", error);
+              } finally {
+                roomInitializing = false;
+              }
+            },
+          },
+          "room.action": {
+            async handle(params, requestId) {
+              if (!requestId) {
+                throw new RpcFault(
+                  JsonRpcErrorCode.InvalidRequest,
+                  "room.action requires a JSON-RPC id",
+                );
+              }
+              const action = actionFromRpcParams(params);
+              if (!joined || phaseRef.current === "lobby") {
+                throw rpcPlatformFault(
+                  "GAME_NOT_STARTED",
+                  tRef.current("gameNotStarted"),
+                );
+              }
+              if (liveRoom) {
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                  throw rpcPlatformFault(
+                    "REALTIME_CONNECTION_NOT_READY",
+                    tRef.current("liveConnectionNotReady"),
+                    true,
+                  );
+                }
+                if (liveActionRequests.has(requestId)) {
+                  throw rpcPlatformFault(
+                    "DUPLICATE_REQUEST",
+                    "A request with this JSON-RPC id is already pending",
+                  );
+                }
+                const result = new Promise<JsonValue>((resolve, reject) => {
+                  liveActionRequests.set(requestId, { resolve, reject });
+                });
+                socket.send(
+                  JSON.stringify({
+                    type: "action",
+                    requestId,
+                    action,
+                  }),
+                );
+                return result;
+              }
+              try {
+                const response = await sendAction(roomId, requestId, action);
+                if (response.update) publish(response.update);
+                return actionResultForRpc(response.result);
+              } catch (reason) {
+                throw rpcPlatformFault(
+                  "ACTION_REJECTED",
+                  message(reason, tRef.current("unexpectedError")),
+                );
+              }
+            },
+          },
+          "clipboard.readText": {
+            async handle() {
+              if (!clipboardDeclared) {
+                throw rpcPlatformFault(
+                  "PERMISSION_NOT_DECLARED",
+                  "The game Manifest does not declare clipboard.readText",
+                );
+              }
+              return clipboard.requestReadText(clipboardReason);
+            },
+          },
+        });
       };
       channel.port1.start();
       iframe.current?.contentWindow?.postMessage(
-        { type: "playweft:bridge", version: 1 },
-        gameOrigin,
+        { type: "playweft:bridge", version: PLAYWEFT_BRIDGE_VERSION },
+        currentGameOrigin,
         [channel.port2],
       );
     };
@@ -441,20 +566,24 @@ export default function RoomHost({
       window.clearTimeout(handshakeTimeout);
       window.clearInterval(heartbeatTimer);
       socket?.close();
+      rejectLiveActions("BRIDGE_CLOSED", "The game bridge was closed");
+      clipboard.cancelPending();
       bridgePort.current?.close();
       bridgePort.current = undefined;
-      window.clearTimeout(metadataFallback);
       window.removeEventListener("message", onWindowMessage);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [
     gameRevision,
     gameUrl,
+    loadedGame,
     onEntryFailed,
     onEntryReady,
     onEntryStatus,
     onGameDiscovered,
     roomId,
+    clipboard.cancelPending,
+    clipboard.requestReadText,
   ]);
 
   const copyInvite = async () => {
@@ -472,8 +601,7 @@ export default function RoomHost({
     try {
       setError(undefined);
       const snapshot = await startRoom(roomId);
-      bridgePort.current?.postMessage({
-        type: "state",
+      postRpcNotification(bridgePort.current, "game.state", {
         phase: "playing",
         state: snapshot.state,
         events: snapshot.events ?? [],
@@ -523,7 +651,11 @@ export default function RoomHost({
     try {
       setError(undefined);
       setChangeGameOpen(false);
-      await changeRoomGame(roomId, url);
+      const next = await loadGameManifest(manifestUrlFromInput(url));
+      if (!next.manifest.modes.room) {
+        throw new Error("The game Manifest does not declare room mode");
+      }
+      await changeRoomGame(roomId, next.game.manifestUrl);
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
     }
@@ -879,9 +1011,17 @@ export default function RoomHost({
             title={gameName}
             src={gameUrl}
             sandbox="allow-scripts allow-same-origin allow-forms"
+            allow="clipboard-read 'none'; clipboard-write 'none'"
           />
         )}
       </main>
+      <ClipboardPrompt
+        prompt={clipboard.prompt}
+        notice={clipboard.notice}
+        onAllow={() => void clipboard.allow()}
+        onDeny={clipboard.deny}
+        onDismissNotice={clipboard.clearNotice}
+      />
       {error && (
         <ErrorToast message={error} onDismiss={() => setError(undefined)} />
       )}
@@ -998,12 +1138,12 @@ export default function RoomHost({
           )}
         </Menu>
       )}
-      {gameInfoOpen && gameUrl && (
+      {gameInfoOpen && gameUrl && game && (
         <GameInfoPanel
           actions={phase === "playing" ? gameInfoActions : undefined}
           icon={gameIconHref}
           name={gameName}
-          url={gameUrl}
+          url={game.url}
           onClose={() => setGameInfoOpen(false)}
         />
       )}
@@ -1036,101 +1176,41 @@ function applyMembership(
   setLobby(lobby);
 }
 
-function initialization(value: unknown, t: Translator): RoomInitialization {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(t("invalidInitialization"));
-  }
-  const input = value as Record<string, unknown>;
-  if (
-    input.runtime !== "lua" ||
-    typeof input.script !== "string" ||
-    !isLimit(input.minPlayers) ||
-    !isLimit(input.maxPlayers) ||
-    input.minPlayers > input.maxPlayers
-  ) {
-    throw new Error(t("invalidGameLimits"));
-  }
-  return {
-    runtime: "lua",
-    script: input.script,
-    minPlayers: input.minPlayers,
-    maxPlayers: input.maxPlayers,
-    liveRoom: input.liveRoom === true,
-  };
-}
-
-function isLimit(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 1 &&
-    value <= 32
-  );
-}
-
-function bridgeRequestId(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 && value.length <= 128
-    ? value
-    : undefined;
-}
-
-function descriptor(
-  value: unknown,
-  gameOrigin: string,
-  gameUrl: string,
-): RecentGame | undefined {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return undefined;
-  const input = value as Record<string, unknown>;
-  if (
-    typeof input.name !== "string" ||
-    input.name.length === 0 ||
-    input.name.length > 100
-  )
-    return undefined;
-  let icon: string | undefined;
-  let helpUrl: string | undefined;
-  const translations = isGameTranslations(input.translations)
-    ? input.translations
-    : undefined;
-  const modes = gameModes(input.modes);
-  const liveRoom = input.liveRoom === true;
-  if (typeof input.icon === "string") {
-    try {
-      const resolved = new URL(input.icon, gameUrl);
-      if (resolved.origin === gameOrigin) icon = resolved.toString();
-    } catch {
-      // Icon metadata is optional.
-    }
-  }
-  if (typeof input.helpUrl === "string") {
-    try {
-      const resolved = new URL(input.helpUrl, gameUrl);
-      if (resolved.origin === gameOrigin) helpUrl = resolved.toString();
-    } catch {
-      // Help metadata is optional.
-    }
-  }
-  return {
-    url: gameUrl,
-    name: input.name,
-    ...(translations ? { translations } : {}),
-    icon,
-    helpUrl,
-    ...(modes ? { modes } : {}),
-    ...(liveRoom ? { liveRoom } : {}),
-  };
-}
-
 function message(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
 }
 
-function gameModes(value: unknown): GameMode[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const modes = value.filter(
-    (item): item is GameMode => item === "solo" || item === "room",
-  );
-  const uniqueModes = [...new Set(modes)];
-  return uniqueModes.length > 0 ? uniqueModes : undefined;
+function actionFromRpcParams(params: JsonValue | undefined): JsonValue {
+  if (
+    params === null ||
+    typeof params !== "object" ||
+    Array.isArray(params) ||
+    !("action" in params) ||
+    !isJson(params.action)
+  ) {
+    throw new RpcFault(
+      JsonRpcErrorCode.InvalidParams,
+      "room.action params must contain a JSON-compatible action",
+      { code: "INVALID_ACTION_PARAMS", retryable: false },
+    );
+  }
+  return params.action;
+}
+
+function actionResultForRpc(result: RoomActionResult): JsonValue {
+  return result.accepted
+    ? {
+        accepted: true,
+        matchId: result.matchId,
+        version: result.version,
+      }
+    : {
+        accepted: false,
+        matchId: result.matchId,
+        version: result.version,
+        error: {
+          code: result.error.code,
+          message: result.error.message,
+        },
+      };
 }

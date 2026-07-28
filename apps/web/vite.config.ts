@@ -33,12 +33,20 @@ function embeddedFeaturedGameSources(): unknown[] | null {
   if (
     !Array.isArray(value) ||
     value.some((item) => {
-      if (typeof item === "string") return item.trim().length === 0;
-      return item === null || typeof item !== "object" || Array.isArray(item);
+      if (item === null || typeof item !== "object" || Array.isArray(item))
+        return true;
+      const source = item as Record<string, unknown>;
+      const hasGame =
+        typeof source.manifestUrl === "string" &&
+        source.manifestUrl.trim().length > 0;
+      const hasList =
+        typeof source.listUrl === "string" &&
+        source.listUrl.trim().length > 0;
+      return hasGame === hasList;
     })
   ) {
     throw new Error(
-      `Featured-games file ${filePath} must contain an array of game objects or list URLs`,
+      `Featured-games file ${filePath} must contain { manifestUrl } or { listUrl } entries`,
     );
   }
   return value;

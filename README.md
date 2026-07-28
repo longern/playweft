@@ -39,11 +39,14 @@ platform page (same origin, HttpOnly session, WebSocket) -> Worker -> Durable Ob
                   +-> sandboxed third-party iframe (game intents and state only)
 ```
 
-The iframe never receives a platform player ID, session token, cookie, or WebSocket URL.
-On first launch it sends its Lua source through the bridge; the platform page
-uses its own session to initialize the room. The Durable Object stores that
-source hash atomically: a repeat with the same hash is harmless, while a
-different script for an existing room is rejected. The iframe can subsequently
+The iframe never receives a platform account ID, session token, cookie, or
+WebSocket URL. A game URL resolves to `playweft.json`; the browser fetches and
+validates this Manifest, then the Worker fetches its same-origin Lua entry
+server-side before opening `client.entry`. After
+the `MessagePort` handshake, every bridge message uses JSON-RPC 2.0. The
+Durable Object atomically locks the Manifest game ID/version, runtime settings
+and source hash: an identical repeat is harmless, while a different package
+for an existing room is rejected. The iframe can subsequently
 ask to perform a game action, but the Worker derives the user from its session
 and maps it to a room-scoped opaque actor ID before invoking Lua. The public
 room API deliberately has no CORS policy.
@@ -70,9 +73,9 @@ omit `Origin` for a same-origin GET.
 
 | Request | Purpose |
 | --- | --- |
-| `POST /api/rooms` | Create a random room with `{ gameUrl }`; room IDs default to 4-character friendly codes and the URL is the only launch metadata persisted for that room. |
-| `GET /api/rooms/:roomId/launch` | Read the game's entry URL for the invitation page. |
-| `PUT /api/rooms/:roomId/initialize` | Atomically install `{ runtime?: "lua", script, minPlayers, maxPlayers }`; repeating the same complete configuration is safe. |
+| `POST /api/rooms` | Create a random room with `{ manifestUrl }`; room IDs default to 4-character friendly codes. |
+| `GET /api/rooms/:roomId/launch` | Read the exact Manifest URL for the invitation page. |
+| `PUT /api/rooms/:roomId/initialize` | Fetch the same-origin `serverUrl` and atomically install its source with the Manifest identity, player limits and persistence mode; repeating the same configuration is safe. |
 | `POST /api/rooms/:roomId/join` | Join the platform-owned lobby. The room creator is the host; when every seat is taken, new arrivals join as spectators. |
 | `POST /api/rooms/:roomId/seat` | Choose an empty numbered seat with `{ seat }`, or leave a seat to spectate with `{ seat: null }`. The host keeps their seat. |
 | `POST /api/rooms/:roomId/ready` | Set a seated non-host player's readiness with `{ ready }`. |
@@ -119,10 +122,10 @@ an anonymous platform session. The first player chooses one of three buttons;
 the server reveals both choices only after a second player chooses. A draw clears
 both choices and starts the next round.
 
-The platform keeps a browser-local list of recently used game URLs. A game may
-send `{ name, icon }` through the bridge after loading; those labels improve the
-local history but are not stored as a global catalogue. The room Durable Object
-stores only the entry URL, fixed Lua configuration and player limits, game
+The platform keeps a browser-local list of recently used game Manifests. Names,
+translations, icons, modes and requested permissions all come from the validated
+Manifest; the iframe cannot replace catalogue metadata at runtime. The room Durable Object
+stores only the Manifest URL, fixed package identity, Lua configuration and player limits, game
 state, the room creator, and opaque room-scoped player membership.
 
 ## Recommended games
@@ -140,32 +143,26 @@ contents into the frontend bundle. The file is not uploaded separately and
 changes take effect only after rebuilding. Do not put secrets in it: all
 embedded configuration is public in the browser.
 
-The JSON root is an array. Each item is either a game object or the URL of
-another JSON list:
+The JSON root is an array. Each item explicitly references either a game
+Manifest or another JSON list:
 
 ```json
 [
   {
-    "name": "Rock Paper Scissors",
-    "translations": {
-      "zh-CN": { "name": "石头剪刀布" }
-    },
-    "url": "/games/rps/",
-    "icon": "/games/rps/rps.svg",
-    "description": "A quick two-player round.",
-    "category": "Quick match",
-    "modes": ["room"],
-    "liveRoom": false
+    "manifestUrl": "/games/rps/playweft.json"
   },
-  "https://catalog.example.com/playweft-games.json"
+  {
+    "listUrl": "https://catalog.example.com/playweft-games.json"
+  }
 ]
 ```
 
 Remote lists use the same array format and may reference more lists. Relative
-game and icon URLs in a remote list resolve against that list's URL. Remote
-servers must allow the Playweft frontend origin through CORS. The loader
-deduplicates games by URL and limits recursion, total list requests, response
-size, and request duration.
+URLs resolve against the containing list. Both remote lists and game Manifests
+must allow the Playweft frontend origin through CORS. Card metadata is fetched
+from each Manifest; the deployment list does not duplicate it. The loader
+deduplicates games by Manifest ID and limits recursion, total list requests,
+response size, and request duration.
 
 When the deployment file is elsewhere, set
 `PLAYWEFT_FEATURED_GAMES_FILE=/path/to/games.json`. A configured path that does

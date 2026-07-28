@@ -7,14 +7,29 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { createGuestSession, createRoom } from "./platform-api";
-import RoomHost, { type GameMode, type RecentGame } from "./RoomHost";
+import RoomHost from "./RoomHost";
 import { useFeaturedGames, type FeaturedGame } from "./featured-games";
 import Dialog from "./Dialog";
 import ErrorToast from "./ErrorToast";
 import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
+import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
+import {
+  PLAYWEFT_BRIDGE_VERSION,
+  dispatchRpcMessage,
+  rpcPlatformFault,
+} from "./json-rpc";
+import {
+  isStoredDiscoveredGame,
+  loadGameManifest,
+  manifestUrlFromInput,
+  manifestPermissionReason,
+  type LoadedGame,
+  type DiscoveredGame as RecentGame,
+  type GameMode,
+} from "./game-manifest";
 import type { MenuPosition } from "./Menu";
-import { isGameTranslations, localizeGameName, useI18n, type Translator } from "./i18n";
+import { localizeGameName, useI18n, type Translator } from "./i18n";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
 const FAVORITE_GAMES_KEY = "playweft:favorite-games:v1";
@@ -22,8 +37,6 @@ const MAX_RECENT_GAMES = 8;
 const MAX_FAVORITE_GAMES = 8;
 const DEFAULT_ROOM_ID_FORMAT = "code:4";
 const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
-const GAME_PROBE_TIMEOUT_MS = 8_000;
-const GAME_PROBE_METADATA_TIMEOUT_MS = 2_000;
 type ShelfGame = RecentGame | FeaturedGame;
 type GameShelfKind = "favorite" | "recent" | "recommended";
 type StoredRecentGame = RecentGame & { pinned?: boolean };
@@ -81,9 +94,7 @@ export default function App() {
     (roomId && settledRoomId !== roomId ? t("loadingGame") : undefined);
 
   if (soloGame) {
-    return (
-      <SoloHost game={soloGame} onBack={() => setSoloGame(undefined)} />
-    );
+    return <SoloHost game={soloGame} onBack={() => setSoloGame(undefined)} />;
   }
 
   if (roomId) {
@@ -150,8 +161,8 @@ function Home({
     url: string;
     error: string;
   }>();
-  const favoriteUrls = useMemo(
-    () => new Set(favoriteGames.map((game) => game.url)),
+  const favoriteIds = useMemo(
+    () => new Set(favoriteGames.map((game) => game.manifestId)),
     [favoriteGames],
   );
   const roomIdInput = roomIdFromInput(gameUrl);
@@ -191,7 +202,7 @@ function Home({
     try {
       await createGuestSession();
       if (cancelled()) return;
-      const room = await createRoom(game.url);
+      const room = await createRoom(game.manifestUrl);
       if (cancelled()) return;
       rememberGame(game);
       onEntryStatus(t("loadingGame"));
@@ -237,7 +248,11 @@ function Home({
     setError(undefined);
     setUnsupportedGame(undefined);
     try {
-      const game = await probeGame(trimmed, (status) => onEntryStatus(status), t);
+      const game = await probeGame(
+        trimmed,
+        (status) => onEntryStatus(status),
+        t,
+      );
       if (cancelled()) return;
       onEntryStatus(undefined);
       launchGame(game);
@@ -268,21 +283,23 @@ function Home({
 
   const toggleFavorite = (game: ShelfGame) => {
     setFavoriteGames((current) => {
-      if (current.some((item) => item.url === game.url)) {
+      if (current.some((item) => item.manifestId === game.manifestId)) {
         return persistFavoriteGames(
-          current.filter((item) => item.url !== game.url),
+          current.filter((item) => item.manifestId !== game.manifestId),
         );
       }
       return persistFavoriteGames([
         toRecentGame(game),
-        ...current.filter((item) => item.url !== game.url),
+        ...current.filter((item) => item.manifestId !== game.manifestId),
       ]);
     });
   };
 
   const deleteRecent = (game: ShelfGame) => {
     setRecentGames((current) =>
-      persistRecentGames(current.filter((item) => item.url !== game.url)),
+      persistRecentGames(
+        current.filter((item) => item.manifestId !== game.manifestId),
+      ),
     );
   };
 
@@ -372,10 +389,10 @@ function Home({
       )}
       {gameMenu && (
         <GameMenu
-          key={`${gameMenu.game.url}:${gameMenu.kind}`}
+          key={`${gameMenu.game.manifestId}:${gameMenu.kind}`}
           game={gameMenu.game}
           position={gameMenu.position}
-          isFavorite={favoriteUrls.has(gameMenu.game.url)}
+          isFavorite={favoriteIds.has(gameMenu.game.manifestId)}
           canDelete={gameMenu.kind === "recent"}
           onClose={() => setGameMenu(undefined)}
           onShowInfo={() => setGameInfo(gameMenu.game)}
@@ -422,16 +439,33 @@ function Home({
   );
 }
 
-function SoloHost({
-  game,
-  onBack,
-}: {
-  game: RecentGame;
-  onBack(): void;
-}) {
+function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
   const { locale, t } = useI18n();
   const [gameInfoOpen, setGameInfoOpen] = useState(false);
-  const gameName = localizeGameName(game, locale);
+  const [loaded, setLoaded] = useState<LoadedGame>();
+  const [loadError, setLoadError] = useState<string>();
+  const iframe = useRef<HTMLIFrameElement>(null);
+  const port = useRef<MessagePort | undefined>(undefined);
+  const currentGame = loaded?.game ?? game;
+  const gameName = localizeGameName(currentGame, locale);
+  const gameOrigin = new URL(currentGame.url).origin;
+  const clipboard = useClipboardRead(gameName, gameOrigin);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadGameManifest(game.manifestUrl)
+      .then((result) => {
+        if (!cancelled) setLoaded(result);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setLoadError(message(reason, t("unexpectedError")));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [game.manifestUrl, t]);
 
   useEffect(() => {
     document.title = `${gameName} | Playweft`;
@@ -440,13 +474,109 @@ function SoloHost({
     };
   }, [gameName]);
 
+  useEffect(() => {
+    if (!loaded) return;
+    const clipboardDeclared = loaded.game.permissions.includes(
+      "clipboard.readText",
+    );
+    const clipboardReason = manifestPermissionReason(
+      loaded.manifest,
+      "clipboard.readText",
+    );
+    const onMessage = (event: MessageEvent) => {
+      if (
+        event.origin !== gameOrigin ||
+        event.source !== iframe.current?.contentWindow ||
+        event.data?.type !== "playweft:bridge-ready" ||
+        event.data?.version !== PLAYWEFT_BRIDGE_VERSION
+      )
+        return;
+
+      clipboard.cancelPending();
+      port.current?.close();
+      const channel = new MessageChannel();
+      port.current = channel.port1;
+      channel.port1.onmessage = (bridgeEvent) => {
+        void dispatchRpcMessage(channel.port1, bridgeEvent.data, {
+          "game.initialize": {
+            handle() {
+              if (!loaded.manifest.modes.solo) {
+                throw rpcPlatformFault(
+                  "SOLO_MODE_UNAVAILABLE",
+                  "The game Manifest does not declare solo mode",
+                );
+              }
+              return {
+                mode: "solo",
+                protocolVersion: PLAYWEFT_BRIDGE_VERSION,
+                capabilities: loaded.game.permissions,
+              };
+            },
+          },
+          "room.action": {
+            handle() {
+              throw rpcPlatformFault(
+                "ROOM_UNAVAILABLE_IN_SOLO_MODE",
+                "Room actions are unavailable in solo mode",
+              );
+            },
+          },
+          "clipboard.readText": {
+            handle() {
+              if (!clipboardDeclared) {
+                throw rpcPlatformFault(
+                  "PERMISSION_NOT_DECLARED",
+                  "The game Manifest does not declare clipboard.readText",
+                );
+              }
+              return clipboard.requestReadText(clipboardReason);
+            },
+          },
+        });
+      };
+      channel.port1.start();
+      iframe.current?.contentWindow?.postMessage(
+        { type: "playweft:bridge", version: PLAYWEFT_BRIDGE_VERSION },
+        gameOrigin,
+        [channel.port2],
+      );
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => {
+      clipboard.cancelPending();
+      port.current?.close();
+      port.current = undefined;
+      window.removeEventListener("message", onMessage);
+    };
+  }, [
+    clipboard.cancelPending,
+    clipboard.requestReadText,
+    gameOrigin,
+    loaded,
+  ]);
+
   return (
     <div className="room-shell room-playing solo-host">
-      <iframe
-        className="game-frame"
-        title={gameName}
-        src={game.url}
-        sandbox="allow-scripts allow-same-origin allow-forms"
+      {loaded && (
+        <iframe
+          ref={iframe}
+          className="game-frame"
+          title={gameName}
+          src={loaded.game.url}
+          sandbox="allow-scripts allow-same-origin allow-forms"
+          allow="clipboard-read 'none'; clipboard-write 'none'"
+        />
+      )}
+      {loadError && (
+        <ErrorToast message={loadError} onDismiss={() => setLoadError(undefined)} />
+      )}
+      <ClipboardPrompt
+        prompt={clipboard.prompt}
+        notice={clipboard.notice}
+        onAllow={() => void clipboard.allow()}
+        onDeny={clipboard.deny}
+        onDismissNotice={clipboard.clearNotice}
       />
       <button
         className="game-options"
@@ -468,9 +598,9 @@ function SoloHost({
               onSelect: onBack,
             },
           ]}
-          icon={game.icon}
+          icon={currentGame.icon}
           name={gameName}
-          url={game.url}
+          url={currentGame.url}
           onClose={() => setGameInfoOpen(false)}
         />
       )}
@@ -533,7 +663,7 @@ function GameShelf({
         {games.map((game) => (
           <button
             className="shelf-game"
-            key={game.url}
+            key={game.manifestId}
             onClick={() => onSelect(game)}
             onContextMenu={(event) => onContextMenu(game, kind, event)}
           >
@@ -541,10 +671,14 @@ function GameShelf({
               {game.icon ? (
                 <img src={game.icon} alt="" referrerPolicy="no-referrer" />
               ) : (
-                <span>{localizeGameName(game, locale).slice(0, 2).toUpperCase()}</span>
+                <span>
+                  {localizeGameName(game, locale).slice(0, 2).toUpperCase()}
+                </span>
               )}
             </span>
-            <span className="shelf-game-name">{localizeGameName(game, locale)}</span>
+            <span className="shelf-game-name">
+              {localizeGameName(game, locale)}
+            </span>
           </button>
         ))}
       </div>
@@ -682,16 +816,16 @@ function readStoredGames(key: string): StoredRecentGame[] {
 
 function saveRecentGame(game: RecentGame): void {
   const favorites = readFavoriteGames();
-  if (favorites.some((item) => item.url === game.url)) {
+  if (favorites.some((item) => item.manifestId === game.manifestId)) {
     persistFavoriteGames([
       game,
-      ...favorites.filter((item) => item.url !== game.url),
+      ...favorites.filter((item) => item.manifestId !== game.manifestId),
     ]);
   }
   const current = readRecentGames();
   persistRecentGames([
     game,
-    ...current.filter((item) => item.url !== game.url),
+    ...current.filter((item) => item.manifestId !== game.manifestId),
   ]);
 }
 
@@ -708,52 +842,31 @@ function persistFavoriteGames(games: RecentGame[]): RecentGame[] {
 }
 
 function uniqueGames(games: RecentGame[]): RecentGame[] {
-  const seenUrls = new Set<string>();
+  const seenIds = new Set<string>();
   return games.filter((game) => {
-    if (seenUrls.has(game.url)) return false;
-    seenUrls.add(game.url);
+    if (seenIds.has(game.manifestId)) return false;
+    seenIds.add(game.manifestId);
     return true;
   });
 }
 
 function isStoredRecentGame(value: unknown): value is StoredRecentGame {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const item = value as Record<string, unknown>;
   return (
-    typeof item.url === "string" &&
-    typeof item.name === "string" &&
-    (item.translations === undefined || isGameTranslations(item.translations)) &&
-    (item.icon === undefined || typeof item.icon === "string") &&
-    (item.helpUrl === undefined || typeof item.helpUrl === "string") &&
-    (item.modes === undefined || isGameModes(item.modes)) &&
-    (item.liveRoom === undefined || typeof item.liveRoom === "boolean") &&
-    (item.pinned === undefined || typeof item.pinned === "boolean")
+    isStoredDiscoveredGame(value) &&
+    ((value as StoredRecentGame).pinned === undefined ||
+      typeof (value as StoredRecentGame).pinned === "boolean")
   );
 }
 
 function toRecentGame(game: ShelfGame): RecentGame {
   return {
+    ...game,
     url: new URL(game.url, window.location.origin).toString(),
-    name: game.name,
-    ...(game.translations ? { translations: game.translations } : {}),
-    ...(game.icon ? { icon: game.icon } : {}),
-    ...("helpUrl" in game && game.helpUrl ? { helpUrl: game.helpUrl } : {}),
-    ...(game.modes ? { modes: supportedModes(game) } : {}),
-    ...(game.liveRoom ? { liveRoom: true } : {}),
   };
 }
 
 function supportedModes(game: ShelfGame): GameMode[] {
-  return game.modes && game.modes.length > 0 ? game.modes : ["room"];
-}
-
-function isGameModes(value: unknown): value is GameMode[] {
-  return (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.every((item) => item === "solo" || item === "room")
-  );
+  return game.modes;
 }
 
 class UnsupportedGameUrlError extends Error {
@@ -770,183 +883,22 @@ function probeGame(
   onStatus: (status: string) => void,
   t: Translator,
 ): Promise<RecentGame> {
-  const gameUrl = normalizeGameUrl(value, t);
-  const gameOrigin = new URL(gameUrl).origin;
+  const manifestUrl = normalizeGameUrl(value, t);
   onStatus(t("checkingGame"));
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let bridgeReady = false;
-    let descriptorGame: RecentGame | undefined;
-    let metadataTimer: number | undefined;
-    let port: MessagePort | undefined;
-    const iframe = document.createElement("iframe");
-    iframe.src = gameUrl;
-    iframe.title = t("gameCompatibilityCheck");
-    iframe.tabIndex = -1;
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.className = "game-probe-frame";
-    iframe.sandbox.add("allow-scripts", "allow-same-origin", "allow-forms");
-
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      window.clearTimeout(metadataTimer);
-      window.removeEventListener("message", onMessage);
-      port?.close();
-      iframe.remove();
-    };
-    const finish = (game: RecentGame) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(game);
-    };
-    const fail = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-    const fallbackGame = (): RecentGame => ({
-      url: gameUrl,
-      name: gameNameFromUrl(gameUrl),
-      modes: ["room"],
-    });
-    const timeout = window.setTimeout(() => {
-      fail(
-        new UnsupportedGameUrlError(
-          gameUrl,
-          bridgeReady
-            ? t("gameLaunchMissing")
-            : t("gameBridgeUnavailable"),
-        ),
-      );
-    }, GAME_PROBE_TIMEOUT_MS);
-    const onPortMessage = (event: MessageEvent) => {
-      const data = event.data;
-      if (data?.type === "descriptor") {
-        const game = gameDescriptor(data.descriptor, gameOrigin, gameUrl);
-        if (!game) return;
-        descriptorGame = game;
-        const modes = supportedModes(game);
-        if (modes.includes("solo")) finish(game);
-        return;
-      }
-      if (data?.type === "initialize") {
-        const liveRoom =
-          data.initialization !== null &&
-          typeof data.initialization === "object" &&
-          !Array.isArray(data.initialization) &&
-          (data.initialization as Record<string, unknown>).liveRoom === true;
-        const game = descriptorGame ?? fallbackGame();
-        finish({
-          ...game,
-          modes: supportedModes(game).includes("room")
-            ? supportedModes(game)
-            : [...supportedModes(game), "room"],
-          ...(liveRoom ? { liveRoom: true } : {}),
-        });
-      }
-    };
-    const onMessage = (event: MessageEvent) => {
-      if (settled) return;
-      if (event.origin !== gameOrigin) return;
-      if (event.source !== iframe.contentWindow) return;
-      if (
-        event.data?.type !== "playweft:bridge-ready" ||
-        event.data?.version !== 1
-      )
-        return;
-      bridgeReady = true;
-      const channel = new MessageChannel();
-      port = channel.port1;
-      channel.port1.onmessage = onPortMessage;
-      channel.port1.start();
-      iframe.contentWindow?.postMessage(
-        { type: "playweft:bridge", version: 1 },
-        gameOrigin,
-        [channel.port2],
-      );
-      metadataTimer = window.setTimeout(() => {
-        if (descriptorGame) {
-          finish(descriptorGame);
-          return;
-        }
-        fail(
-          new UnsupportedGameUrlError(
-            gameUrl,
-            t("gameBridgeLaunchMissing"),
-          ),
-        );
-      }, GAME_PROBE_METADATA_TIMEOUT_MS);
-    };
-
-    window.addEventListener("message", onMessage);
-    document.body.append(iframe);
+  return loadGameManifest(manifestUrl).then((loaded) => loaded.game).catch((reason) => {
+    throw new UnsupportedGameUrlError(
+      manifestUrl,
+      reason instanceof Error ? reason.message : t("gameBridgeUnavailable"),
+    );
   });
 }
 
 function normalizeGameUrl(value: string, t: Translator): string {
   try {
-    return new URL(value).toString();
+    return manifestUrlFromInput(value);
   } catch {
     throw new Error(t("enterFullGameUrl"));
   }
-}
-
-function gameDescriptor(
-  value: unknown,
-  gameOrigin: string,
-  gameUrl: string,
-): RecentGame | undefined {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return undefined;
-  const input = value as Record<string, unknown>;
-  if (
-    typeof input.name !== "string" ||
-    input.name.length === 0 ||
-    input.name.length > 100
-  )
-    return undefined;
-  let icon: string | undefined;
-  let helpUrl: string | undefined;
-  const translations = isGameTranslations(input.translations)
-    ? input.translations
-    : undefined;
-  if (typeof input.icon === "string") {
-    try {
-      const resolved = new URL(input.icon, gameUrl);
-      if (resolved.origin === gameOrigin) icon = resolved.toString();
-    } catch {
-      // Optional metadata.
-    }
-  }
-  if (typeof input.helpUrl === "string") {
-    try {
-      const resolved = new URL(input.helpUrl, gameUrl);
-      if (resolved.origin === gameOrigin) helpUrl = resolved.toString();
-    } catch {
-      // Optional metadata.
-    }
-  }
-  const modes = isGameModes(input.modes)
-    ? [...new Set(input.modes)]
-    : undefined;
-  const liveRoom = input.liveRoom === true;
-  return {
-    url: gameUrl,
-    name: input.name,
-    ...(translations ? { translations } : {}),
-    ...(icon ? { icon } : {}),
-    ...(helpUrl ? { helpUrl } : {}),
-    ...(modes ? { modes } : {}),
-    ...(liveRoom ? { liveRoom } : {}),
-  };
-}
-
-function gameNameFromUrl(value: string): string {
-  const url = new URL(value);
-  const segment = url.pathname.split("/").filter(Boolean).at(-1);
-  return segment ? decodeURIComponent(segment) : url.hostname;
 }
 
 function roomIdFromInput(value: string): string | undefined {
