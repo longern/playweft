@@ -6,14 +6,22 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { ChevronRight } from "lucide-react";
 import { createGuestSession, createRoom } from "./platform-api";
 import RoomHost from "./RoomHost";
 import { useFeaturedGames, type FeaturedGame } from "./featured-games";
 import Dialog from "./Dialog";
 import ErrorToast from "./ErrorToast";
+import GameHelpDialog from "./GameHelpDialog";
 import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
 import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
+import {
+  isFavoriteGame,
+  persistFavoriteGames,
+  readFavoriteGames,
+  toggleFavoriteGame,
+} from "./favorite-games";
 import {
   PLAYWEFT_BRIDGE_VERSION,
   dispatchRpcMessage,
@@ -30,11 +38,10 @@ import {
 } from "./game-manifest";
 import type { MenuPosition } from "./Menu";
 import { localizeGameName, useI18n, type Translator } from "./i18n";
+import { useGameViewport } from "./use-game-viewport";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
-const FAVORITE_GAMES_KEY = "playweft:favorite-games:v1";
 const MAX_RECENT_GAMES = 8;
-const MAX_FAVORITE_GAMES = 8;
 const DEFAULT_ROOM_ID_FORMAT = "code:4";
 const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 type ShelfGame = RecentGame | FeaturedGame;
@@ -46,27 +53,39 @@ type RoomIdFormat =
 
 export default function App() {
   const { t } = useI18n();
-  const [path, setPath] = useState(window.location.pathname);
+  const [location, setLocation] = useState(readAppLocation);
   const [entryStatus, setEntryStatus] = useState<string>();
   const [settledRoomId, setSettledRoomId] = useState<string>();
   const [soloGame, setSoloGame] = useState<RecentGame>();
   const entryGeneration = useRef(0);
+  const handledExternalGameUrl = useRef<string | undefined>(undefined);
+  const path = new URL(location, window.location.origin).pathname;
+  const externalGameUrl = gameUrlFromExternalLaunch(location);
 
   useEffect(() => {
-    const onPopState = () => setPath(window.location.pathname);
+    const onPopState = () => setLocation(readAppLocation());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   const navigate = useCallback((nextPath: string) => {
     window.history.pushState({}, "", nextPath);
-    setPath(nextPath);
+    setLocation(readAppLocation());
+  }, []);
+  const claimExternalGameUrl = useCallback((url: string) => {
+    if (handledExternalGameUrl.current === url) return false;
+    handledExternalGameUrl.current = url;
+    return true;
   }, []);
   const roomId = /^\/r\/([a-zA-Z0-9_-]{1,128})$/.exec(path)?.[1];
 
   useEffect(() => {
     if (!roomId) setSettledRoomId(undefined);
   }, [roomId]);
+
+  useEffect(() => {
+    if (!externalGameUrl) handledExternalGameUrl.current = undefined;
+  }, [externalGameUrl]);
 
   const beginEntry = useCallback(() => {
     const generation = ++entryGeneration.current;
@@ -118,10 +137,12 @@ export default function App() {
   return (
     <>
       <Home
+        externalGameUrl={externalGameUrl}
         onNavigate={navigate}
         onBeginEntry={beginEntry}
         onEntryStatus={setEntryStatus}
         onPlaySolo={setSoloGame}
+        onClaimExternalGameUrl={claimExternalGameUrl}
       />
       {overlayStatus && (
         <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />
@@ -131,15 +152,19 @@ export default function App() {
 }
 
 interface HomeProps {
+  externalGameUrl?: string;
   onNavigate(path: string): void;
   onBeginEntry(): () => boolean;
+  onClaimExternalGameUrl(url: string): boolean;
   onEntryStatus(status: string | undefined): void;
   onPlaySolo(game: RecentGame): void;
 }
 
 function Home({
+  externalGameUrl,
   onNavigate,
   onBeginEntry,
+  onClaimExternalGameUrl,
   onEntryStatus,
   onPlaySolo,
 }: HomeProps) {
@@ -155,6 +180,7 @@ function Home({
     position: MenuPosition;
   }>();
   const [gameInfo, setGameInfo] = useState<ShelfGame>();
+  const [gameHelp, setGameHelp] = useState<ShelfGame>();
   const [launchChoice, setLaunchChoice] = useState<ShelfGame>();
   const [launchChoiceRoomCode, setLaunchChoiceRoomCode] = useState("");
   const [unsupportedGame, setUnsupportedGame] = useState<{
@@ -266,6 +292,14 @@ function Home({
       }
     }
   };
+
+  useEffect(() => {
+    if (!externalGameUrl || !onClaimExternalGameUrl(externalGameUrl)) {
+      return;
+    }
+    setGameUrl(externalGameUrl);
+    void launchInput(externalGameUrl);
+  }, [externalGameUrl, onClaimExternalGameUrl]);
 
   const openGameMenu = (
     game: ShelfGame,
@@ -399,9 +433,22 @@ function Home({
       {gameInfo && (
         <GameInfoPanel
           icon={gameInfo.icon}
+          isFavorite={favoriteIds.has(gameInfo.manifestId)}
+          manifestUrl={gameInfo.manifestUrl}
           name={localizeGameName(gameInfo, locale)}
           url={gameInfo.url}
           onClose={() => setGameInfo(undefined)}
+          onShowHelp={
+            gameInfo.helpUrl ? () => setGameHelp(gameInfo) : undefined
+          }
+          onToggleFavorite={() => toggleFavorite(gameInfo)}
+        />
+      )}
+      {gameHelp?.helpUrl && (
+        <GameHelpDialog
+          name={localizeGameName(gameHelp, locale)}
+          url={gameHelp.helpUrl}
+          onClose={() => setGameHelp(undefined)}
         />
       )}
       {launchChoice && (
@@ -438,14 +485,22 @@ function Home({
 function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
   const { locale, t } = useI18n();
   const [gameInfoOpen, setGameInfoOpen] = useState(false);
+  const [gameHelpOpen, setGameHelpOpen] = useState(false);
   const [loaded, setLoaded] = useState<LoadedGame>();
   const [loadError, setLoadError] = useState<string>();
+  const [gameRevision, setGameRevision] = useState(0);
+  const [isFavorite, setIsFavorite] = useState(() => isFavoriteGame(game));
   const iframe = useRef<HTMLIFrameElement>(null);
   const port = useRef<MessagePort | undefined>(undefined);
   const currentGame = loaded?.game ?? game;
   const gameName = localizeGameName(currentGame, locale);
   const gameOrigin = new URL(currentGame.url).origin;
   const clipboard = useClipboardRead(gameName, gameOrigin);
+  useGameViewport(true);
+
+  useEffect(() => {
+    setIsFavorite(isFavoriteGame(currentGame));
+  }, [currentGame.manifestId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -550,6 +605,7 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
     <div className="room-shell room-playing solo-host">
       {loaded && (
         <iframe
+          key={gameRevision}
           ref={iframe}
           className="game-frame"
           title={gameName}
@@ -592,9 +648,25 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
             },
           ]}
           icon={currentGame.icon}
+          isFavorite={isFavorite}
+          manifestUrl={currentGame.manifestUrl}
           name={gameName}
           url={currentGame.url}
           onClose={() => setGameInfoOpen(false)}
+          onRefresh={() => setGameRevision((revision) => revision + 1)}
+          onShowHelp={
+            currentGame.helpUrl ? () => setGameHelpOpen(true) : undefined
+          }
+          onToggleFavorite={() =>
+            setIsFavorite(toggleFavoriteGame(currentGame))
+          }
+        />
+      )}
+      {gameHelpOpen && currentGame.helpUrl && (
+        <GameHelpDialog
+          name={gameName}
+          url={currentGame.helpUrl}
+          onClose={() => setGameHelpOpen(false)}
         />
       )}
     </div>
@@ -699,9 +771,16 @@ function LaunchChoiceDialog({
   const { locale, t } = useI18n();
   const roomId = roomIdFromInput(roomCode);
   const gameName = localizeGameName(game, locale);
+  const [joinRoomOpen, setJoinRoomOpen] = useState(false);
+  const roomCodeInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!joinRoomOpen) return;
+    roomCodeInput.current?.focus();
+  }, [joinRoomOpen]);
 
   return (
-    <Dialog title={t("playGame")} onDismiss={onClose}>
+    <Dialog title={t("playGame")} contentLayout="flush" onDismiss={onClose}>
       <div className="launch-choice">
         <div className="launch-choice-game">
           <span className="shelf-art">
@@ -713,31 +792,72 @@ function LaunchChoiceDialog({
           </span>
           <strong>{gameName}</strong>
         </div>
-        <div className="launch-choice-actions">
-          <button type="button" onClick={onPlaySolo}>
-            {t("playSolo")}
-          </button>
-          <button type="button" onClick={onCreateRoom}>
-            {t("createRoom")}
-          </button>
-        </div>
-        <form
-          className="launch-choice-join"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (roomId) onJoinRoom(roomId);
-          }}
+        <hr className="launch-choice-divider" />
+        <div
+          className={`launch-choice-panels ${
+            joinRoomOpen ? "launch-choice-panels-join" : ""
+          }`}
         >
-          <input
-            type="text"
-            placeholder={t("enterRoomCode")}
-            value={roomCode}
-            onChange={(event) => onRoomCodeChange(event.target.value)}
-          />
-          <button type="submit" disabled={!roomId}>
-            {t("joinRoom")}
-          </button>
-        </form>
+          <div className="launch-choice-menu" aria-hidden={joinRoomOpen}>
+            <button type="button" disabled={joinRoomOpen} onClick={onPlaySolo}>
+              <span>{t("playSolo")}</span>
+              <ChevronRight aria-hidden="true" />
+            </button>
+            <hr className="launch-choice-divider" />
+            <button
+              type="button"
+              disabled={joinRoomOpen}
+              onClick={onCreateRoom}
+            >
+              <span>{t("createRoom")}</span>
+              <ChevronRight aria-hidden="true" />
+            </button>
+            <hr className="launch-choice-divider" />
+            <button
+              type="button"
+              disabled={joinRoomOpen}
+              onClick={() => setJoinRoomOpen(true)}
+            >
+              <span>{t("joinRoom")}</span>
+              <ChevronRight aria-hidden="true" />
+            </button>
+          </div>
+          <div className="launch-choice-join-panel" aria-hidden={!joinRoomOpen}>
+            <form
+              id="launch-choice-room-form"
+              className="launch-choice-join"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (roomId) onJoinRoom(roomId);
+              }}
+            >
+              <div className="launch-choice-join-field">
+                <input
+                  ref={roomCodeInput}
+                  type="text"
+                  disabled={!joinRoomOpen}
+                  placeholder={t("enterRoomCode")}
+                  value={roomCode}
+                  onChange={(event) => onRoomCodeChange(event.target.value)}
+                />
+              </div>
+              <hr className="launch-choice-divider" />
+              <div className="launch-choice-join-actions">
+                <button
+                  type="button"
+                  disabled={!joinRoomOpen}
+                  onClick={() => setJoinRoomOpen(false)}
+                >
+                  {t("back")}
+                </button>
+                <hr className="launch-choice-divider-vertical" />
+                <button type="submit" disabled={!joinRoomOpen || !roomId}>
+                  {t("joinRoom")}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       </div>
     </Dialog>
   );
@@ -780,19 +900,6 @@ function readRecentGames(): RecentGame[] {
   return readStoredRecentGames().map(toRecentGame).slice(0, MAX_RECENT_GAMES);
 }
 
-function readFavoriteGames(): RecentGame[] {
-  const savedFavorites = readStoredGames(FAVORITE_GAMES_KEY).map(toRecentGame);
-  const pinnedFavorites = readStoredRecentGames()
-    .filter((game) => game.pinned)
-    .map(toRecentGame);
-  const favorites = uniqueGames([...savedFavorites, ...pinnedFavorites]).slice(
-    0,
-    MAX_FAVORITE_GAMES,
-  );
-  if (pinnedFavorites.length > 0) persistFavoriteGames(favorites);
-  return favorites;
-}
-
 function readStoredRecentGames(): StoredRecentGame[] {
   return readStoredGames(RECENT_GAMES_KEY);
 }
@@ -825,12 +932,6 @@ function saveRecentGame(game: RecentGame): void {
 function persistRecentGames(games: RecentGame[]): RecentGame[] {
   const next = uniqueGames(games).slice(0, MAX_RECENT_GAMES);
   localStorage.setItem(RECENT_GAMES_KEY, JSON.stringify(next));
-  return next;
-}
-
-function persistFavoriteGames(games: RecentGame[]): RecentGame[] {
-  const next = uniqueGames(games).slice(0, MAX_FAVORITE_GAMES);
-  localStorage.setItem(FAVORITE_GAMES_KEY, JSON.stringify(next));
   return next;
 }
 
@@ -894,6 +995,18 @@ function normalizeGameUrl(value: string, t: Translator): string {
   } catch {
     throw new Error(t("enterFullGameUrl"));
   }
+}
+
+function readAppLocation(): string {
+  return `${window.location.pathname}${window.location.search}`;
+}
+
+function gameUrlFromExternalLaunch(location: string): string | undefined {
+  const url = new URL(location, window.location.origin);
+  if (url.pathname !== "/") return undefined;
+  const value = url.searchParams.get("game")?.trim();
+  if (!value) return undefined;
+  return /^[a-z][a-z\d+.-]*:/i.test(value) ? value : `https://${value}`;
 }
 
 function roomIdFromInput(value: string): string | undefined {

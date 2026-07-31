@@ -27,10 +27,29 @@ html {
   scroll-behavior: smooth;
 }
 
+html:has(dialog:modal),
+body:has(dialog:modal) {
+  overflow: hidden;
+}
+
 body {
   min-width: 320px;
   margin: 0;
   background: #fff;
+}
+
+html.game-running,
+html.game-running body,
+html.game-running #root {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior-y: none;
+}
+
+html.game-running body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
 }
 
 button,

@@ -18,7 +18,7 @@
   z-index: 30;
   display: grid;
   width: 184px;
-  padding: 6px;
+  padding: 6px 0;
   border: 1px solid #e0e4e7;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.98);
@@ -29,7 +29,8 @@
 
 .menu button {
   width: 100%;
-  padding: 9px 10px;
+  min-height: 40px;
+  padding: 0px 16px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -59,13 +60,42 @@
   background: #fbeff1;
 }
 
+.game-card-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.game-card-menu button svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
 .dialog-layer {
   position: fixed;
   z-index: 40;
   inset: 0;
   display: grid;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
   place-items: center;
+  margin: 0;
   padding: 20px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  overscroll-behavior: contain;
+}
+
+.dialog-layer:not([open]) {
+  display: none;
+}
+
+.dialog-layer::backdrop {
+  background: transparent;
 }
 
 .dialog-backdrop {
@@ -102,6 +132,14 @@
 
 .dialog-large .dialog-content {
   padding: 0;
+}
+
+.game-help-frame {
+  display: block;
+  width: 100%;
+  height: min(65dvh, 560px);
+  border: 0;
+  overscroll-behavior: contain;
 }
 
 .dialog-header {
@@ -144,7 +182,12 @@
   min-height: 0;
   flex: 1 1 auto;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 20px;
+}
+
+.dialog-content-flush {
+  padding: 0;
 }
 
 .invite-dialog-content {
@@ -289,13 +332,14 @@
 }
 
 .dialog-action-danger {
-  border-color: #d7616d;
-  background: #d7616d;
+  border-color: #d93025;
+  background: #d93025;
   color: #fff;
 }
 
 .dialog-action-danger:hover {
-  background: #c34d59;
+  border-color: #b3261e;
+  background: #b3261e;
 }
 
 .leave-dialog-copy {
@@ -354,7 +398,7 @@
   width: 28px;
   height: 28px;
   place-items: center;
-  margin: -2px -3px 0 0;
+  margin: 0;
   padding: 0;
   border: 0;
   border-radius: 7px;
@@ -678,6 +722,10 @@
 }
 
 @media (max-width: 620px) {
+  .game-card-menu button {
+    min-height: 48px;
+  }
+
   .error-toast {
     right: 16px;
     bottom: 16px;

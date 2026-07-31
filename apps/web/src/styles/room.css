@@ -69,13 +69,6 @@
   width: 156px;
 }
 
-.game-help-frame {
-  display: block;
-  width: 100%;
-  height: min(65dvh, 560px);
-  border: 0;
-}
-
 main.room-host {
   width: min(860px, calc(100% - 40px));
   margin: 0 auto;
@@ -337,7 +330,7 @@ main.room-host {
   top: 24px;
   left: calc(50% + 10px);
   width: 108px;
-  padding: 5px;
+  padding: 5px 0;
   border: 1px solid rgba(216, 221, 224, 0.9);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.98);
@@ -537,11 +530,27 @@ main.room-host {
 
 .game-info-layer {
   position: fixed;
-  z-index: 8;
+  z-index: 40;
   inset: 0;
   display: grid;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
   place-items: center;
+  margin: 0;
   padding: 20px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.game-info-layer:not([open]) {
+  display: none;
+}
+
+.game-info-layer::backdrop {
+  background: transparent;
 }
 
 .game-info-backdrop {
@@ -655,6 +664,64 @@ main.room-host {
   font-size: 1.1rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.game-info-quick-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 0 20px 20px;
+}
+
+.game-info-quick-actions button {
+  display: flex;
+  min-width: 80px;
+  min-height: 72px;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 4px;
+  border-radius: 12px;
+  background: transparent;
+  color: #202124;
+  transition: background 0.14s ease;
+}
+
+.game-info-quick-actions button[aria-pressed="true"] {
+  color: #202124;
+}
+
+.game-info-quick-actions svg {
+  width: 24px;
+  height: 24px;
+  stroke-width: 1.8;
+}
+
+.game-info-quick-actions span {
+  overflow: hidden;
+  max-width: 100%;
+  font-size: 0.78rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-info-quick-actions button:focus-visible {
+  outline: 2px solid #6c7378;
+  outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .game-info-quick-actions button:hover {
+    background: #e9eee8;
+  }
+
+  .game-info-quick-actions button:active {
+    background: #dfe7de;
+  }
 }
 
 .game-info-url {

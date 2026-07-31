@@ -1,0 +1,26 @@
+import Dialog from "./Dialog";
+import { useI18n } from "./i18n";
+
+interface GameHelpDialogProps {
+  name: string;
+  url: string;
+  onClose(): void;
+}
+
+export default function GameHelpDialog({
+  name,
+  url,
+  onClose,
+}: GameHelpDialogProps) {
+  const { t } = useI18n();
+
+  return (
+    <Dialog title={t("gameHelp")} size="large" onDismiss={onClose}>
+      <iframe
+        className="game-help-frame"
+        title={t("gameHelpTitle", { name })}
+        src={url}
+      />
+    </Dialog>
+  );
+}

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Check, CircleHelp, Link2, RefreshCw, Star, X } from "lucide-react";
 import { useI18n } from "./i18n";
 
 export interface GameInfoAction {
@@ -11,26 +11,46 @@ export interface GameInfoAction {
 interface GameInfoPanelProps {
   actions?: GameInfoAction[];
   icon?: string;
+  isFavorite?: boolean;
+  manifestUrl?: string;
   name: string;
   url: string;
   onClose(): void;
+  onRefresh?(): void;
+  onShowHelp?(): void;
+  onToggleFavorite?(): void;
 }
 
 export default function GameInfoPanel({
   actions,
   icon,
+  isFavorite,
+  manifestUrl,
   name,
   url,
   onClose,
+  onRefresh,
+  onShowHelp,
+  onToggleFavorite,
 }: GameInfoPanelProps) {
   const { t } = useI18n();
   const [closing, setClosing] = useState(false);
+  const [gameLinkCopied, setGameLinkCopied] = useState(false);
   const afterClose = useRef<(() => void) | undefined>(undefined);
+  const copyResetTimer = useRef<number | undefined>(undefined);
+  const dialog = useRef<HTMLDialogElement>(null);
 
   const close = (after?: () => void) => {
     afterClose.current = after;
     setClosing(true);
   };
+
+  useLayoutEffect(() => {
+    const element = dialog.current;
+    if (!element) return;
+    element.showModal();
+    return () => element.close();
+  }, []);
 
   useEffect(() => {
     if (!closing) return;
@@ -46,19 +66,51 @@ export default function GameInfoPanel({
     return () => window.clearTimeout(timeout);
   }, [closing, onClose]);
 
+  useEffect(
+    () => () => {
+      if (copyResetTimer.current !== undefined) {
+        window.clearTimeout(copyResetTimer.current);
+      }
+    },
+    [],
+  );
+
+  const copyGameLink = async () => {
+    if (!manifestUrl) return;
+    try {
+      await navigator.clipboard.writeText(gameLaunchLink(manifestUrl));
+      setGameLinkCopied(true);
+      if (copyResetTimer.current !== undefined) {
+        window.clearTimeout(copyResetTimer.current);
+      }
+      copyResetTimer.current = window.setTimeout(
+        () => setGameLinkCopied(false),
+        1_500,
+      );
+    } catch {
+      setGameLinkCopied(false);
+    }
+  };
+
   return (
-    <div className="game-info-layer" role="presentation">
+    <dialog
+      ref={dialog}
+      className="game-info-layer"
+      aria-labelledby="game-info-title"
+      onCancel={(event) => {
+        event.preventDefault();
+        close();
+      }}
+    >
       <button
         className={`game-info-backdrop ${closing ? "game-info-backdrop-closing" : ""}`}
         type="button"
+        tabIndex={-1}
         aria-label={t("closeGameInformation")}
         onClick={() => close()}
       />
       <section
         className={`game-info-panel ${closing ? "game-info-panel-closing" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="game-info-title"
       >
         <header className="game-info-header">
           <h2 id="game-info-title">{t("gameInformation")}</h2>
@@ -82,9 +134,48 @@ export default function GameInfoPanel({
             <h3>{name}</h3>
           </div>
         </div>
-        <div className="game-info-url">
-          {url}
-        </div>
+        <div className="game-info-url">{url}</div>
+        {(onRefresh || onShowHelp || onToggleFavorite) && (
+          <div className="game-info-quick-actions">
+            {onToggleFavorite && (
+              <button
+                type="button"
+                aria-pressed={isFavorite}
+                onClick={onToggleFavorite}
+              >
+                <Star
+                  aria-hidden="true"
+                  fill={isFavorite ? "currentColor" : "none"}
+                />
+                <span>{t(isFavorite ? "unfavorite" : "favorite")}</span>
+              </button>
+            )}
+            {onRefresh && (
+              <button type="button" onClick={() => close(onRefresh)}>
+                <RefreshCw aria-hidden="true" />
+                <span>{t("refresh")}</span>
+              </button>
+            )}
+            {manifestUrl && (
+              <button type="button" onClick={() => void copyGameLink()}>
+                {gameLinkCopied ? (
+                  <Check aria-hidden="true" />
+                ) : (
+                  <Link2 aria-hidden="true" />
+                )}
+                <span aria-live="polite">
+                  {t(gameLinkCopied ? "gameLinkCopied" : "copyGameLink")}
+                </span>
+              </button>
+            )}
+            {onShowHelp && (
+              <button type="button" onClick={() => close(onShowHelp)}>
+                <CircleHelp aria-hidden="true" />
+                <span>{t("help")}</span>
+              </button>
+            )}
+          </div>
+        )}
         {actions && actions.length > 0 && (
           <footer className="game-info-actions">
             {actions.map((action) => (
@@ -100,6 +191,21 @@ export default function GameInfoPanel({
           </footer>
         )}
       </section>
-    </div>
+    </dialog>
   );
+}
+
+function gameLaunchLink(manifestUrl: string): string {
+  const manifest = new URL(manifestUrl);
+  if (/\/playweft\.json$/i.test(manifest.pathname)) {
+    manifest.pathname = manifest.pathname.slice(0, -"playweft.json".length);
+    manifest.search = "";
+    manifest.hash = "";
+  }
+  const game =
+    manifest.protocol === "https:"
+      ? `${manifest.host}${manifest.pathname}${manifest.search}`
+      : manifest.toString();
+  const encodedGame = encodeURIComponent(game).replaceAll("%2F", "/");
+  return `${window.location.origin}/?game=${encodedGame}`;
 }

@@ -138,7 +138,6 @@
 
 .launch-choice {
   display: grid;
-  gap: 16px;
 }
 
 .launch-choice-game {
@@ -146,6 +145,7 @@
   align-items: center;
   gap: 14px;
   min-width: 0;
+  padding: 20px;
 }
 
 .launch-choice-game .shelf-art {
@@ -164,37 +164,103 @@
   white-space: nowrap;
 }
 
-.launch-choice-actions {
+.launch-choice-panels {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  height: 176px;
+  overflow: hidden;
 }
 
-.launch-choice button {
-  min-height: 42px;
-  border: 1px solid var(--surface-border);
-  border-radius: 10px;
+.launch-choice-menu,
+.launch-choice-join-panel {
+  grid-area: 1 / 1;
+  transition:
+    opacity 0.16s ease,
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 0.22s;
+}
+
+.launch-choice-menu {
+  display: grid;
+  opacity: 1;
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.launch-choice-join-panel {
+  display: grid;
+  align-content: start;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(32px);
+  visibility: hidden;
+}
+
+.launch-choice-panels-join .launch-choice-menu {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-32px);
+  visibility: hidden;
+}
+
+.launch-choice-panels-join .launch-choice-join-panel {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.launch-choice-divider {
+  width: 100%;
+  height: 1px;
+  margin: 0;
+  border: 0;
+  background: #e5e8eb;
+}
+
+.launch-choice-menu button {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px 0 20px;
   background: #fff;
   color: #202124;
-  font-size: 0.9rem;
-  font-weight: 750;
+  font-size: 1rem;
+  font-weight: 650;
+  text-align: left;
 }
 
-.launch-choice button:hover,
-.launch-choice button:focus-visible {
+.launch-choice-menu button:hover,
+.launch-choice-menu button:focus-visible {
   background: #f1f3f4;
   outline: 0;
 }
 
+.launch-choice-menu svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: #202124;
+  stroke-width: 2;
+}
+
 .launch-choice-join {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  height: 176px;
+  grid-template-rows: minmax(0, 1fr) 1px 58px;
+}
+
+.launch-choice-join-field {
+  display: grid;
+  align-items: center;
+  padding: 20px;
 }
 
 .launch-choice-join input {
+  width: 100%;
   min-width: 0;
-  min-height: 42px;
+  min-height: 48px;
   padding: 0 12px;
   border: 1px solid var(--surface-border);
   border-radius: 10px;
@@ -204,6 +270,58 @@
 .launch-choice-join input:focus {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px rgba(112, 185, 103, 0.18);
+}
+
+.launch-choice-join-actions {
+  position: relative;
+  display: flex;
+  width: 100%;
+}
+
+.launch-choice-join-actions button {
+  min-width: 0;
+  flex: 1 1 50%;
+  padding: 0 16px;
+  background: #fff;
+  color: #202124;
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+.launch-choice-join-actions button:hover,
+.launch-choice-join-actions button:focus-visible {
+  background: #f1f3f4;
+  outline: 0;
+}
+
+.launch-choice-join-actions button[type="submit"] {
+  color: var(--color-primary);
+}
+
+.launch-choice-join-actions button[type="submit"]:disabled {
+  color: color-mix(in srgb, var(--color-primary) 45%, #fff);
+  opacity: 1;
+}
+
+.launch-choice-divider-vertical {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  margin: 0;
+  border: 0;
+  background: #e5e8eb;
+  transform: translateX(-0.5px);
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .launch-choice-menu,
+  .launch-choice-join-panel {
+    transition: none;
+  }
 }
 
 .unsupported-game {

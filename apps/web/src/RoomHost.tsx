@@ -28,10 +28,12 @@ import {
 import ErrorToast from "./ErrorToast";
 import Dialog from "./Dialog";
 import GameInfoPanel, { type GameInfoAction } from "./GameInfoPanel";
+import GameHelpDialog from "./GameHelpDialog";
 import InviteDialog from "./InviteDialog";
 import Menu from "./Menu";
 import ChangeGameDialog from "./ChangeGameDialog";
 import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
+import { isFavoriteGame, toggleFavoriteGame } from "./favorite-games";
 import {
   PLAYWEFT_BRIDGE_VERSION,
   RpcFault,
@@ -47,6 +49,7 @@ import {
   type LoadedGame,
 } from "./game-manifest";
 import { localizeGameName, useI18n } from "./i18n";
+import { useGameViewport } from "./use-game-viewport";
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const ROOM_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -88,6 +91,7 @@ export default function RoomHost({
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [gameInfoOpen, setGameInfoOpen] = useState(false);
+  const [isFavorite, setIsFavorite] = useState(false);
   const [playerMenuId, setPlayerMenuId] = useState<string>();
   const [playerMenuClosing, setPlayerMenuClosing] = useState(false);
   const [spectatorHintOpen, setSpectatorHintOpen] = useState(false);
@@ -101,8 +105,13 @@ export default function RoomHost({
   const gameOrigin = gameUrl ? new URL(gameUrl).origin : undefined;
   const clipboard = useClipboardRead(gameName, gameOrigin);
 
+  useEffect(() => {
+    if (game) setIsFavorite(isFavoriteGame(game));
+  }, [game]);
+
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
+  useGameViewport(phase === "playing");
   const isOwner = Boolean(selfId && lobby?.ownerId === selfId);
   const selfPlayer = lobby?.players.find((player) => player.id === selfId);
   const isSpectating = Boolean(selfId && lobby && !selfPlayer);
@@ -1059,17 +1068,11 @@ export default function RoomHost({
         </Dialog>
       )}
       {gameHelpOpen && gameHelpHref && (
-        <Dialog
-          title={t("gameHelp")}
-          size="large"
-          onDismiss={() => setGameHelpOpen(false)}
-        >
-          <iframe
-            className="game-help-frame"
-            title={t("gameHelpTitle", { name: gameName })}
-            src={gameHelpHref}
-          />
-        </Dialog>
+        <GameHelpDialog
+          name={gameName}
+          url={gameHelpHref}
+          onClose={() => setGameHelpOpen(false)}
+        />
       )}
       {changeGameOpen && (
         <ChangeGameDialog
@@ -1137,9 +1140,24 @@ export default function RoomHost({
         <GameInfoPanel
           actions={phase === "playing" ? gameInfoActions : undefined}
           icon={gameIconHref}
+          isFavorite={isFavorite}
+          manifestUrl={game.manifestUrl}
           name={gameName}
           url={game.url}
           onClose={() => setGameInfoOpen(false)}
+          onShowHelp={
+            gameHelpHref ? () => setGameHelpOpen(true) : undefined
+          }
+          onRefresh={
+            phase === "playing"
+              ? () => setGameRevision((revision) => revision + 1)
+              : undefined
+          }
+          onToggleFavorite={
+            phase === "playing"
+              ? () => setIsFavorite(toggleFavoriteGame(game))
+              : undefined
+          }
         />
       )}
       {phase === "playing" && (
