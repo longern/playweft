@@ -758,6 +758,7 @@ export default function RoomHost({
       <main className="room-host">
         {phase === "lobby" && (
           <>
+            <p className="room-mobile-id">{t("roomNumber", { roomId })}</p>
             <header className="room-hero">
               <div className="room-hero-heading">
                 <h1>{gameName}</h1>
@@ -1145,9 +1146,7 @@ export default function RoomHost({
           name={gameName}
           url={game.url}
           onClose={() => setGameInfoOpen(false)}
-          onShowHelp={
-            gameHelpHref ? () => setGameHelpOpen(true) : undefined
-          }
+          onShowHelp={gameHelpHref ? () => setGameHelpOpen(true) : undefined}
           onRefresh={
             phase === "playing"
               ? () => setGameRevision((revision) => revision + 1)

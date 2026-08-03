@@ -21,6 +21,10 @@
   display: none;
 }
 
+.room-mobile-id {
+  display: none;
+}
+
 .lobby-options {
   display: grid;
   width: 32px;
@@ -874,6 +878,16 @@ main.room-host {
 
   .room-host .room-hero {
     display: none;
+  }
+
+  .room-mobile-id {
+    display: block;
+    margin: 0 0 20px;
+    overflow-wrap: anywhere;
+    color: #5f6368;
+    font-size: 0.875rem;
+    line-height: 1.4;
+    text-align: center;
   }
 
   .room-mobile-game-name {
