@@ -84,9 +84,14 @@
   gap: 16px;
 }
 
-.shelf-game {
+.shelf-game-slot {
+  --shelf-game-width: 176px;
   flex: 0 0 auto;
-  width: 176px;
+  width: var(--shelf-game-width);
+}
+
+.shelf-game {
+  width: var(--shelf-game-width);
   padding: 16px;
   border: 0;
   border-radius: 16px;
@@ -96,6 +101,42 @@
   user-select: none;
   -webkit-user-select: none;
   transition: background 0.16s ease;
+}
+
+.shelf-game-entering,
+.shelf-game-exiting {
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.shelf-game-entering {
+  animation: shelf-game-expand 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.shelf-game-exiting {
+  animation: shelf-game-collapse 0.2s ease-in both;
+}
+
+@keyframes shelf-game-expand {
+  from {
+    width: 0;
+    opacity: 0;
+  }
+  to {
+    width: var(--shelf-game-width);
+    opacity: 1;
+  }
+}
+
+@keyframes shelf-game-collapse {
+  from {
+    width: var(--shelf-game-width);
+    opacity: 1;
+  }
+  to {
+    width: 0;
+    opacity: 0;
+  }
 }
 
 .shelf-game:hover {
@@ -322,6 +363,11 @@
   .launch-choice-join-panel {
     transition: none;
   }
+
+  .shelf-game-entering,
+  .shelf-game-exiting {
+    animation-duration: 0.01ms;
+  }
 }
 
 .unsupported-game {
@@ -382,9 +428,12 @@
   }
 
   .shelf-game {
-    width: 108px;
     padding: 8px;
     text-align: center;
+  }
+
+  .shelf-game-slot {
+    --shelf-game-width: 108px;
   }
 
   .shelf-art {

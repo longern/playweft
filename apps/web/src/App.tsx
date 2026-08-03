@@ -46,6 +46,7 @@ const DEFAULT_ROOM_ID_FORMAT = "code:4";
 const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 type ShelfGame = RecentGame | FeaturedGame;
 type GameShelfKind = "favorite" | "recent" | "recommended";
+type ShelfGamePhase = "entering" | "exiting";
 type StoredRecentGame = RecentGame & { pinned?: boolean };
 type RoomIdFormat =
   | { kind: "uuid" }
@@ -171,7 +172,16 @@ function Home({
   const { locale, t } = useI18n();
   const [gameUrl, setGameUrl] = useState("");
   const [recentGames, setRecentGames] = useState(readRecentGames);
+  const [renderedRecentGames, setRenderedRecentGames] = useState(recentGames);
+  const [recentGamePhases, setRecentGamePhases] = useState<
+    Record<string, ShelfGamePhase>
+  >({});
   const [favoriteGames, setFavoriteGames] = useState(readFavoriteGames);
+  const [renderedFavoriteGames, setRenderedFavoriteGames] =
+    useState(favoriteGames);
+  const [favoriteGamePhases, setFavoriteGamePhases] = useState<
+    Record<string, ShelfGamePhase>
+  >({});
   const featuredGames = useFeaturedGames();
   const [error, setError] = useState<string>();
   const [gameMenu, setGameMenu] = useState<{
@@ -195,8 +205,14 @@ function Home({
 
   const rememberGame = (game: RecentGame) => {
     saveRecentGame(game);
-    setRecentGames(readRecentGames());
-    setFavoriteGames(readFavoriteGames());
+    const nextRecentGames = readRecentGames();
+    setRecentGames(nextRecentGames);
+    setRenderedRecentGames(nextRecentGames);
+    setRecentGamePhases({});
+    const nextFavoriteGames = readFavoriteGames();
+    setFavoriteGames(nextFavoriteGames);
+    setRenderedFavoriteGames(nextFavoriteGames);
+    setFavoriteGamePhases({});
   };
 
   const playSolo = (game: RecentGame) => {
@@ -316,25 +332,69 @@ function Home({
   };
 
   const toggleFavorite = (game: ShelfGame) => {
-    setFavoriteGames((current) => {
-      if (current.some((item) => item.manifestId === game.manifestId)) {
-        return persistFavoriteGames(
-          current.filter((item) => item.manifestId !== game.manifestId),
-        );
-      }
-      return persistFavoriteGames([
-        toRecentGame(game),
-        ...current.filter((item) => item.manifestId !== game.manifestId),
-      ]);
+    if (favoriteIds.has(game.manifestId)) {
+      const nextFavoriteGames = persistFavoriteGames(
+        favoriteGames.filter((item) => item.manifestId !== game.manifestId),
+      );
+      setFavoriteGames(nextFavoriteGames);
+      setFavoriteGamePhases((current) => ({
+        ...current,
+        [game.manifestId]: "exiting",
+      }));
+      return;
+    }
+
+    const nextFavoriteGames = persistFavoriteGames([
+      toRecentGame(game),
+      ...favoriteGames.filter((item) => item.manifestId !== game.manifestId),
+    ]);
+    setFavoriteGames(nextFavoriteGames);
+    setRenderedFavoriteGames((current) => [
+      nextFavoriteGames[0],
+      ...current.filter((item) => item.manifestId !== game.manifestId),
+    ]);
+    setFavoriteGamePhases((current) => ({
+      ...current,
+      [game.manifestId]: "entering",
+    }));
+  };
+
+  const finishFavoriteAnimation = (game: ShelfGame) => {
+    const phase = favoriteGamePhases[game.manifestId];
+    if (!phase) return;
+    if (phase === "exiting") {
+      setRenderedFavoriteGames((current) =>
+        current.filter((item) => item.manifestId !== game.manifestId),
+      );
+    }
+    setFavoriteGamePhases((current) => {
+      const next = { ...current };
+      delete next[game.manifestId];
+      return next;
     });
   };
 
   const deleteRecent = (game: ShelfGame) => {
-    setRecentGames((current) =>
-      persistRecentGames(
-        current.filter((item) => item.manifestId !== game.manifestId),
-      ),
+    const nextRecentGames = persistRecentGames(
+      recentGames.filter((item) => item.manifestId !== game.manifestId),
     );
+    setRecentGames(nextRecentGames);
+    setRecentGamePhases((current) => ({
+      ...current,
+      [game.manifestId]: "exiting",
+    }));
+  };
+
+  const finishRecentAnimation = (game: ShelfGame) => {
+    if (recentGamePhases[game.manifestId] !== "exiting") return;
+    setRenderedRecentGames((current) =>
+      current.filter((item) => item.manifestId !== game.manifestId),
+    );
+    setRecentGamePhases((current) => {
+      const next = { ...current };
+      delete next[game.manifestId];
+      return next;
+    });
   };
 
   return (
@@ -388,20 +448,30 @@ function Home({
           </form>
         </section>
 
-        {favoriteGames.length > 0 && (
+        {renderedFavoriteGames.length > 0 && (
           <GameShelf
             title={t("favorites")}
             kind="favorite"
-            games={favoriteGames}
+            games={renderedFavoriteGames}
+            getItemClassName={(game) => {
+              const phase = favoriteGamePhases[game.manifestId];
+              return phase ? `shelf-game-${phase}` : "";
+            }}
+            onItemAnimationEnd={finishFavoriteAnimation}
             onSelect={launchGame}
             onContextMenu={openGameMenu}
           />
         )}
-        {recentGames.length > 0 && (
+        {renderedRecentGames.length > 0 && (
           <GameShelf
             title={t("recentlyPlayed")}
             kind="recent"
-            games={recentGames}
+            games={renderedRecentGames}
+            getItemClassName={(game) => {
+              const phase = recentGamePhases[game.manifestId];
+              return phase ? `shelf-game-${phase}` : "";
+            }}
+            onItemAnimationEnd={finishRecentAnimation}
             onSelect={launchGame}
             onContextMenu={openGameMenu}
           />
@@ -698,6 +768,8 @@ interface GameShelfProps {
   title: string;
   kind: GameShelfKind;
   games: ShelfGame[];
+  getItemClassName?(game: ShelfGame): string;
+  onItemAnimationEnd?(game: ShelfGame): void;
   onSelect(game: ShelfGame): void;
   onContextMenu(
     game: ShelfGame,
@@ -710,6 +782,8 @@ function GameShelf({
   title,
   kind,
   games,
+  getItemClassName,
+  onItemAnimationEnd,
   onSelect,
   onContextMenu,
 }: GameShelfProps) {
@@ -726,25 +800,34 @@ function GameShelf({
       </div>
       <div className="shelf-row">
         {games.map((game) => (
-          <button
-            className="shelf-game"
+          <div
+            className={`shelf-game-slot ${getItemClassName?.(game) ?? ""}`}
             key={game.manifestId}
-            onClick={() => onSelect(game)}
-            onContextMenu={(event) => onContextMenu(game, kind, event)}
+            onAnimationEnd={(event) => {
+              if (event.target === event.currentTarget) {
+                onItemAnimationEnd?.(game);
+              }
+            }}
           >
-            <span className="shelf-art">
-              {game.icon ? (
-                <img src={game.icon} alt="" referrerPolicy="no-referrer" />
-              ) : (
-                <span>
-                  {localizeGameName(game, locale).slice(0, 2).toUpperCase()}
-                </span>
-              )}
-            </span>
-            <span className="shelf-game-name">
-              {localizeGameName(game, locale)}
-            </span>
-          </button>
+            <button
+              className="shelf-game"
+              onClick={() => onSelect(game)}
+              onContextMenu={(event) => onContextMenu(game, kind, event)}
+            >
+              <span className="shelf-art">
+                {game.icon ? (
+                  <img src={game.icon} alt="" referrerPolicy="no-referrer" />
+                ) : (
+                  <span>
+                    {localizeGameName(game, locale).slice(0, 2).toUpperCase()}
+                  </span>
+                )}
+              </span>
+              <span className="shelf-game-name">
+                {localizeGameName(game, locale)}
+              </span>
+            </button>
+          </div>
         ))}
       </div>
     </section>

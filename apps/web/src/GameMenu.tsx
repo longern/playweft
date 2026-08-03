@@ -42,6 +42,7 @@ export default function GameMenu({
       })}
       anchor={anchor}
       position={position}
+      backdropClassName="game-card-menu-backdrop"
       className="game-card-menu"
       onClose={onClose}
     >

@@ -13,6 +13,15 @@
   animation: game-menu-backdrop-out 0.14s ease-in both;
 }
 
+.game-card-menu-backdrop {
+  background: transparent;
+  animation: none;
+}
+
+.game-card-menu-backdrop.menu-backdrop-closing {
+  pointer-events: auto;
+}
+
 .menu {
   position: fixed;
   z-index: 30;
@@ -49,6 +58,14 @@
 .menu-closing {
   pointer-events: none;
   animation: game-menu-out 0.14s ease-in both;
+}
+
+.game-card-menu {
+  animation-name: game-card-menu-in;
+}
+
+.game-card-menu.menu-closing {
+  animation-name: game-card-menu-out;
 }
 
 .menu button.menu-danger {
@@ -696,6 +713,28 @@
   to {
     opacity: 0;
     transform: translateY(-5px) scale(0.98);
+  }
+}
+
+@keyframes game-card-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.68);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes game-card-menu-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.68);
   }
 }
 

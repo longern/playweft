@@ -10,6 +10,7 @@ interface MenuProps {
   ariaLabel: string;
   children: ReactNode;
   anchor?: HTMLElement;
+  backdropClassName?: string;
   className?: string;
   position?: MenuPosition;
   style?: CSSProperties;
@@ -18,7 +19,16 @@ interface MenuProps {
 
 const MENU_GUTTER = 12;
 
-export default function Menu({ ariaLabel, children, anchor, className = "", position, style, onClose }: MenuProps) {
+export default function Menu({
+  ariaLabel,
+  children,
+  anchor,
+  backdropClassName = "",
+  className = "",
+  position,
+  style,
+  onClose,
+}: MenuProps) {
   const { t } = useI18n();
   const menu = useRef<HTMLDivElement>(null);
   const [closing, setClosing] = useState(false);
@@ -60,18 +70,13 @@ export default function Menu({ ariaLabel, children, anchor, className = "", posi
 
   useEffect(() => {
     menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    const onPointerDown = (event: PointerEvent) => {
-      if (!menu.current?.contains(event.target as Node)) close();
-    };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") close();
     };
-    window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("resize", close);
     window.addEventListener("scroll", close, true);
     return () => {
-      window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("resize", close);
       window.removeEventListener("scroll", close, true);
@@ -91,7 +96,7 @@ export default function Menu({ ariaLabel, children, anchor, className = "", posi
   return (
     <>
       <button
-        className={`menu-backdrop ${closing ? "menu-backdrop-closing" : ""}`}
+        className={`menu-backdrop ${backdropClassName} ${closing ? "menu-backdrop-closing" : ""}`}
         type="button"
         aria-label={t("closeMenu", { label: ariaLabel })}
         onClick={close}

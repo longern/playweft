@@ -25,10 +25,10 @@
 
 html {
   scroll-behavior: smooth;
+  scrollbar-gutter: stable;
 }
 
-html:has(dialog:modal),
-body:has(dialog:modal) {
+html:has(dialog:modal) {
   overflow: hidden;
 }
 
