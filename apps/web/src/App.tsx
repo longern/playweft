@@ -15,6 +15,8 @@ import ErrorToast from "./ErrorToast";
 import GameHelpDialog from "./GameHelpDialog";
 import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
+import GameViewport from "./GameViewport";
+import { gameLaunchPath } from "./game-launch-link";
 import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
 import {
   isFavoriteGame,
@@ -42,6 +44,7 @@ import { useGameViewport } from "./use-game-viewport";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
 const MAX_RECENT_GAMES = 8;
+const SOLO_EXIT_DURATION_MS = 160;
 const DEFAULT_ROOM_ID_FORMAT = "code:4";
 const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 type ShelfGame = RecentGame | FeaturedGame;
@@ -58,20 +61,51 @@ export default function App() {
   const [entryStatus, setEntryStatus] = useState<string>();
   const [settledRoomId, setSettledRoomId] = useState<string>();
   const [soloGame, setSoloGame] = useState<RecentGame>();
+  const [soloClosing, setSoloClosing] = useState(false);
   const entryGeneration = useRef(0);
   const handledExternalGameUrl = useRef<string | undefined>(undefined);
+  const soloGameRef = useRef<RecentGame | undefined>(undefined);
+  const soloExitTimer = useRef<number | undefined>(undefined);
+  soloGameRef.current = soloGame;
   const path = new URL(location, window.location.origin).pathname;
   const externalGameUrl = gameUrlFromExternalLaunch(location);
 
   useEffect(() => {
-    const onPopState = () => setLocation(readAppLocation());
+    const onPopState = () => {
+      setLocation(readAppLocation());
+      if (!soloGameRef.current) return;
+      setSoloClosing(true);
+      window.clearTimeout(soloExitTimer.current);
+      const duration = window.matchMedia("(prefers-reduced-motion: reduce)")
+        .matches
+        ? 0
+        : SOLO_EXIT_DURATION_MS;
+      soloExitTimer.current = window.setTimeout(() => {
+        setSoloGame(undefined);
+        setSoloClosing(false);
+      }, duration);
+    };
     window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      window.clearTimeout(soloExitTimer.current);
+    };
   }, []);
 
   const navigate = useCallback((nextPath: string) => {
     window.history.pushState({}, "", nextPath);
     setLocation(readAppLocation());
+  }, []);
+  const openSoloGame = useCallback((game: RecentGame) => {
+    window.clearTimeout(soloExitTimer.current);
+    setSoloClosing(false);
+    const nextPath = gameLaunchPath(game.manifestUrl);
+    if (gameUrlFromExternalLaunch(readAppLocation())) {
+      window.history.replaceState({}, "", "/");
+    }
+    window.history.pushState({ playweftView: "solo" }, "", nextPath);
+    setLocation(readAppLocation());
+    setSoloGame(game);
   }, []);
   const claimExternalGameUrl = useCallback((url: string) => {
     if (handledExternalGameUrl.current === url) return false;
@@ -113,10 +147,6 @@ export default function App() {
     entryStatus ??
     (roomId && settledRoomId !== roomId ? t("loadingGame") : undefined);
 
-  if (soloGame) {
-    return <SoloHost game={soloGame} onBack={() => setSoloGame(undefined)} />;
-  }
-
   if (roomId) {
     return (
       <>
@@ -137,14 +167,26 @@ export default function App() {
   }
   return (
     <>
-      <Home
-        externalGameUrl={externalGameUrl}
-        onNavigate={navigate}
-        onBeginEntry={beginEntry}
-        onEntryStatus={setEntryStatus}
-        onPlaySolo={setSoloGame}
-        onClaimExternalGameUrl={claimExternalGameUrl}
-      />
+      <div
+        aria-hidden={soloGame ? true : undefined}
+        inert={soloGame ? true : undefined}
+      >
+        <Home
+          externalGameUrl={soloGame ? undefined : externalGameUrl}
+          onNavigate={navigate}
+          onBeginEntry={beginEntry}
+          onEntryStatus={setEntryStatus}
+          onPlaySolo={openSoloGame}
+          onClaimExternalGameUrl={claimExternalGameUrl}
+        />
+      </div>
+      {soloGame && (
+        <SoloHost
+          closing={soloClosing}
+          game={soloGame}
+          onBack={() => window.history.back()}
+        />
+      )}
       {overlayStatus && (
         <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />
       )}
@@ -453,6 +495,11 @@ function Home({
             title={t("favorites")}
             kind="favorite"
             games={renderedFavoriteGames}
+            activeGameId={
+              gameMenu?.kind === "favorite"
+                ? gameMenu.game.manifestId
+                : undefined
+            }
             getItemClassName={(game) => {
               const phase = favoriteGamePhases[game.manifestId];
               return phase ? `shelf-game-${phase}` : "";
@@ -467,6 +514,9 @@ function Home({
             title={t("recentlyPlayed")}
             kind="recent"
             games={renderedRecentGames}
+            activeGameId={
+              gameMenu?.kind === "recent" ? gameMenu.game.manifestId : undefined
+            }
             getItemClassName={(game) => {
               const phase = recentGamePhases[game.manifestId];
               return phase ? `shelf-game-${phase}` : "";
@@ -480,6 +530,11 @@ function Home({
           title={t("recommended")}
           kind="recommended"
           games={featuredGames}
+          activeGameId={
+            gameMenu?.kind === "recommended"
+              ? gameMenu.game.manifestId
+              : undefined
+          }
           onSelect={launchGame}
           onContextMenu={openGameMenu}
         />
@@ -552,13 +607,22 @@ function Home({
   );
 }
 
-function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
+function SoloHost({
+  closing,
+  game,
+  onBack,
+}: {
+  closing: boolean;
+  game: RecentGame;
+  onBack(): void;
+}) {
   const { locale, t } = useI18n();
   const [gameInfoOpen, setGameInfoOpen] = useState(false);
   const [gameHelpOpen, setGameHelpOpen] = useState(false);
   const [loaded, setLoaded] = useState<LoadedGame>();
   const [loadError, setLoadError] = useState<string>();
   const [gameRevision, setGameRevision] = useState(0);
+  const [frameReady, setFrameReady] = useState(false);
   const [isFavorite, setIsFavorite] = useState(() => isFavoriteGame(game));
   const iframe = useRef<HTMLIFrameElement>(null);
   const port = useRef<MessagePort | undefined>(undefined);
@@ -594,6 +658,12 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
       document.title = "Playweft";
     };
   }, [gameName]);
+
+  useEffect(() => {
+    if (!closing) return;
+    setGameInfoOpen(false);
+    setGameHelpOpen(false);
+  }, [closing]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -672,18 +742,57 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
   }, [clipboard.cancelPending, clipboard.requestReadText, gameOrigin, loaded]);
 
   return (
-    <div className="room-shell room-playing solo-host">
-      {loaded && (
-        <iframe
-          key={gameRevision}
-          ref={iframe}
-          className="game-frame"
-          title={gameName}
-          src={loaded.game.url}
-          sandbox="allow-scripts allow-same-origin allow-forms"
-          allow="clipboard-read 'none'; clipboard-write 'none'"
-        />
-      )}
+    <div
+      className={`room-shell room-playing solo-host ${closing ? "solo-host-closing" : ""}`}
+    >
+      <GameViewport
+        infoExpanded={gameInfoOpen}
+        onOpenInfo={() => setGameInfoOpen(true)}
+      >
+        {!frameReady && !loadError && (
+          <div
+            className="solo-loading"
+            role="status"
+            aria-label={t("loadingGame")}
+            aria-live="polite"
+          >
+            <div className="solo-loading-game">
+              {currentGame.icon ? (
+                <img
+                  className="solo-loading-icon"
+                  src={currentGame.icon}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <span className="solo-loading-icon solo-loading-icon-fallback">
+                  {gameName.slice(0, 2).toUpperCase()}
+                </span>
+              )}
+              <strong>{gameName}</strong>
+            </div>
+            <div className="solo-loading-progress">
+              <span className="loading-spinner" aria-hidden="true" />
+            </div>
+          </div>
+        )}
+        {loaded && (
+          <div
+            className={`solo-game-surface ${frameReady ? "solo-game-surface-ready" : ""}`}
+          >
+            <iframe
+              key={gameRevision}
+              ref={iframe}
+              className="game-frame"
+              title={gameName}
+              src={loaded.game.url}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              allow="clipboard-read 'none'; clipboard-write 'none'"
+              onLoad={() => setFrameReady(true)}
+            />
+          </div>
+        )}
+      </GameViewport>
       {loadError && (
         <ErrorToast
           message={loadError}
@@ -697,24 +806,16 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
         onDeny={clipboard.deny}
         onDismissNotice={clipboard.clearNotice}
       />
-      <button
-        className="game-options"
-        type="button"
-        aria-label={t("gameInformation")}
-        aria-expanded={gameInfoOpen}
-        onClick={() => setGameInfoOpen(true)}
-      >
-        <i />
-        <i />
-        <i />
-      </button>
       {gameInfoOpen && (
         <GameInfoPanel
           actions={[
             {
               label: t("backHome"),
               variant: "primary",
-              onSelect: onBack,
+              onSelect: () => {
+                setGameInfoOpen(false);
+                onBack();
+              },
             },
           ]}
           icon={currentGame.icon}
@@ -723,7 +824,14 @@ function SoloHost({ game, onBack }: { game: RecentGame; onBack(): void }) {
           name={gameName}
           url={currentGame.url}
           onClose={() => setGameInfoOpen(false)}
-          onRefresh={() => setGameRevision((revision) => revision + 1)}
+          onRefresh={
+            loaded
+              ? () => {
+                  setFrameReady(false);
+                  setGameRevision((revision) => revision + 1);
+                }
+              : undefined
+          }
           onShowHelp={
             currentGame.helpUrl ? () => setGameHelpOpen(true) : undefined
           }
@@ -768,6 +876,7 @@ interface GameShelfProps {
   title: string;
   kind: GameShelfKind;
   games: ShelfGame[];
+  activeGameId?: string;
   getItemClassName?(game: ShelfGame): string;
   onItemAnimationEnd?(game: ShelfGame): void;
   onSelect(game: ShelfGame): void;
@@ -782,6 +891,7 @@ function GameShelf({
   title,
   kind,
   games,
+  activeGameId,
   getItemClassName,
   onItemAnimationEnd,
   onSelect,
@@ -801,7 +911,7 @@ function GameShelf({
       <div className="shelf-row">
         {games.map((game) => (
           <div
-            className={`shelf-game-slot ${getItemClassName?.(game) ?? ""}`}
+            className={`shelf-game-slot ${activeGameId === game.manifestId ? "shelf-game-menu-target" : ""} ${getItemClassName?.(game) ?? ""}`}
             key={game.manifestId}
             onAnimationEnd={(event) => {
               if (event.target === event.currentTarget) {

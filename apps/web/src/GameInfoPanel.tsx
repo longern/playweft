@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, CircleHelp, Link2, RefreshCw, Star, X } from "lucide-react";
 import { useI18n } from "./i18n";
+import { gameLaunchLink } from "./game-launch-link";
 
 export interface GameInfoAction {
   label: string;
@@ -193,19 +194,4 @@ export default function GameInfoPanel({
       </section>
     </dialog>
   );
-}
-
-function gameLaunchLink(manifestUrl: string): string {
-  const manifest = new URL(manifestUrl);
-  if (/\/playweft\.json$/i.test(manifest.pathname)) {
-    manifest.pathname = manifest.pathname.slice(0, -"playweft.json".length);
-    manifest.search = "";
-    manifest.hash = "";
-  }
-  const game =
-    manifest.protocol === "https:"
-      ? `${manifest.host}${manifest.pathname}${manifest.search}`
-      : manifest.toString();
-  const encodedGame = encodeURIComponent(game).replaceAll("%2F", "/");
-  return `${window.location.origin}/?game=${encodedGame}`;
 }

@@ -49,6 +49,8 @@ html.game-running #root {
 html.game-running body {
   position: fixed;
   inset: 0;
+  top: calc(-1 * var(--game-scroll-y, 0px));
+  left: calc(-1 * var(--game-scroll-x, 0px));
   width: 100%;
 }
 

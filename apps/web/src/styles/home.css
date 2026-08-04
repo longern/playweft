@@ -90,6 +90,12 @@
   width: var(--shelf-game-width);
 }
 
+.shelf-game-menu-target {
+  position: relative;
+  z-index: 30;
+  pointer-events: none;
+}
+
 .shelf-game {
   width: var(--shelf-game-width);
   padding: 16px;

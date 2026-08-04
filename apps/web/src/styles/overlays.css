@@ -15,11 +15,14 @@
 
 .game-card-menu-backdrop {
   background: transparent;
-  animation: none;
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: game-menu-backdrop-in 0.16s ease-out both;
 }
 
 .game-card-menu-backdrop.menu-backdrop-closing {
   pointer-events: auto;
+  animation: game-menu-backdrop-out 0.14s ease-in both;
 }
 
 .menu {
@@ -61,6 +64,7 @@
 }
 
 .game-card-menu {
+  z-index: 31;
   animation-name: game-card-menu-in;
 }
 

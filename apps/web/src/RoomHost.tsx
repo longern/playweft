@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Armchair, Check, Crown, MoreHorizontal, Plus } from "lucide-react";
+import {
+  Armchair,
+  Check,
+  Copy,
+  Crown,
+  MoreHorizontal,
+  Share2,
+} from "lucide-react";
 import {
   JsonRpcErrorCode,
   isJson,
@@ -28,6 +35,7 @@ import {
 import ErrorToast from "./ErrorToast";
 import Dialog from "./Dialog";
 import GameInfoPanel, { type GameInfoAction } from "./GameInfoPanel";
+import GameViewport from "./GameViewport";
 import GameHelpDialog from "./GameHelpDialog";
 import InviteDialog from "./InviteDialog";
 import Menu from "./Menu";
@@ -86,6 +94,7 @@ export default function RoomHost({
   const [lobby, setLobby] = useState<RoomLobby>();
   const [selfId, setSelfId] = useState<string>();
   const [copied, setCopied] = useState(false);
+  const [roomIdCopied, setRoomIdCopied] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string>();
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
@@ -104,7 +113,6 @@ export default function RoomHost({
   const gameName = game ? localizeGameName(game, locale) : t("gameRoom");
   const gameOrigin = gameUrl ? new URL(gameUrl).origin : undefined;
   const clipboard = useClipboardRead(gameName, gameOrigin);
-
   useEffect(() => {
     if (game) setIsFavorite(isFavoriteGame(game));
   }, [game]);
@@ -115,6 +123,10 @@ export default function RoomHost({
   const isOwner = Boolean(selfId && lobby?.ownerId === selfId);
   const selfPlayer = lobby?.players.find((player) => player.id === selfId);
   const isSpectating = Boolean(selfId && lobby && !selfPlayer);
+  const playerCapacity = lobby?.maxPlayers ?? 0;
+  const playerGridColumns = desktopPlayerGridColumns(playerCapacity);
+  const playerGridDensity =
+    playerCapacity <= 4 ? "full" : playerCapacity <= 9 ? "compact" : "dense";
   const firstOpenSeat = lobby
     ? Array.from({ length: lobby.maxPlayers }, (_, index) => index + 1).find(
         (seat) => !lobby.players.some((player) => player.seat === seat),
@@ -597,6 +609,16 @@ export default function RoomHost({
     }
   };
 
+  const copyRoomId = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setRoomIdCopied(true);
+      window.setTimeout(() => setRoomIdCopied(false), 1_500);
+    } catch {
+      setError(t("roomNumberCopyFailed"));
+    }
+  };
+
   const start = async () => {
     setStarting(true);
     try {
@@ -758,9 +780,47 @@ export default function RoomHost({
       <main className="room-host">
         {phase === "lobby" && (
           <>
-            <p className="room-mobile-id">{t("roomNumber", { roomId })}</p>
+            <div className="room-id">
+              <span>{t("roomNumber", { roomId })}</span>
+              <button
+                className={`room-id-action ${roomIdCopied ? "room-id-copy-copied" : ""}`}
+                type="button"
+                aria-label={
+                  roomIdCopied ? t("roomNumberCopied") : t("copyRoomNumber")
+                }
+                title={
+                  roomIdCopied ? t("roomNumberCopied") : t("copyRoomNumber")
+                }
+                onClick={() => void copyRoomId()}
+              >
+                {roomIdCopied ? (
+                  <Check aria-hidden="true" />
+                ) : (
+                  <Copy aria-hidden="true" />
+                )}
+              </button>
+              <button
+                className="room-id-action room-id-share"
+                type="button"
+                aria-label={t("shareRoom")}
+                aria-haspopup="dialog"
+                aria-expanded={inviteDialogOpen}
+                title={t("shareRoom")}
+                onClick={() => setInviteDialogOpen(true)}
+              >
+                <Share2 aria-hidden="true" />
+              </button>
+            </div>
             <header className="room-hero">
               <div className="room-hero-heading">
+                {gameIconHref && (
+                  <img
+                    className="room-hero-icon"
+                    src={gameIconHref}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                  />
+                )}
                 <h1>{gameName}</h1>
                 <button
                   className="lobby-options lobby-options-desktop"
@@ -777,23 +837,11 @@ export default function RoomHost({
               </div>
             </header>
             <section className="lobby-panel" aria-live="polite">
-              <div className="lobby-heading">
-                <div>
-                  <h2>{t("players")}</h2>
-                  <p>
-                    {lobby
-                      ? `${lobby.players.length} / ${lobby.maxPlayers}`
-                      : t("connecting")}
-                  </p>
-                </div>
-                <span className="lobby-requirement">
-                  {lobby
-                    ? t("playersToStart", { count: lobby.minPlayers })
-                    : ""}
-                </span>
-              </div>
-              <ol className="player-grid">
-                {Array.from({ length: lobby?.maxPlayers ?? 0 }, (_, index) => {
+              <ol
+                className={`player-grid player-grid-cols-${playerGridColumns}`}
+                data-density={playerGridDensity}
+              >
+                {Array.from({ length: playerCapacity }, (_, index) => {
                   const seat = index + 1;
                   const player = lobby?.players.find(
                     (candidate) => candidate.seat === seat,
@@ -922,21 +970,6 @@ export default function RoomHost({
                     </li>
                   );
                 })}
-                {lobby && lobby.players.length < lobby.maxPlayers && (
-                  <li className="player-card player-card-empty">
-                    <button
-                      className="player-avatar player-avatar-invite"
-                      type="button"
-                      onClick={() => setInviteDialogOpen(true)}
-                      aria-label={t("invitePlayer")}
-                    >
-                      <Plus aria-hidden="true" />
-                    </button>
-                    <span className="player-card-copy">
-                      <strong className="player-name">{t("invite")}</strong>
-                    </span>
-                  </li>
-                )}
               </ol>
               <div className="spectator-controls">
                 <p className="spectator-count">
@@ -1012,17 +1045,23 @@ export default function RoomHost({
             </div>
           </>
         )}
-        {gameUrl && (
-          <iframe
-            key={gameRevision}
-            className="game-frame"
-            ref={iframe}
-            title={gameName}
-            src={gameUrl}
-            sandbox="allow-scripts allow-same-origin allow-forms"
-            allow="clipboard-read 'none'; clipboard-write 'none'"
-          />
-        )}
+        <GameViewport
+          infoExpanded={gameInfoOpen}
+          onOpenInfo={() => setGameInfoOpen(true)}
+          showOptions={phase === "playing"}
+        >
+          {gameUrl && (
+            <iframe
+              key={gameRevision}
+              className="game-frame"
+              ref={iframe}
+              title={gameName}
+              src={gameUrl}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+              allow="clipboard-read 'none'; clipboard-write 'none'"
+            />
+          )}
+        </GameViewport>
       </main>
       <ClipboardPrompt
         prompt={clipboard.prompt}
@@ -1159,21 +1198,6 @@ export default function RoomHost({
           }
         />
       )}
-      {phase === "playing" && (
-        <>
-          <button
-            className="game-options"
-            type="button"
-            aria-label={t("gameInformation")}
-            aria-expanded={gameInfoOpen}
-            onClick={() => setGameInfoOpen(true)}
-          >
-            <i />
-            <i />
-            <i />
-          </button>
-        </>
-      )}
     </div>
   );
 }
@@ -1190,6 +1214,14 @@ function applyMembership(
 
 function message(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
+}
+
+function desktopPlayerGridColumns(capacity: number): 2 | 3 | 4 {
+  if (capacity <= 2) return 2;
+  if (capacity === 3) return 3;
+  if (capacity === 4) return 4;
+  if (capacity <= 6 || capacity === 9) return 3;
+  return 4;
 }
 
 function actionFromRpcParams(params: JsonValue | undefined): JsonValue {
