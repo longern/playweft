@@ -63,8 +63,8 @@ npm run dev:web
 `AUTH_SECRET` signs the HttpOnly demo guest session and must be a
 Worker secret in a real deployment. The guest issuer is only a minimal
 local/demo identity provider and should be replaced with the platform's real
-account/session issuer. Demo guests have no display name; a real issuer may
-attach an optional display name to the signed platform session. Browser-facing
+account/session issuer. The demo UI may copy its browser-local nickname into
+the signed guest session as an optional display name. Browser-facing
 mutations and WebSocket upgrades must have an `Origin` equal to the Worker
 endpoint origin. Authenticated read requests remain usable in browsers that
 omit `Origin` for a same-origin GET.
@@ -82,19 +82,27 @@ omit `Origin` for a same-origin GET.
 | `POST /api/rooms/:roomId/kick` | Room-host-only lobby action with `{ playerId }`. |
 | `POST /api/rooms/:roomId/dissolve` | Room-host-only lobby action that closes the room for everyone and invalidates its invite link. |
 | `POST /api/rooms/:roomId/start` | Room-host-only action; locks the seated roster and calls Lua `setup({ protocolVersion, match, players })`. |
-| `POST /api/platform/guest` | Platform-only demo bootstrap; sets an HttpOnly guest session. |
+| `POST /api/platform/guest` | Platform-only demo bootstrap; sets an HttpOnly guest session and accepts `{ name: string | null }`. |
 | `GET /api/rooms/:roomId/state` | Read persisted state; requires a platform session. |
 | `POST /api/rooms/:roomId/actions` | Submit `{ requestId, action }`; player identity comes from the platform session and `requestId` makes retries idempotent. |
 | `GET /api/rooms/:roomId/connect` | Open a platform-owned WebSocket; requires a platform session. |
 
 Before start, HTTP/WebSocket updates use `type: "lobby"` with the opaque
-player list, host, phase, and player limits. After start they contain `type`,
+player list, `spectators` entries containing `{ id, name?, avatarUrl? }`, host,
+phase, and player limits. `avatarUrl` is reserved for platform-authenticated
+profiles; clients should show a fallback avatar when it is absent. After start
+they contain `type`,
 `matchId`, the requesting player's visible `state` and `events`, `version`,
 `serverTime`, and `scriptHash`. The required `view(state, events, context)`
 callback runs separately for each recipient at every state-delivery boundary,
 so neither authoritative state nor private events have an unfiltered delivery
 path. The platform shows the lobby itself, then makes the untrusted iframe fill
 the viewport once the roster is locked.
+
+`game.initialize` exposes the current local profile as `player`, containing the
+room actor `id` when applicable and the optional `name`. Room-mode Lua also
+receives player names in `setup({ players })` and actor callbacks, so a game can
+display the same nickname without trusting iframe-supplied identity.
 
 ## Rock-Paper-Scissors example
 

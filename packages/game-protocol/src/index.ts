@@ -513,6 +513,10 @@ export interface RoomPlayer {
 
 export interface RoomSpectator {
   id: string;
+  /** Optional platform display name. Omit it when the spectator is anonymous. */
+  name?: string;
+  /** Optional platform avatar URL reserved for spectator list presentation. */
+  avatarUrl?: string;
 }
 
 /** Platform-owned room membership. Game iframes never receive this message. */

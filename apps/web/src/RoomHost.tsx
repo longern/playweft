@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import {
   Armchair,
   Check,
-  Copy,
   Crown,
+  Eye,
   MoreHorizontal,
   Share2,
+  UserRound,
 } from "lucide-react";
 import {
   JsonRpcErrorCode,
@@ -21,6 +22,7 @@ import {
   initializeRoom,
   joinRoom,
   kickPlayer,
+  leaveRoom,
   setPlayerReady,
   setRoomSeat,
   sendAction,
@@ -39,6 +41,8 @@ import GameViewport from "./GameViewport";
 import GameHelpDialog from "./GameHelpDialog";
 import InviteDialog from "./InviteDialog";
 import Menu from "./Menu";
+import PlayerProfileMenu from "./PlayerProfileMenu";
+import RoomIdCopy from "./RoomIdCopy";
 import ChangeGameDialog from "./ChangeGameDialog";
 import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
 import { isFavoriteGame, toggleFavoriteGame } from "./favorite-games";
@@ -63,21 +67,25 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const ROOM_HANDSHAKE_TIMEOUT_MS = 10_000;
 
 interface RoomHostProps {
+  nickname: string;
   roomId: string;
   onBack(): void;
   onGameDiscovered(game: DiscoveredGame): void;
   onEntryStatus(status: string): void;
   onEntryReady(): void;
   onEntryFailed(): void;
+  onNicknameChange(value: string): void;
 }
 
 export default function RoomHost({
+  nickname,
   roomId,
   onBack,
   onGameDiscovered,
   onEntryStatus,
   onEntryReady,
   onEntryFailed,
+  onNicknameChange,
 }: RoomHostProps) {
   const { locale, t } = useI18n();
   const tRef = useRef(t);
@@ -85,6 +93,9 @@ export default function RoomHost({
   const iframe = useRef<HTMLIFrameElement>(null);
   const bridgePort = useRef<MessagePort | undefined>(undefined);
   const phaseRef = useRef<"lobby" | "playing">("lobby");
+  const nicknameRef = useRef(nickname);
+  const syncedNickname = useRef<string | undefined>(undefined);
+  nicknameRef.current = nickname;
   const [manifestUrl, setManifestUrl] = useState<string>();
   const [gameUrl, setGameUrl] = useState<string>();
   const [loadedGame, setLoadedGame] = useState<LoadedGame>();
@@ -94,8 +105,11 @@ export default function RoomHost({
   const [lobby, setLobby] = useState<RoomLobby>();
   const [selfId, setSelfId] = useState<string>();
   const [copied, setCopied] = useState(false);
-  const [roomIdCopied, setRoomIdCopied] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [startUnavailableHint, setStartUnavailableHint] = useState<string>();
+  const [startUnavailableHintClosing, setStartUnavailableHintClosing] =
+    useState(false);
+  const startUnavailableHintTimer = useRef<number | undefined>(undefined);
   const [error, setError] = useState<string>();
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
@@ -103,7 +117,9 @@ export default function RoomHost({
   const [isFavorite, setIsFavorite] = useState(false);
   const [playerMenuId, setPlayerMenuId] = useState<string>();
   const [playerMenuClosing, setPlayerMenuClosing] = useState(false);
-  const [spectatorHintOpen, setSpectatorHintOpen] = useState(false);
+  const [spectatorMenuOpen, setSpectatorMenuOpen] = useState(false);
+  const [spectatorMenuAnchor, setSpectatorMenuAnchor] =
+    useState<HTMLButtonElement>();
   const [lobbyMenuOpen, setLobbyMenuOpen] = useState(false);
   const [lobbyMenuAnchor, setLobbyMenuAnchor] = useState<HTMLButtonElement>();
   const [gameHelpHref, setGameHelpHref] = useState<string>();
@@ -123,10 +139,17 @@ export default function RoomHost({
   const isOwner = Boolean(selfId && lobby?.ownerId === selfId);
   const selfPlayer = lobby?.players.find((player) => player.id === selfId);
   const isSpectating = Boolean(selfId && lobby && !selfPlayer);
+  const spectatorCount = lobby?.spectators.length ?? 0;
   const playerCapacity = lobby?.maxPlayers ?? 0;
   const playerGridColumns = desktopPlayerGridColumns(playerCapacity);
-  const playerGridDensity =
-    playerCapacity <= 4 ? "full" : playerCapacity <= 9 ? "compact" : "dense";
+  const mobilePlayerGridColumns = mobilePlayerGridColumnsFor(playerCapacity);
+  const playerGridDensity = playerGridDensityFor(playerCapacity);
+  const playerGridClassName = [
+    "player-grid",
+    `player-grid-cols-${playerGridColumns}`,
+    `player-grid-mobile-cols-${mobilePlayerGridColumns}`,
+    `player-grid-${playerGridDensity}`,
+  ].join(" ");
   const firstOpenSeat = lobby
     ? Array.from({ length: lobby.maxPlayers }, (_, index) => index + 1).find(
         (seat) => !lobby.players.some((player) => player.seat === seat),
@@ -139,6 +162,19 @@ export default function RoomHost({
       (player) => player.id === lobby.ownerId || player.ready,
     ),
   );
+  const missingPlayerCount = lobby
+    ? Math.max(0, lobby.minPlayers - lobby.players.length)
+    : 0;
+  const startUnavailableReason = starting
+    ? t("startInProgress")
+    : missingPlayerCount > 0
+      ? t("needMorePlayers", {
+          count: missingPlayerCount,
+          suffix: locale === "en" && missingPlayerCount !== 1 ? "s" : "",
+        })
+      : !canStart
+        ? t("waitingForPlayersReady")
+        : undefined;
 
   useEffect(() => {
     document.title = `${gameName} | Playweft`;
@@ -147,13 +183,18 @@ export default function RoomHost({
     };
   }, [gameName]);
 
+  useEffect(
+    () => () => window.clearTimeout(startUnavailableHintTimer.current),
+    [],
+  );
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         onEntryStatus(tRef.current("loadingGame"));
         setError(undefined);
-        await createGuestSession();
+        await createGuestSession(nicknameRef.current);
         const launch = await getRoomLaunch(roomId);
         if (cancelled) return;
         setManifestUrl(launch.manifestUrl);
@@ -168,6 +209,32 @@ export default function RoomHost({
       cancelled = true;
     };
   }, [onEntryFailed, onEntryStatus, roomId]);
+
+  useEffect(() => {
+    if (
+      !selfId ||
+      phaseRef.current !== "lobby" ||
+      syncedNickname.current === nickname
+    )
+      return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await createGuestSession(nickname);
+        const membership = await joinRoom(roomId);
+        if (cancelled) return;
+        syncedNickname.current = nickname;
+        applyMembership(membership, setLobby, setSelfId);
+      } catch (reason) {
+        if (!cancelled) {
+          setError(message(reason, tRef.current("unexpectedError")));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [nickname, roomId, selfId]);
 
   useEffect(() => {
     if (!manifestUrl) return;
@@ -446,6 +513,12 @@ export default function RoomHost({
                   capabilities: loadedGame.game.permissions,
                   phase: phaseRef.current,
                   playerId: joinedPlayerId,
+                  player: {
+                    id: joinedPlayerId,
+                    ...(nicknameRef.current
+                      ? { name: nicknameRef.current }
+                      : {}),
+                  },
                 };
               }
               if (roomInitializing) {
@@ -471,6 +544,7 @@ export default function RoomHost({
                   );
                 }
                 applyMembership(membership, setLobby, setSelfId);
+                syncedNickname.current = nicknameRef.current;
                 joined = true;
                 joinedPlayerId = membership.selfId;
                 window.clearTimeout(handshakeTimeout);
@@ -483,6 +557,12 @@ export default function RoomHost({
                   capabilities: loadedGame.game.permissions,
                   phase: membership.phase,
                   playerId: membership.selfId,
+                  player: {
+                    id: membership.selfId,
+                    ...(nicknameRef.current
+                      ? { name: nicknameRef.current }
+                      : {}),
+                  },
                 };
               } catch (reason) {
                 window.clearTimeout(handshakeTimeout);
@@ -609,16 +689,6 @@ export default function RoomHost({
     }
   };
 
-  const copyRoomId = async () => {
-    try {
-      await navigator.clipboard.writeText(roomId);
-      setRoomIdCopied(true);
-      window.setTimeout(() => setRoomIdCopied(false), 1_500);
-    } catch {
-      setError(t("roomNumberCopyFailed"));
-    }
-  };
-
   const start = async () => {
     setStarting(true);
     try {
@@ -713,6 +783,17 @@ export default function RoomHost({
     }
   };
 
+  const showStartUnavailableHint = () => {
+    if (!startUnavailableReason) return;
+    setStartUnavailableHint(startUnavailableReason);
+    setStartUnavailableHintClosing(false);
+    window.clearTimeout(startUnavailableHintTimer.current);
+    startUnavailableHintTimer.current = window.setTimeout(
+      () => setStartUnavailableHintClosing(true),
+      2_500,
+    );
+  };
+
   const joinFirstOpenSeat = async () => {
     if (firstOpenSeat === undefined) return;
     await chooseSeat(firstOpenSeat);
@@ -721,6 +802,16 @@ export default function RoomHost({
   const requestBack = () => {
     if (selfId) setLeaveDialogOpen(true);
     else onBack();
+  };
+
+  const leave = async () => {
+    try {
+      setError(undefined);
+      await leaveRoom(roomId);
+      onBack();
+    } catch (reason) {
+      setError(message(reason, t("unexpectedError")));
+    }
   };
 
   const closePlayerMenu = (after?: () => void) => {
@@ -733,9 +824,14 @@ export default function RoomHost({
     }, 140);
   };
 
-  const showSpectatorHint = () => {
-    setSpectatorHintOpen(true);
-    window.setTimeout(() => setSpectatorHintOpen(false), 2_500);
+  const togglePlayerMenu = (playerId: string) => {
+    if (playerMenuClosing) return;
+    if (playerMenuId === playerId) {
+      closePlayerMenu();
+      return;
+    }
+    setPlayerMenuClosing(false);
+    setPlayerMenuId(playerId);
   };
 
   const gameInfoActions: GameInfoAction[] = isOwner
@@ -763,53 +859,67 @@ export default function RoomHost({
           <span className="room-mobile-game-name" title={gameName}>
             {gameName}
           </span>
-          <button
-            className="lobby-options lobby-options-mobile"
-            type="button"
-            aria-label={t("roomOptions")}
-            aria-expanded={lobbyMenuOpen}
-            onClick={(event) => {
-              setLobbyMenuAnchor(event.currentTarget);
-              setLobbyMenuOpen(true);
-            }}
-          >
-            <MoreHorizontal aria-hidden="true" />
-          </button>
+          <PlayerProfileMenu
+            nickname={nickname}
+            onNicknameChange={onNicknameChange}
+          />
         </header>
       )}
       <main className="room-host">
         {phase === "lobby" && (
           <>
             <div className="room-id">
-              <span>{t("roomNumber", { roomId })}</span>
-              <button
-                className={`room-id-action ${roomIdCopied ? "room-id-copy-copied" : ""}`}
-                type="button"
-                aria-label={
-                  roomIdCopied ? t("roomNumberCopied") : t("copyRoomNumber")
-                }
-                title={
-                  roomIdCopied ? t("roomNumberCopied") : t("copyRoomNumber")
-                }
-                onClick={() => void copyRoomId()}
-              >
-                {roomIdCopied ? (
-                  <Check aria-hidden="true" />
-                ) : (
-                  <Copy aria-hidden="true" />
-                )}
-              </button>
-              <button
-                className="room-id-action room-id-share"
-                type="button"
-                aria-label={t("shareRoom")}
-                aria-haspopup="dialog"
-                aria-expanded={inviteDialogOpen}
-                title={t("shareRoom")}
-                onClick={() => setInviteDialogOpen(true)}
-              >
-                <Share2 aria-hidden="true" />
-              </button>
+              <RoomIdCopy
+                roomId={roomId}
+                onCopyError={() => setError(t("roomNumberCopyFailed"))}
+              />
+              <div className="room-id-controls">
+                <button
+                  className="room-id-control"
+                  type="button"
+                  aria-label={t("spectatorCount", {
+                    count: spectatorCount,
+                    suffix: locale === "en" && spectatorCount !== 1 ? "s" : "",
+                  })}
+                  aria-haspopup="dialog"
+                  aria-expanded={spectatorMenuOpen}
+                  title={t("spectators")}
+                  onClick={(event) => {
+                    setSpectatorMenuAnchor(event.currentTarget);
+                    setSpectatorMenuOpen(true);
+                  }}
+                >
+                  <Eye aria-hidden="true" />
+                  {spectatorCount > 0 && (
+                    <span className="room-id-control-badge" aria-hidden="true">
+                      {spectatorCount > 99 ? "99+" : spectatorCount}
+                    </span>
+                  )}
+                </button>
+                <button
+                  className="room-id-control"
+                  type="button"
+                  aria-label={t("shareRoom")}
+                  aria-haspopup="dialog"
+                  aria-expanded={inviteDialogOpen}
+                  title={t("shareRoom")}
+                  onClick={() => setInviteDialogOpen(true)}
+                >
+                  <Share2 aria-hidden="true" />
+                </button>
+                <button
+                  className="room-id-control"
+                  type="button"
+                  aria-label={t("roomOptions")}
+                  aria-expanded={lobbyMenuOpen}
+                  onClick={(event) => {
+                    setLobbyMenuAnchor(event.currentTarget);
+                    setLobbyMenuOpen(true);
+                  }}
+                >
+                  <MoreHorizontal aria-hidden="true" />
+                </button>
+              </div>
             </div>
             <header className="room-hero">
               <div className="room-hero-heading">
@@ -822,25 +932,10 @@ export default function RoomHost({
                   />
                 )}
                 <h1>{gameName}</h1>
-                <button
-                  className="lobby-options lobby-options-desktop"
-                  type="button"
-                  aria-label={t("roomOptions")}
-                  aria-expanded={lobbyMenuOpen}
-                  onClick={(event) => {
-                    setLobbyMenuAnchor(event.currentTarget);
-                    setLobbyMenuOpen(true);
-                  }}
-                >
-                  <MoreHorizontal aria-hidden="true" />
-                </button>
               </div>
             </header>
             <section className="lobby-panel" aria-live="polite">
-              <ol
-                className={`player-grid player-grid-cols-${playerGridColumns}`}
-                data-density={playerGridDensity}
-              >
+              <ol className={playerGridClassName}>
                 {Array.from({ length: playerCapacity }, (_, index) => {
                   const seat = index + 1;
                   const player = lobby?.players.find(
@@ -853,7 +948,7 @@ export default function RoomHost({
                         className="player-card player-card-empty"
                       >
                         <button
-                          className="player-avatar player-avatar-seat"
+                          className="player-card-action"
                           type="button"
                           onClick={() => void chooseSeat(seat)}
                           aria-label={
@@ -861,9 +956,10 @@ export default function RoomHost({
                               ? t("joinSeat", { seat })
                               : t("moveToSeat", { seat })
                           }
-                        >
+                        />
+                        <span className="player-avatar player-avatar-seat">
                           <Armchair aria-hidden="true" />
-                        </button>
+                        </span>
                         <span className="player-card-copy">
                           <strong className="player-name">
                             {t("sitHere")}
@@ -877,25 +973,78 @@ export default function RoomHost({
                   return (
                     <li
                       key={player.id}
-                      className={`player-card ${playerMenuId === player.id ? "player-card-menu-open" : ""}`}
+                      className={`player-card player-card-occupied ${isSelf ? "player-card-self" : "player-card-other"} ${playerMenuId === player.id ? "player-card-menu-open" : ""}`}
                     >
-                      <span
-                        className={`player-avatar avatar-${(seat - 1) % 4} ${isSelf ? "player-avatar-self" : ""}`}
-                        title={isSelf ? t("you") : undefined}
-                      >
-                        P{seat}
-                        {!isHost && (
-                          <span
-                            className={`player-ready-marker ${player.ready ? "player-ready-marker-ready" : "player-ready-marker-pending"}`}
-                            title={player.ready ? t("ready") : t("notReady")}
-                            aria-label={
-                              player.ready ? t("ready") : t("notReady")
-                            }
-                          >
-                            {player.ready && <Check aria-hidden="true" />}
-                          </span>
+                      <div className="player-avatar-wrap">
+                        <span
+                          className={`player-avatar avatar-${(seat - 1) % 4} ${isSelf ? "player-avatar-self" : ""}`}
+                          title={isSelf ? t("you") : undefined}
+                        >
+                          P{seat}
+                          {!isHost && (
+                            <span
+                              className={`player-ready-marker ${player.ready ? "player-ready-marker-ready" : "player-ready-marker-pending"}`}
+                              title={player.ready ? t("ready") : t("notReady")}
+                              aria-label={
+                                player.ready ? t("ready") : t("notReady")
+                              }
+                            >
+                              {player.ready && <Check aria-hidden="true" />}
+                            </span>
+                          )}
+                        </span>
+                        {isOwner && !isSelf && (
+                          <>
+                            {playerMenuId === player.id && (
+                              <button
+                                className={`player-menu-backdrop ${playerMenuClosing ? "player-menu-backdrop-closing" : ""}`}
+                                type="button"
+                                aria-label={t("closePlayerMenu")}
+                                onClick={() => closePlayerMenu()}
+                              />
+                            )}
+                            <button
+                              className="player-menu-toggle"
+                              type="button"
+                              aria-label={t("playerOptions", {
+                                name: playerName,
+                              })}
+                              aria-expanded={playerMenuId === player.id}
+                              onClick={() => togglePlayerMenu(player.id)}
+                            >
+                              <MoreHorizontal aria-hidden="true" />
+                            </button>
+                            {playerMenuId === player.id && (
+                              <div
+                                className={`player-menu ${playerMenuClosing ? "player-menu-closing" : ""}`}
+                                role="menu"
+                              >
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() =>
+                                    closePlayerMenu(
+                                      () => void transferHost(player.id),
+                                    )
+                                  }
+                                >
+                                  {t("makeHost")}
+                                </button>
+                                <button
+                                  className="player-menu-remove"
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() =>
+                                    closePlayerMenu(() => void kick(player.id))
+                                  }
+                                >
+                                  {t("remove")}
+                                </button>
+                              </div>
+                            )}
+                          </>
                         )}
-                      </span>
+                      </div>
                       <span className="player-card-copy">
                         <strong className="player-name" title={player.name}>
                           {playerName}
@@ -910,114 +1059,42 @@ export default function RoomHost({
                           )}
                         </strong>
                       </span>
-                      {isOwner && !isSelf && (
-                        <>
-                          {playerMenuId === player.id && (
-                            <button
-                              className={`player-menu-backdrop ${playerMenuClosing ? "player-menu-backdrop-closing" : ""}`}
-                              type="button"
-                              aria-label={t("closePlayerMenu")}
-                              onClick={() => closePlayerMenu()}
-                            />
-                          )}
-                          <button
-                            className="player-menu-toggle"
-                            type="button"
-                            aria-label={t("playerOptions", {
-                              name: playerName,
-                            })}
-                            aria-expanded={playerMenuId === player.id}
-                            onClick={() => {
-                              if (playerMenuId === player.id) closePlayerMenu();
-                              else {
-                                setPlayerMenuClosing(false);
-                                setPlayerMenuId(player.id);
-                              }
-                            }}
-                          >
-                            <MoreHorizontal aria-hidden="true" />
-                          </button>
-                          {playerMenuId === player.id && (
-                            <div
-                              className={`player-menu ${playerMenuClosing ? "player-menu-closing" : ""}`}
-                              role="menu"
-                            >
-                              <button
-                                type="button"
-                                role="menuitem"
-                                onClick={() =>
-                                  closePlayerMenu(
-                                    () => void transferHost(player.id),
-                                  )
-                                }
-                              >
-                                {t("makeHost")}
-                              </button>
-                              <button
-                                className="player-menu-remove"
-                                type="button"
-                                role="menuitem"
-                                onClick={() =>
-                                  closePlayerMenu(() => void kick(player.id))
-                                }
-                              >
-                                {t("remove")}
-                              </button>
-                            </div>
-                          )}
-                        </>
-                      )}
                     </li>
                   );
                 })}
               </ol>
-              <div className="spectator-controls">
-                <p className="spectator-count">
-                  {t("spectatorCount", {
-                    count: lobby?.spectators.length ?? 0,
-                    suffix:
-                      locale === "en" && lobby?.spectators.length !== 1
-                        ? "s"
-                        : "",
-                  })}
-                </p>
-                {!isOwner && selfId && (
-                  <span className="spectator-button-wrap">
-                    <button
-                      className="spectator-button"
-                      type="button"
-                      onClick={() =>
-                        isSpectating
-                          ? showSpectatorHint()
-                          : void chooseSeat(null)
-                      }
-                      aria-describedby={
-                        spectatorHintOpen ? "spectator-hint" : undefined
-                      }
-                    >
-                      {isSpectating ? t("spectating") : t("spectate")}
-                    </button>
-                    {spectatorHintOpen && (
-                      <span
-                        className="spectator-tooltip"
-                        id="spectator-hint"
-                        role="tooltip"
-                      >
-                        {t("chooseEmptySeat")}
-                      </span>
-                    )}
-                  </span>
-                )}
-              </div>
             </section>
             <div className="room-actions">
               {isOwner && (
                 <button
                   className="primary start-game"
-                  disabled={starting || !canStart}
-                  onClick={() => void start()}
+                  aria-disabled={startUnavailableReason ? true : undefined}
+                  aria-describedby={
+                    startUnavailableHint ? "start-unavailable-hint" : undefined
+                  }
+                  onClick={() => {
+                    if (startUnavailableReason) {
+                      showStartUnavailableHint();
+                      return;
+                    }
+                    void start();
+                  }}
                 >
                   {starting ? t("starting") : t("startGame")}
+                  {startUnavailableHint && (
+                    <span
+                      className={`start-game-tooltip ${startUnavailableHintClosing ? "start-game-tooltip-exiting" : ""}`}
+                      id="start-unavailable-hint"
+                      role="tooltip"
+                      onAnimationEnd={() => {
+                        if (!startUnavailableHintClosing) return;
+                        setStartUnavailableHint(undefined);
+                        setStartUnavailableHintClosing(false);
+                      }}
+                    >
+                      {startUnavailableHint}
+                    </span>
+                  )}
                 </button>
               )}
               {!isOwner && selfPlayer && (
@@ -1075,7 +1152,9 @@ export default function RoomHost({
       )}
       {inviteDialogOpen && (
         <InviteDialog
+          roomId={roomId}
           url={window.location.href}
+          onRoomIdCopyError={() => setError(t("roomNumberCopyFailed"))}
           onClose={() => setInviteDialogOpen(false)}
         />
       )}
@@ -1085,7 +1164,11 @@ export default function RoomHost({
           onDismiss={() => setLeaveDialogOpen(false)}
           actions={[
             { label: t("cancel") },
-            { label: t("leave"), variant: "danger", onSelect: onBack },
+            {
+              label: t("leave"),
+              variant: "danger",
+              onSelect: () => void leave(),
+            },
           ]}
         >
           <p className="leave-dialog-copy">{t("needRoomLinkToReturn")}</p>
@@ -1161,7 +1244,7 @@ export default function RoomHost({
               {t("changeGame")}
             </button>
           )}
-          {isOwner && (
+          {isOwner ? (
             <button
               className="menu-danger"
               type="button"
@@ -1173,6 +1256,73 @@ export default function RoomHost({
             >
               {t("dissolveRoomAction")}
             </button>
+          ) : (
+            <button
+              className="menu-danger"
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setLobbyMenuOpen(false);
+                requestBack();
+              }}
+            >
+              {t("leaveRoomAction")}
+            </button>
+          )}
+        </Menu>
+      )}
+      {phase === "lobby" && spectatorMenuOpen && spectatorMenuAnchor && (
+        <Menu
+          ariaLabel={t("spectators")}
+          anchor={spectatorMenuAnchor}
+          className="spectator-menu"
+          role="dialog"
+          onClose={() => setSpectatorMenuOpen(false)}
+        >
+          {(closeMenu) => (
+            <>
+              {selfPlayer && !isOwner && (
+                <>
+                  <button
+                    className="spectator-menu-action"
+                    type="button"
+                    onClick={() => closeMenu(() => void chooseSeat(null))}
+                  >
+                    <Eye aria-hidden="true" />
+                    <span>{t("switchToSpectating")}</span>
+                  </button>
+                  <div className="spectator-menu-divider" role="separator" />
+                </>
+              )}
+              <div className="spectator-menu-heading">{t("spectators")}</div>
+              {spectatorCount > 0 ? (
+                <ul className="spectator-menu-list">
+                  {lobby?.spectators.map((spectator, index) => (
+                    <li key={spectator.id}>
+                      <span className="spectator-menu-avatar">
+                        {spectator.avatarUrl ? (
+                          <img
+                            src={spectator.avatarUrl}
+                            alt=""
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <UserRound aria-hidden="true" />
+                        )}
+                      </span>
+                      <span className="spectator-menu-name">
+                        {spectator.name ||
+                          t("spectatorFallback", { number: index + 1 })}
+                      </span>
+                      {spectator.id === selfId && <small>{t("you")}</small>}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="spectator-menu-empty">{t("noSpectators")}</p>
+              )}
+            </>
           )}
         </Menu>
       )}
@@ -1222,6 +1372,19 @@ function desktopPlayerGridColumns(capacity: number): 2 | 3 | 4 {
   if (capacity === 4) return 4;
   if (capacity <= 6 || capacity === 9) return 3;
   return 4;
+}
+
+function mobilePlayerGridColumnsFor(capacity: number): 1 | 2 | 3 | 4 {
+  if (capacity <= 4) return 1;
+  if (capacity <= 8) return 2;
+  if (capacity <= 12) return 3;
+  return 4;
+}
+
+function playerGridDensityFor(capacity: number): "full" | "compact" | "dense" {
+  if (capacity <= 4) return "full";
+  if (capacity <= 12) return "compact";
+  return "dense";
 }
 
 function actionFromRpcParams(params: JsonValue | undefined): JsonValue {

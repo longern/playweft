@@ -182,10 +182,12 @@ export function changeRoomGame(
   }).then(responseJson<RoomLaunch>);
 }
 
-export function createGuestSession(): Promise<void> {
+export function createGuestSession(nickname = ""): Promise<void> {
   return fetch(endpoint("/api/platform/guest"), {
     method: "POST",
     credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: nickname.trim() || null }),
   }).then(async (response) => {
     if (!response.ok)
       throw new Error(

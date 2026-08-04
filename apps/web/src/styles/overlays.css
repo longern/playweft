@@ -13,6 +13,14 @@
   animation: game-menu-backdrop-out 0.14s ease-in both;
 }
 
+.menu-anchor-hover-guard {
+  position: fixed;
+  z-index: 30;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
 .game-card-menu-backdrop {
   background: transparent;
   -webkit-backdrop-filter: blur(3px);
@@ -23,6 +31,14 @@
 .game-card-menu-backdrop.menu-backdrop-closing {
   pointer-events: auto;
   animation: game-menu-backdrop-out 0.14s ease-in both;
+}
+
+.profile-menu-backdrop {
+  background: transparent;
+}
+
+.profile-menu-backdrop.menu-backdrop-closing {
+  pointer-events: auto;
 }
 
 .menu {
@@ -44,7 +60,6 @@
   min-height: 40px;
   padding: 0px 16px;
   border: 0;
-  border-radius: 7px;
   background: transparent;
   color: #2c3136;
   font-size: 0.86rem;
@@ -91,6 +106,85 @@
   width: 18px;
   height: 18px;
   flex: 0 0 auto;
+}
+
+.profile-menu {
+  width: 220px;
+}
+
+.profile-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-menu button svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.profile-menu button:disabled {
+  color: #9aa0a6;
+  cursor: default;
+}
+
+.profile-menu button:disabled:hover {
+  background: transparent;
+}
+
+.profile-menu-nickname {
+  margin: -6px 0 0;
+  padding: 14px 16px 12px;
+  overflow: hidden;
+  color: #202124;
+  font-size: 0.94rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-menu-divider {
+  height: 1px;
+  margin: 0 0 6px;
+  background: #e7eaed;
+}
+
+.profile-menu-nickname-empty {
+  color: #737982;
+  font-weight: 500;
+}
+
+.nickname-field {
+  display: grid;
+  gap: 8px;
+  color: #30363d;
+  font-size: 0.84rem;
+  font-weight: 500;
+}
+
+.nickname-field input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--surface-border);
+  border-radius: 9px;
+  background: #fff;
+  color: #202124;
+  font-weight: 400;
+  outline: 0;
+}
+
+.nickname-field input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+
+.nickname-field small {
+  color: #737982;
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 
 .dialog-layer {
@@ -212,15 +306,16 @@
 }
 
 .invite-dialog-content {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
   min-height: 256px;
-  place-items: center;
 }
 
-.invite-dialog-content img {
-  display: block;
-  width: min(256px, 100%);
-  height: auto;
+.invite-dialog-room-id {
+  margin: 0;
 }
 
 .invite-dialog-loading,
@@ -234,7 +329,6 @@
 .change-game-form {
   display: grid;
   gap: 8px;
-  padding: 20px 20px 0;
 }
 
 .change-game-form label {
@@ -269,7 +363,6 @@
 
 .change-game-choices {
   margin-top: 22px;
-  padding: 0 20px;
 }
 
 .change-game-choices:last-child {

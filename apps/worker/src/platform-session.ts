@@ -22,14 +22,21 @@ export class PlatformSessionError extends Error {
 export async function issueGuestSession(request: Request, env: Env): Promise<Response> {
   requirePlatformOrigin(request);
   const secret = requireSecret(env);
+  const requestedName = await requestedDisplayName(request);
   const existingToken = readCookie(request.headers.get("Cookie"), COOKIE_NAME);
   const existing = existingToken ? await verify(existingToken, secret) : undefined;
-  if (existing && existing.exp > Math.floor(Date.now() / 1000)) {
+  const now = Math.floor(Date.now() / 1000);
+  const current = existing && existing.exp > now ? existing : undefined;
+  const name = requestedName === undefined
+    ? current?.name
+    : requestedName ?? undefined;
+  if (current && current.name === name) {
     return Response.json({ authenticated: true }, { headers: { "Cache-Control": "no-store" } });
   }
   const payload: PlatformSession = {
-    sub: `guest_${crypto.randomUUID()}`,
-    exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
+    sub: current?.sub ?? `guest_${crypto.randomUUID()}`,
+    exp: now + SESSION_TTL_SECONDS,
+    ...(name ? { name } : {}),
   };
   const token = await sign(payload, secret);
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
@@ -39,6 +46,33 @@ export async function issueGuestSession(request: Request, env: Env): Promise<Res
       "Cache-Control": "no-store",
     },
   });
+}
+
+async function requestedDisplayName(
+  request: Request,
+): Promise<string | null | undefined> {
+  const text = await request.text();
+  if (!text) return undefined;
+  let input: unknown;
+  try {
+    input = JSON.parse(text);
+  } catch {
+    throw new PlatformSessionError(400, "invalid session request");
+  }
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new PlatformSessionError(400, "session request must be an object");
+  }
+  const value = (input as { name?: unknown }).name;
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const name = displayName(value);
+  if (!name) {
+    throw new PlatformSessionError(
+      400,
+      `name must be 1-${MAX_DISPLAY_NAME_LENGTH} characters`,
+    );
+  }
+  return name;
 }
 
 export async function requirePlatformSession(request: Request, env: Env): Promise<PlatformSession> {

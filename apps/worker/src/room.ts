@@ -90,6 +90,7 @@ interface SocketAttachment {
 interface RoomMember {
   actorId: string;
   name?: string;
+  avatarUrl?: string;
   joinedAt: number;
   seat?: number;
   ready?: boolean;
@@ -1549,7 +1550,11 @@ export class GameRoom extends DurableObject<Env> {
     const spectators = Object.values(members)
       .filter((member) => member.seat === undefined)
       .sort((left, right) => left.joinedAt - right.joinedAt)
-      .map((member) => ({ id: member.actorId }));
+      .map((member) => ({
+        id: member.actorId,
+        ...(member.name ? { name: member.name } : {}),
+        ...(member.avatarUrl ? { avatarUrl: member.avatarUrl } : {}),
+      }));
     return {
       type: "lobby",
       phase,

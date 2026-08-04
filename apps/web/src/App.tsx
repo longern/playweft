@@ -16,6 +16,7 @@ import GameHelpDialog from "./GameHelpDialog";
 import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
 import GameViewport from "./GameViewport";
+import PlayerProfileMenu from "./PlayerProfileMenu";
 import { gameLaunchPath } from "./game-launch-link";
 import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
 import {
@@ -40,6 +41,10 @@ import {
 } from "./game-manifest";
 import type { MenuPosition } from "./Menu";
 import { localizeGameName, useI18n, type Translator } from "./i18n";
+import {
+  persistPlayerNickname,
+  readPlayerNickname,
+} from "./player-profile";
 import { useGameViewport } from "./use-game-viewport";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
@@ -62,6 +67,7 @@ export default function App() {
   const [settledRoomId, setSettledRoomId] = useState<string>();
   const [soloGame, setSoloGame] = useState<RecentGame>();
   const [soloClosing, setSoloClosing] = useState(false);
+  const [nickname, setNickname] = useState(readPlayerNickname);
   const entryGeneration = useRef(0);
   const handledExternalGameUrl = useRef<string | undefined>(undefined);
   const soloGameRef = useRef<RecentGame | undefined>(undefined);
@@ -112,6 +118,9 @@ export default function App() {
     handledExternalGameUrl.current = url;
     return true;
   }, []);
+  const changeNickname = useCallback((value: string) => {
+    setNickname(persistPlayerNickname(value));
+  }, []);
   const roomId = /^\/r\/([a-zA-Z0-9_-]{1,128})$/.exec(path)?.[1];
 
   useEffect(() => {
@@ -152,12 +161,14 @@ export default function App() {
       <>
         <RoomHost
           key={roomId}
+          nickname={nickname}
           roomId={roomId}
           onBack={() => navigate("/")}
           onGameDiscovered={saveRecentGame}
           onEntryStatus={setEntryStatus}
           onEntryReady={finishCurrentRoomEntry}
           onEntryFailed={finishCurrentRoomEntry}
+          onNicknameChange={changeNickname}
         />
         {overlayStatus && (
           <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />
@@ -173,17 +184,20 @@ export default function App() {
       >
         <Home
           externalGameUrl={soloGame ? undefined : externalGameUrl}
+          nickname={nickname}
           onNavigate={navigate}
           onBeginEntry={beginEntry}
           onEntryStatus={setEntryStatus}
           onPlaySolo={openSoloGame}
           onClaimExternalGameUrl={claimExternalGameUrl}
+          onNicknameChange={changeNickname}
         />
       </div>
       {soloGame && (
         <SoloHost
           closing={soloClosing}
           game={soloGame}
+          nickname={nickname}
           onBack={() => window.history.back()}
         />
       )}
@@ -196,19 +210,23 @@ export default function App() {
 
 interface HomeProps {
   externalGameUrl?: string;
+  nickname: string;
   onNavigate(path: string): void;
   onBeginEntry(): () => boolean;
   onClaimExternalGameUrl(url: string): boolean;
   onEntryStatus(status: string | undefined): void;
+  onNicknameChange(value: string): void;
   onPlaySolo(game: RecentGame): void;
 }
 
 function Home({
   externalGameUrl,
+  nickname,
   onNavigate,
   onBeginEntry,
   onClaimExternalGameUrl,
   onEntryStatus,
+  onNicknameChange,
   onPlaySolo,
 }: HomeProps) {
   const { locale, t } = useI18n();
@@ -268,7 +286,7 @@ function Home({
     setError(undefined);
     setUnsupportedGame(undefined);
     try {
-      await createGuestSession();
+      await createGuestSession(nickname);
       if (cancelled()) return;
       onEntryStatus(t("loadingGame"));
       onNavigate(`/r/${roomId}`);
@@ -284,7 +302,7 @@ function Home({
     setError(undefined);
     setUnsupportedGame(undefined);
     try {
-      await createGuestSession();
+      await createGuestSession(nickname);
       if (cancelled()) return;
       const room = await createRoom(game.manifestUrl);
       if (cancelled()) return;
@@ -447,6 +465,10 @@ function Home({
           <span>playweft</span>
         </a>
         <span className="topbar-label">{t("playGamesTogether")}</span>
+        <PlayerProfileMenu
+          nickname={nickname}
+          onNicknameChange={onNicknameChange}
+        />
       </header>
       <main className="home">
         <section
@@ -610,10 +632,12 @@ function Home({
 function SoloHost({
   closing,
   game,
+  nickname,
   onBack,
 }: {
   closing: boolean;
   game: RecentGame;
+  nickname: string;
   onBack(): void;
 }) {
   const { locale, t } = useI18n();
@@ -626,6 +650,8 @@ function SoloHost({
   const [isFavorite, setIsFavorite] = useState(() => isFavoriteGame(game));
   const iframe = useRef<HTMLIFrameElement>(null);
   const port = useRef<MessagePort | undefined>(undefined);
+  const nicknameRef = useRef(nickname);
+  nicknameRef.current = nickname;
   const currentGame = loaded?.game ?? game;
   const gameName = localizeGameName(currentGame, locale);
   const gameOrigin = new URL(currentGame.url).origin;
@@ -700,6 +726,11 @@ function SoloHost({
                 mode: "solo",
                 protocolVersion: PLAYWEFT_BRIDGE_VERSION,
                 capabilities: loaded.game.permissions,
+                player: {
+                  ...(nicknameRef.current
+                    ? { name: nicknameRef.current }
+                    : {}),
+                },
               };
             },
           },
