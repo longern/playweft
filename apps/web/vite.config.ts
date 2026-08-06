@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { VitePWA } from "vite-plugin-pwa";
 
 const defaultFeaturedGamesPath = fileURLToPath(
   new URL("./featured-games.local.json", import.meta.url),
@@ -53,7 +54,20 @@ function embeddedFeaturedGameSources(): unknown[] | null {
 }
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: "prompt",
+      injectRegister: false,
+      manifest: false,
+      workbox: {
+        cleanupOutdatedCaches: true,
+        globPatterns: ["**/*.{html,js,css,svg,png,webmanifest}"],
+        navigateFallback: "index.html",
+        navigateFallbackDenylist: [/^\/api\//],
+      },
+    }),
+  ],
   define: {
     __PLAYWEFT_FEATURED_GAME_SOURCES__: JSON.stringify(
       embeddedFeaturedGameSources(),

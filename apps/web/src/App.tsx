@@ -17,6 +17,7 @@ import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
 import GameViewport from "./GameViewport";
 import PlayerProfileMenu from "./PlayerProfileMenu";
+import UpdateToast from "./UpdateToast";
 import { gameLaunchPath } from "./game-launch-link";
 import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
 import {
@@ -46,6 +47,7 @@ import {
   readPlayerNickname,
 } from "./player-profile";
 import { useGameViewport } from "./use-game-viewport";
+import { usePwaUpdate } from "./use-pwa-update";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
 const MAX_RECENT_GAMES = 8;
@@ -62,6 +64,7 @@ type RoomIdFormat =
 
 export default function App() {
   const { t } = useI18n();
+  const pwaUpdate = usePwaUpdate();
   const [location, setLocation] = useState(readAppLocation);
   const [entryStatus, setEntryStatus] = useState<string>();
   const [settledRoomId, setSettledRoomId] = useState<string>();
@@ -155,6 +158,12 @@ export default function App() {
   const overlayStatus =
     entryStatus ??
     (roomId && settledRoomId !== roomId ? t("loadingGame") : undefined);
+  const showUpdateToast =
+    pwaUpdate.updateAvailable &&
+    path === "/" &&
+    !externalGameUrl &&
+    !soloGame &&
+    !overlayStatus;
 
   if (roomId) {
     return (
@@ -203,6 +212,13 @@ export default function App() {
       )}
       {overlayStatus && (
         <EntryOverlay status={overlayStatus} onCancel={cancelEntry} />
+      )}
+      {showUpdateToast && (
+        <UpdateToast
+          updating={pwaUpdate.updating}
+          onRefresh={() => void pwaUpdate.applyUpdate()}
+          onDismiss={pwaUpdate.dismissUpdate}
+        />
       )}
     </>
   );

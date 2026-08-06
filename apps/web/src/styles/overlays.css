@@ -532,6 +532,78 @@
   animation: error-toast-out 0.2s ease-in both;
 }
 
+.update-toast {
+  position: fixed;
+  z-index: 30;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: min(420px, calc(100vw - 32px));
+  min-height: 52px;
+  padding: 8px 8px 8px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: #30363d;
+  color: #fff;
+  box-shadow: 0 12px 36px rgba(32, 38, 34, 0.24);
+  animation: update-toast-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.update-toast p {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.update-toast-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.update-toast button {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+}
+
+.update-toast button:hover,
+.update-toast button:focus-visible {
+  background: rgba(255, 255, 255, 0.13);
+  outline: 0;
+}
+
+.update-toast button:focus-visible {
+  box-shadow: 0 0 0 2px #fff;
+}
+
+.update-toast button:disabled {
+  opacity: 0.7;
+}
+
+.update-toast button svg {
+  width: 19px;
+  height: 19px;
+}
+
+.update-toast-refreshing {
+  animation: spin 0.72s linear infinite;
+}
+
+.update-toast-closing {
+  pointer-events: none;
+  animation: update-toast-out 0.16s ease-in both;
+}
+
 .clipboard-prompt,
 .clipboard-notice {
   position: fixed;
@@ -857,6 +929,28 @@
   }
 }
 
+@keyframes update-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 12px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@keyframes update-toast-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+
 @media (max-width: 620px) {
   .game-card-menu button {
     min-height: 48px;
@@ -872,6 +966,7 @@
   .dialog-backdrop,
   .dialog,
   .error-toast,
+  .update-toast,
   .game-info-backdrop,
   .game-info-panel,
   .menu,
