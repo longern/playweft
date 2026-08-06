@@ -115,7 +115,9 @@ Key rules:
   Localized text uses the standard `name_localized` and
   `description_localized` maps.
 - `orientation` is a best-effort preference. Browsers may restrict runtime
-  orientation locking to installed or fullscreen contexts.
+  orientation locking to installed or fullscreen contexts. For a concrete
+  orientation, Playweft enters fullscreen before locking when a user gesture is
+  available; otherwise it presents a platform-controlled fullscreen button.
 - Presence of `modes.solo` or `modes.room` determines where the game may run.
 - `persistence: "durable"` persists authoritative state after each accepted
   action and permits Durable Object hibernation. `"live"` keeps active state in

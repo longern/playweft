@@ -1,4 +1,4 @@
-import { MoreHorizontal } from "lucide-react";
+import { Maximize2, MoreHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { useI18n } from "./i18n";
 
@@ -6,11 +6,15 @@ export default function GameViewport({
   children,
   infoExpanded,
   onOpenInfo,
+  orientationAction,
+  onEnterPreferredOrientation,
   showOptions = true,
 }: {
   children: ReactNode;
   infoExpanded: boolean;
   onOpenInfo(): void;
+  orientationAction?: "enter" | "restore";
+  onEnterPreferredOrientation?(): void;
   showOptions?: boolean;
 }) {
   const { t } = useI18n();
@@ -18,6 +22,24 @@ export default function GameViewport({
   return (
     <>
       {children}
+      {orientationAction && onEnterPreferredOrientation && (
+        <div className="game-orientation-gate">
+          <button
+            className="game-orientation-enter"
+            type="button"
+            onClick={onEnterPreferredOrientation}
+          >
+            <Maximize2 aria-hidden="true" />
+            <span>
+              {t(
+                orientationAction === "restore"
+                  ? "restoreLandscapeGame"
+                  : "enterFullscreenGame",
+              )}
+            </span>
+          </button>
+        </div>
+      )}
       {showOptions && (
         <button
           className="game-options"

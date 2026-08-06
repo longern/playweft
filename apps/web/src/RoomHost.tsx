@@ -61,7 +61,11 @@ import {
   type LoadedGame,
 } from "./game-manifest";
 import { localizeGameName, useI18n } from "./i18n";
-import { useGameViewport } from "./use-game-viewport";
+import {
+  prepareGameOrientation,
+  releaseGameFullscreen,
+  useGameViewport,
+} from "./use-game-viewport";
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const ROOM_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -135,7 +139,10 @@ export default function RoomHost({
 
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
-  useGameViewport(phase === "playing", loadedGame?.game);
+  const gameViewport = useGameViewport(
+    phase === "playing",
+    loadedGame?.game,
+  );
   const isOwner = Boolean(selfId && lobby?.ownerId === selfId);
   const selfPlayer = lobby?.players.find((player) => player.id === selfId);
   const isSpectating = Boolean(selfId && lobby && !selfPlayer);
@@ -690,6 +697,10 @@ export default function RoomHost({
   };
 
   const start = async () => {
+    const orientationAttempt = prepareGameOrientation(
+      loadedGame?.game.orientation,
+    );
+    let started = false;
     setStarting(true);
     try {
       setError(undefined);
@@ -705,10 +716,14 @@ export default function RoomHost({
       setLobby((current) =>
         current ? { ...current, phase: "playing" } : current,
       );
+      started = true;
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
     } finally {
       setStarting(false);
+      if (!started) {
+        void orientationAttempt.then(() => releaseGameFullscreen());
+      }
     }
   };
 
@@ -1125,6 +1140,10 @@ export default function RoomHost({
         <GameViewport
           infoExpanded={gameInfoOpen}
           onOpenInfo={() => setGameInfoOpen(true)}
+          orientationAction={gameViewport.orientationAction}
+          onEnterPreferredOrientation={() =>
+            void gameViewport.enterPreferredOrientation()
+          }
           showOptions={phase === "playing"}
         >
           {gameUrl && (

@@ -793,6 +793,18 @@ main.room-host {
   font-size: 1.2rem;
 }
 
+@media (orientation: landscape) {
+  .solo-loading-game {
+    grid-template-columns: auto auto;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .solo-loading-game strong {
+    white-space: nowrap;
+  }
+}
+
 .solo-loading-icon {
   display: grid;
   width: 80px;
@@ -827,6 +839,54 @@ main.room-host {
   border-top-color: var(--game-theme-color, var(--color-primary));
 }
 
+.game-orientation-gate {
+  position: fixed;
+  z-index: 4;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--game-background-color, #fff);
+}
+
+.game-orientation-enter {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 22px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--game-theme-color, var(--color-primary));
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
+  transition:
+    filter 0.16s ease,
+    transform 0.16s ease;
+}
+
+.game-orientation-enter svg {
+  width: 20px;
+  height: 20px;
+}
+
+.game-orientation-enter:focus-visible {
+  outline: 3px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 3px;
+}
+
+@media (hover: hover) {
+  .game-orientation-enter:hover {
+    filter: brightness(0.92);
+  }
+
+  .game-orientation-enter:active {
+    transform: scale(0.98);
+  }
+}
+
 @keyframes solo-host-in {
   from {
     opacity: 0;
@@ -859,15 +919,15 @@ main.room-host {
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: rgba(74, 78, 82, 0.56);
+  background: rgba(74, 78, 82, 0.36);
   color: #fff;
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(3px);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
 .game-options:hover,
 .game-options:focus-visible {
-  background: rgba(45, 49, 52, 0.72);
+  background: rgba(45, 49, 52, 0.52);
   outline: 0;
 }
 

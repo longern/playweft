@@ -46,7 +46,10 @@ import {
   persistPlayerNickname,
   readPlayerNickname,
 } from "./player-profile";
-import { useGameViewport } from "./use-game-viewport";
+import {
+  prepareGameOrientation,
+  useGameViewport,
+} from "./use-game-viewport";
 import { usePwaUpdate } from "./use-pwa-update";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
@@ -106,6 +109,7 @@ export default function App() {
     setLocation(readAppLocation());
   }, []);
   const openSoloGame = useCallback((game: RecentGame) => {
+    void prepareGameOrientation(game.orientation);
     window.clearTimeout(soloExitTimer.current);
     setSoloClosing(false);
     const nextPath = gameLaunchPath(game.manifestUrl);
@@ -672,7 +676,7 @@ function SoloHost({
   const gameName = localizeGameName(currentGame, locale);
   const gameOrigin = new URL(currentGame.url).origin;
   const clipboard = useClipboardRead(gameName, gameOrigin);
-  useGameViewport(true, currentGame);
+  const gameViewport = useGameViewport(true, currentGame);
 
   useEffect(() => {
     setIsFavorite(isFavoriteGame(currentGame));
@@ -795,6 +799,10 @@ function SoloHost({
       <GameViewport
         infoExpanded={gameInfoOpen}
         onOpenInfo={() => setGameInfoOpen(true)}
+        orientationAction={gameViewport.orientationAction}
+        onEnterPreferredOrientation={() =>
+          void gameViewport.enterPreferredOrientation()
+        }
       >
         {!frameReady && !loadError && (
           <div
