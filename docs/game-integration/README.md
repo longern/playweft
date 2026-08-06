@@ -57,23 +57,27 @@ JSON Schema is
   "client": {
     "entry": "./index.html"
   },
-  "display": {
-    "defaultLocale": "en",
-    "locales": {
-      "en": {
-        "name": "My Game",
-        "description": "A short catalogue description.",
-        "category": "Strategy"
-      },
-      "zh-CN": {
-        "name": "我的游戏",
-        "description": "用于目录展示的简短介绍。",
-        "category": "策略"
-      }
-    },
-    "icon": "./icon.svg",
-    "help": "./help.html"
+  "name": "My Game",
+  "name_localized": {
+    "zh-CN": "我的游戏"
   },
+  "description": "A short catalogue description.",
+  "description_localized": {
+    "zh-CN": "用于目录展示的简短介绍。"
+  },
+  "categories": ["strategy"],
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "background_color": "#ffffff",
+  "theme_color": "#70b967",
+  "orientation": "any",
+  "help_url": "./help.html",
   "modes": {
     "solo": {},
     "room": {
@@ -104,8 +108,14 @@ Key rules:
   limits and persistence mode when a room initializes.
 - `protocol.min/max` is the range of Playweft bridge versions the package
   supports. The current version is `1`.
-- `client.entry`, `display.icon`, `display.help` and the Lua `server.entry`
+- `client.entry`, `icons[].src`, `help_url` and the Lua `server.entry`
   resolve relative to the Manifest URL and must remain on its origin.
+- `name`, `description`, `categories`, `icons`, `background_color`,
+  `theme_color` and `orientation` follow Web App Manifest member syntax.
+  Localized text uses the standard `name_localized` and
+  `description_localized` maps.
+- `orientation` is a best-effort preference. Browsers may restrict runtime
+  orientation locking to installed or fullscreen contexts.
 - Presence of `modes.solo` or `modes.room` determines where the game may run.
 - `persistence: "durable"` persists authoritative state after each accepted
   action and permits Durable Object hibernation. `"live"` keeps active state in

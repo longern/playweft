@@ -135,7 +135,7 @@ export default function RoomHost({
 
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
-  useGameViewport(phase === "playing");
+  useGameViewport(phase === "playing", loadedGame?.game);
   const isOwner = Boolean(selfId && lobby?.ownerId === selfId);
   const selfPlayer = lobby?.players.find((player) => player.id === selfId);
   const isSpectating = Boolean(selfId && lobby && !selfPlayer);

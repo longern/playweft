@@ -6,6 +6,7 @@
 .room-playing {
   height: 100dvh;
   overflow: hidden;
+  background: var(--game-background-color, #fff);
 }
 .room-topbar {
   margin: 0;
@@ -735,7 +736,7 @@ main.room-host {
   width: 100%;
   height: 100%;
   border: 0;
-  background: #fff;
+  background: var(--game-background-color, #fff);
   visibility: hidden;
   pointer-events: none;
 }
@@ -750,7 +751,7 @@ main.room-host {
   z-index: 20;
   inset: 0;
   min-height: 0;
-  background: #fff;
+  background: var(--game-background-color, #fff);
   animation: solo-host-in 0.18s ease-out both;
 }
 
@@ -762,7 +763,7 @@ main.room-host {
 .solo-loading {
   position: absolute;
   inset: 0;
-  color: #202124;
+  color: var(--game-theme-color, #202124);
   font-size: 0.94rem;
   font-weight: 750;
 }
@@ -812,7 +813,7 @@ main.room-host {
   position: absolute;
   z-index: 1;
   inset: 0;
-  background: #fff;
+  background: var(--game-background-color, #fff);
   opacity: 0;
   pointer-events: none;
 }
@@ -820,6 +821,10 @@ main.room-host {
 .solo-game-surface-ready {
   opacity: 1;
   pointer-events: auto;
+}
+
+.solo-loading .loading-spinner {
+  border-top-color: var(--game-theme-color, var(--color-primary));
 }
 
 @keyframes solo-host-in {

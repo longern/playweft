@@ -10,22 +10,26 @@
   "client": {
     "entry": "./"
   },
-  "display": {
-    "defaultLocale": "en",
-    "locales": {
-      "en": {
-        "name": "Rock Paper Scissors",
-        "description": "A quick two-player round.",
-        "category": "Quick match"
-      },
-      "zh-CN": {
-        "name": "石头剪刀布",
-        "description": "快速的双人对局。",
-        "category": "快速对战"
-      }
-    },
-    "icon": "./rps.svg"
+  "name": "Rock Paper Scissors",
+  "name_localized": {
+    "zh-CN": "石头剪刀布"
   },
+  "description": "A quick two-player round.",
+  "description_localized": {
+    "zh-CN": "快速的双人对局。"
+  },
+  "categories": ["Quick match"],
+  "icons": [
+    {
+      "src": "./rps.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "background_color": "#f5f2fa",
+  "theme_color": "#7557c8",
+  "orientation": "any",
   "modes": {
     "room": {
       "players": {

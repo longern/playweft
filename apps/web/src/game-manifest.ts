@@ -3,6 +3,9 @@ import {
   PLAYWEFT_BRIDGE_VERSION,
   parseGameManifest,
   type GameManifest,
+  type GameManifestIcon,
+  type GameManifestLocalizedText,
+  type GameManifestOrientation,
 } from "@playweft/game-protocol";
 import {
   isGameTranslations,
@@ -22,6 +25,9 @@ export interface DiscoveredGame {
   helpUrl?: string;
   description: string;
   category: string;
+  backgroundColor?: string;
+  themeColor?: string;
+  orientation?: GameManifestOrientation;
   modes: GameMode[];
   liveRoom?: boolean;
   permissions: string[];
@@ -131,6 +137,11 @@ export function isStoredDiscoveredGame(value: unknown): value is DiscoveredGame 
       isGameTranslations(value.translations)) &&
     (value.icon === undefined || typeof value.icon === "string") &&
     (value.helpUrl === undefined || typeof value.helpUrl === "string") &&
+    (value.backgroundColor === undefined ||
+      isCssColor(value.backgroundColor)) &&
+    (value.themeColor === undefined || isCssColor(value.themeColor)) &&
+    (value.orientation === undefined ||
+      isStoredOrientation(value.orientation)) &&
     (value.liveRoom === undefined || typeof value.liveRoom === "boolean") &&
     Array.isArray(value.modes) &&
     value.modes.length > 0 &&
@@ -153,28 +164,28 @@ function discoveredGame(
   if (!clientUrl) {
     throw new Error("client.entry must resolve to the Manifest origin");
   }
-  const defaultTranslation =
-    manifest.display.locales[manifest.display.defaultLocale];
   const translations: GameTranslations = {};
-  for (const [locale, translation] of Object.entries(
-    manifest.display.locales,
-  )) {
-    if (locale !== manifest.display.defaultLocale) {
-      translations[locale] = { name: translation.name };
-    }
+  for (const [locale, name] of Object.entries(manifest.name_localized ?? {})) {
+    translations[locale] = { name: localizedTextValue(name) };
   }
-  const icon = manifest.display.icon
-    ? sameOriginUrl(manifest.display.icon, manifestUrl, manifestOrigin)
+  const icons = (manifest.icons ?? []).map((icon) => ({
+    ...icon,
+    src: sameOriginUrl(icon.src, manifestUrl, manifestOrigin),
+  }));
+  if (icons.some((icon) => !icon.src)) {
+    throw new Error("icons[].src must resolve to the Manifest origin");
+  }
+  const icon = selectGameIcon(
+    icons as Array<GameManifestIcon & { src: string }>,
+  );
+  const helpUrl = manifest.help_url
+    ? sameOriginUrl(manifest.help_url, manifestUrl, manifestOrigin)
     : undefined;
-  const helpUrl = manifest.display.help
-    ? sameOriginUrl(manifest.display.help, manifestUrl, manifestOrigin)
-    : undefined;
-  if (manifest.display.icon && !icon) {
-    throw new Error("display.icon must resolve to the Manifest origin");
+  if (manifest.help_url && !helpUrl) {
+    throw new Error("help_url must resolve to the Manifest origin");
   }
-  if (manifest.display.help && !helpUrl) {
-    throw new Error("display.help must resolve to the Manifest origin");
-  }
+  assertCssColor(manifest.background_color, "background_color");
+  assertCssColor(manifest.theme_color, "theme_color");
   const modes: GameMode[] = [
     ...(manifest.modes.solo ? (["solo"] as const) : []),
     ...(manifest.modes.room ? (["room"] as const) : []),
@@ -184,18 +195,60 @@ function discoveredGame(
     manifestUrl,
     manifestId: manifest.id,
     version: manifest.version,
-    name: defaultTranslation.name,
+    name: manifest.name,
     ...(Object.keys(translations).length > 0 ? { translations } : {}),
     ...(icon ? { icon } : {}),
     ...(helpUrl ? { helpUrl } : {}),
-    description: defaultTranslation.description ?? "",
-    category: defaultTranslation.category ?? "",
+    description: manifest.description ?? "",
+    category: manifest.categories?.[0] ?? "",
+    ...(manifest.background_color
+      ? { backgroundColor: manifest.background_color }
+      : {}),
+    ...(manifest.theme_color ? { themeColor: manifest.theme_color } : {}),
+    ...(manifest.orientation ? { orientation: manifest.orientation } : {}),
     modes,
     ...(manifest.modes.room?.server.persistence === "live"
       ? { liveRoom: true }
       : {}),
     permissions: Object.keys(manifest.permissions ?? {}),
   };
+}
+
+function localizedTextValue(value: GameManifestLocalizedText): string {
+  return typeof value === "string" ? value : value.value;
+}
+
+function selectGameIcon(
+  icons: Array<GameManifestIcon & { src: string }>,
+): string | undefined {
+  return (
+    icons.find((icon) =>
+      (icon.purpose ?? "any").split(" ").includes("any"),
+    ) ?? icons[0]
+  )?.src;
+}
+
+function assertCssColor(value: string | undefined, label: string): void {
+  if (value !== undefined && !isCssColor(value)) {
+    throw new Error(`${label} must be a valid CSS color`);
+  }
+}
+
+function isCssColor(value: unknown): value is string {
+  return typeof value === "string" && CSS.supports("color", value);
+}
+
+function isStoredOrientation(value: unknown): value is GameManifestOrientation {
+  return (
+    value === "any" ||
+    value === "natural" ||
+    value === "portrait" ||
+    value === "portrait-primary" ||
+    value === "portrait-secondary" ||
+    value === "landscape" ||
+    value === "landscape-primary" ||
+    value === "landscape-secondary"
+  );
 }
 
 async function fetchText(

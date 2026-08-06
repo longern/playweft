@@ -39,18 +39,34 @@ export const JSON_RPC_VERSION = "2.0" as const;
 export const PLAYWEFT_BRIDGE_VERSION = 1 as const;
 export const GAME_MANIFEST_VERSION = 1 as const;
 
-export interface GameManifestTranslation {
-  name: string;
-  description?: string;
-  category?: string;
+export type GameManifestTextDirection = "auto" | "ltr" | "rtl";
+
+export interface GameManifestLocalizedTextObject {
+  value: string;
+  dir?: GameManifestTextDirection;
+  lang?: string;
 }
 
-export interface GameManifestDisplay {
-  defaultLocale: string;
-  locales: Record<string, GameManifestTranslation>;
-  icon?: string;
-  help?: string;
+export type GameManifestLocalizedText =
+  | string
+  | GameManifestLocalizedTextObject;
+
+export interface GameManifestIcon {
+  src: string;
+  sizes?: string;
+  type?: string;
+  purpose?: string;
 }
+
+export type GameManifestOrientation =
+  | "any"
+  | "natural"
+  | "portrait"
+  | "portrait-primary"
+  | "portrait-secondary"
+  | "landscape"
+  | "landscape-primary"
+  | "landscape-secondary";
 
 export interface GameManifestRoomMode {
   players: {
@@ -76,7 +92,16 @@ export interface GameManifest {
   client: {
     entry: string;
   };
-  display: GameManifestDisplay;
+  name: string;
+  name_localized?: Record<string, GameManifestLocalizedText>;
+  description?: string;
+  description_localized?: Record<string, GameManifestLocalizedText>;
+  categories?: string[];
+  icons?: GameManifestIcon[];
+  background_color?: string;
+  theme_color?: string;
+  orientation?: GameManifestOrientation;
+  help_url?: string;
   modes: {
     solo?: Record<string, never>;
     room?: GameManifestRoomMode;
@@ -105,7 +130,16 @@ export function parseGameManifest(value: unknown): GameManifest {
     "version",
     "protocol",
     "client",
-    "display",
+    "name",
+    "name_localized",
+    "description",
+    "description_localized",
+    "categories",
+    "icons",
+    "background_color",
+    "theme_color",
+    "orientation",
+    "help_url",
     "modes",
     "permissions",
   ], "manifest");
@@ -139,7 +173,7 @@ export function parseGameManifest(value: unknown): GameManifest {
     failManifest("protocol min/max must be ordered positive integers");
   }
 
-  const display = parseManifestDisplay(manifest.display);
+  const metadata = parseManifestMetadata(manifest);
   if (!isRecord(manifest.client)) failManifest("client must be an object");
   const client = manifest.client as Record<string, unknown>;
   assertManifestKeys(client, ["entry"], "client");
@@ -165,94 +199,191 @@ export function parseGameManifest(value: unknown): GameManifest {
     client: {
       entry: client.entry as string,
     },
-    display,
+    ...metadata,
     modes,
     ...(permissions ? { permissions } : {}),
   };
 }
 
-function parseManifestDisplay(value: unknown): GameManifestDisplay {
-  if (!isRecord(value)) failManifest("display must be an object");
-  const display = value as Record<string, unknown>;
-  assertManifestKeys(
-    display,
-    ["defaultLocale", "locales", "icon", "help"],
-    "display",
+function parseManifestMetadata(
+  manifest: Record<string, unknown>,
+): Pick<
+  GameManifest,
+  | "name"
+  | "name_localized"
+  | "description"
+  | "description_localized"
+  | "categories"
+  | "icons"
+  | "background_color"
+  | "theme_color"
+  | "orientation"
+  | "help_url"
+> {
+  if (!isTrimmedText(manifest.name, 1, 100)) {
+    failManifest("name must contain 1-100 characters");
+  }
+  if (
+    manifest.description !== undefined &&
+    !isTrimmedText(manifest.description, 1, 500)
+  ) {
+    failManifest("description must contain 1-500 characters");
+  }
+  const nameLocalized = parseLocalizedText(
+    manifest.name_localized,
+    "name_localized",
+    100,
   );
+  const descriptionLocalized = parseLocalizedText(
+    manifest.description_localized,
+    "description_localized",
+    500,
+  );
+  const categories = parseManifestCategories(manifest.categories);
+  const icons = parseManifestIcons(manifest.icons);
   if (
-    typeof display.defaultLocale !== "string" ||
-    !isLocaleTag(display.defaultLocale)
+    manifest.background_color !== undefined &&
+    !isTrimmedText(manifest.background_color, 1, 128)
   ) {
-    failManifest("display.defaultLocale must be a valid locale tag");
-  }
-  if (!isRecord(display.locales)) {
-    failManifest("display.locales must be an object");
-  }
-  const localeEntries = Object.entries(display.locales);
-  if (
-    localeEntries.length === 0 ||
-    localeEntries.length > 32 ||
-    !Object.prototype.hasOwnProperty.call(
-      display.locales,
-      display.defaultLocale,
-    )
-  ) {
-    failManifest("display.locales must include defaultLocale");
-  }
-  const locales: Record<string, GameManifestTranslation> = {};
-  for (const [locale, translation] of localeEntries) {
-    if (!isLocaleTag(locale) || !isRecord(translation)) {
-      failManifest(`invalid display locale: ${locale}`);
-    }
-    const item = translation as Record<string, unknown>;
-    assertManifestKeys(
-      item,
-      ["name", "description", "category"],
-      `display.locales.${locale}`,
-    );
-    if (!isTrimmedText(item.name, 1, 100)) {
-      failManifest(`display.locales.${locale}.name is invalid`);
-    }
-    if (
-      item.description !== undefined &&
-      !isTrimmedText(item.description, 1, 500)
-    ) {
-      failManifest(`display.locales.${locale}.description is invalid`);
-    }
-    if (
-      item.category !== undefined &&
-      !isTrimmedText(item.category, 1, 100)
-    ) {
-      failManifest(`display.locales.${locale}.category is invalid`);
-    }
-    locales[locale] = {
-      name: item.name as string,
-      ...(typeof item.description === "string"
-        ? { description: item.description }
-        : {}),
-      ...(typeof item.category === "string"
-        ? { category: item.category }
-        : {}),
-    };
+    failManifest("background_color must be a CSS color string");
   }
   if (
-    display.icon !== undefined &&
-    !isRelativeOrWebUrl(display.icon, 2_048)
+    manifest.theme_color !== undefined &&
+    !isTrimmedText(manifest.theme_color, 1, 128)
   ) {
-    failManifest("display.icon must be a relative or HTTPS URL");
+    failManifest("theme_color must be a CSS color string");
   }
   if (
-    display.help !== undefined &&
-    !isRelativeOrWebUrl(display.help, 2_048)
+    manifest.orientation !== undefined &&
+    !isManifestOrientation(manifest.orientation)
   ) {
-    failManifest("display.help must be a relative or HTTPS URL");
+    failManifest("orientation is not a supported Web App Manifest value");
+  }
+  if (
+    manifest.help_url !== undefined &&
+    !isRelativeOrWebUrl(manifest.help_url, 2_048)
+  ) {
+    failManifest("help_url must be a relative or HTTPS URL");
   }
   return {
-    defaultLocale: display.defaultLocale as string,
-    locales,
-    ...(typeof display.icon === "string" ? { icon: display.icon } : {}),
-    ...(typeof display.help === "string" ? { help: display.help } : {}),
+    name: manifest.name as string,
+    ...(nameLocalized ? { name_localized: nameLocalized } : {}),
+    ...(typeof manifest.description === "string"
+      ? { description: manifest.description }
+      : {}),
+    ...(descriptionLocalized
+      ? { description_localized: descriptionLocalized }
+      : {}),
+    ...(categories ? { categories } : {}),
+    ...(icons ? { icons } : {}),
+    ...(typeof manifest.background_color === "string"
+      ? { background_color: manifest.background_color }
+      : {}),
+    ...(typeof manifest.theme_color === "string"
+      ? { theme_color: manifest.theme_color }
+      : {}),
+    ...(isManifestOrientation(manifest.orientation)
+      ? { orientation: manifest.orientation }
+      : {}),
+    ...(typeof manifest.help_url === "string"
+      ? { help_url: manifest.help_url }
+      : {}),
   };
+}
+
+function parseLocalizedText(
+  value: unknown,
+  label: string,
+  maxLength: number,
+): Record<string, GameManifestLocalizedText> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) failManifest(`${label} must be an object`);
+  const entries = Object.entries(value);
+  if (entries.length === 0 || entries.length > 32) {
+    failManifest(`${label} must contain 1-32 locales`);
+  }
+  const localized: Record<string, GameManifestLocalizedText> = {};
+  for (const [locale, text] of entries) {
+    if (!isLocaleTag(locale)) failManifest(`${label} has an invalid locale`);
+    if (isTrimmedText(text, 1, maxLength)) {
+      localized[locale] = text;
+      continue;
+    }
+    if (!isRecord(text)) {
+      failManifest(`${label}.${locale} must be localized text`);
+    }
+    assertManifestKeys(text, ["value", "dir", "lang"], `${label}.${locale}`);
+    if (!isTrimmedText(text.value, 1, maxLength)) {
+      failManifest(`${label}.${locale}.value is invalid`);
+    }
+    if (
+      text.dir !== undefined &&
+      text.dir !== "auto" &&
+      text.dir !== "ltr" &&
+      text.dir !== "rtl"
+    ) {
+      failManifest(`${label}.${locale}.dir is invalid`);
+    }
+    if (
+      text.lang !== undefined &&
+      (typeof text.lang !== "string" || !isLocaleTag(text.lang))
+    ) {
+      failManifest(`${label}.${locale}.lang is invalid`);
+    }
+    localized[locale] = {
+      value: text.value as string,
+      ...(typeof text.dir === "string"
+        ? { dir: text.dir as GameManifestTextDirection }
+        : {}),
+      ...(typeof text.lang === "string" ? { lang: text.lang } : {}),
+    };
+  }
+  return localized;
+}
+
+function parseManifestCategories(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > 32 ||
+    !value.every((category) => isTrimmedText(category, 1, 100))
+  ) {
+    failManifest("categories must contain 1-32 non-empty strings");
+  }
+  return [...value] as string[];
+}
+
+function parseManifestIcons(value: unknown): GameManifestIcon[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) {
+    failManifest("icons must contain 1-16 image resources");
+  }
+  return value.map((entry, index) => {
+    const label = `icons.${index}`;
+    if (!isRecord(entry)) failManifest(`${label} must be an object`);
+    assertManifestKeys(entry, ["src", "sizes", "type", "purpose"], label);
+    if (!isRelativeOrWebUrl(entry.src, 2_048)) {
+      failManifest(`${label}.src must be a relative or HTTPS URL`);
+    }
+    if (entry.sizes !== undefined && !isIconSizes(entry.sizes)) {
+      failManifest(`${label}.sizes is invalid`);
+    }
+    if (entry.type !== undefined && !isImageMimeType(entry.type)) {
+      failManifest(`${label}.type must be an image MIME type`);
+    }
+    if (entry.purpose !== undefined && !isIconPurpose(entry.purpose)) {
+      failManifest(`${label}.purpose is invalid`);
+    }
+    return {
+      src: entry.src as string,
+      ...(typeof entry.sizes === "string" ? { sizes: entry.sizes } : {}),
+      ...(typeof entry.type === "string" ? { type: entry.type } : {}),
+      ...(typeof entry.purpose === "string"
+        ? { purpose: entry.purpose }
+        : {}),
+    };
+  });
 }
 
 function parseManifestModes(value: unknown): GameManifest["modes"] {
@@ -383,6 +514,52 @@ function isPlayerLimit(value: unknown): value is number {
 
 function isLocaleTag(value: string): boolean {
   return value.length <= 35 && /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(value);
+}
+
+function isManifestOrientation(
+  value: unknown,
+): value is GameManifestOrientation {
+  return (
+    value === "any" ||
+    value === "natural" ||
+    value === "portrait" ||
+    value === "portrait-primary" ||
+    value === "portrait-secondary" ||
+    value === "landscape" ||
+    value === "landscape-primary" ||
+    value === "landscape-secondary"
+  );
+}
+
+function isIconSizes(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 256 &&
+    /^(?:any|[1-9]\d*x[1-9]\d*)(?: (?:any|[1-9]\d*x[1-9]\d*))*$/.test(
+      value,
+    )
+  );
+}
+
+function isImageMimeType(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 128 &&
+    /^image\/[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(value)
+  );
+}
+
+function isIconPurpose(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 64) return false;
+  const purposes = value.split(" ");
+  return (
+    purposes.length > 0 &&
+    new Set(purposes).size === purposes.length &&
+    purposes.every(
+      (purpose) =>
+        purpose === "any" || purpose === "maskable" || purpose === "monochrome",
+    )
+  );
 }
 
 function isTrimmedText(

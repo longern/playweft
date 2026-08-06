@@ -672,7 +672,7 @@ function SoloHost({
   const gameName = localizeGameName(currentGame, locale);
   const gameOrigin = new URL(currentGame.url).origin;
   const clipboard = useClipboardRead(gameName, gameOrigin);
-  useGameViewport(true);
+  useGameViewport(true, currentGame);
 
   useEffect(() => {
     setIsFavorite(isFavoriteGame(currentGame));
