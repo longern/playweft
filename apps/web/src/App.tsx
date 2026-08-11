@@ -15,6 +15,7 @@ import ErrorToast from "./ErrorToast";
 import GameHelpDialog from "./GameHelpDialog";
 import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
+import GameFrame, { attachGameBridge } from "./GameFrame";
 import GameViewport from "./GameViewport";
 import PlayerProfileMenu from "./PlayerProfileMenu";
 import UpdateToast from "./UpdateToast";
@@ -26,11 +27,7 @@ import {
   readFavoriteGames,
   toggleFavoriteGame,
 } from "./favorite-games";
-import {
-  PLAYWEFT_BRIDGE_VERSION,
-  dispatchRpcMessage,
-  rpcPlatformFault,
-} from "./json-rpc";
+import { PLAYWEFT_BRIDGE_VERSION, rpcPlatformFault } from "./json-rpc";
 import {
   isStoredDiscoveredGame,
   loadGameManifest,
@@ -42,14 +39,8 @@ import {
 } from "./game-manifest";
 import type { MenuPosition } from "./Menu";
 import { localizeGameName, useI18n, type Translator } from "./i18n";
-import {
-  persistPlayerNickname,
-  readPlayerNickname,
-} from "./player-profile";
-import {
-  prepareGameOrientation,
-  useGameViewport,
-} from "./use-game-viewport";
+import { persistPlayerNickname, readPlayerNickname } from "./player-profile";
+import { prepareGameOrientation, useGameViewport } from "./use-game-viewport";
 import { usePwaUpdate } from "./use-pwa-update";
 
 const RECENT_GAMES_KEY = "playweft:recent-games:v1";
@@ -669,7 +660,6 @@ function SoloHost({
   const [frameReady, setFrameReady] = useState(false);
   const [isFavorite, setIsFavorite] = useState(() => isFavoriteGame(game));
   const iframe = useRef<HTMLIFrameElement>(null);
-  const port = useRef<MessagePort | undefined>(undefined);
   const nicknameRef = useRef(nickname);
   nicknameRef.current = nickname;
   const currentGame = loaded?.game ?? game;
@@ -719,76 +709,53 @@ function SoloHost({
       loaded.manifest,
       "clipboard.readText",
     );
-    const onMessage = (event: MessageEvent) => {
-      if (
-        event.origin !== gameOrigin ||
-        event.source !== iframe.current?.contentWindow ||
-        event.data?.type !== "playweft:bridge-ready" ||
-        event.data?.version !== PLAYWEFT_BRIDGE_VERSION
-      )
-        return;
-
-      clipboard.cancelPending();
-      port.current?.close();
-      const channel = new MessageChannel();
-      port.current = channel.port1;
-      channel.port1.onmessage = (bridgeEvent) => {
-        void dispatchRpcMessage(channel.port1, bridgeEvent.data, {
-          "game.initialize": {
-            handle() {
-              if (!loaded.manifest.modes.solo) {
-                throw rpcPlatformFault(
-                  "SOLO_MODE_UNAVAILABLE",
-                  "The game Manifest does not declare solo mode",
-                );
-              }
-              return {
-                mode: "solo",
-                protocolVersion: PLAYWEFT_BRIDGE_VERSION,
-                capabilities: loaded.game.permissions,
-                player: {
-                  ...(nicknameRef.current
-                    ? { name: nicknameRef.current }
-                    : {}),
-                },
-              };
-            },
-          },
-          "room.action": {
-            handle() {
+    const detachBridge = attachGameBridge({
+      frame: iframe,
+      origin: gameOrigin,
+      onBeforeConnect: clipboard.cancelPending,
+      handlers: {
+        "game.initialize": {
+          handle() {
+            if (!loaded.manifest.modes.solo) {
               throw rpcPlatformFault(
-                "ROOM_UNAVAILABLE_IN_SOLO_MODE",
-                "Room actions are unavailable in solo mode",
+                "SOLO_MODE_UNAVAILABLE",
+                "The game Manifest does not declare solo mode",
               );
-            },
+            }
+            return {
+              mode: "solo",
+              protocolVersion: PLAYWEFT_BRIDGE_VERSION,
+              capabilities: loaded.game.permissions,
+              player: {
+                ...(nicknameRef.current ? { name: nicknameRef.current } : {}),
+              },
+            };
           },
-          "clipboard.readText": {
-            handle() {
-              if (!clipboardDeclared) {
-                throw rpcPlatformFault(
-                  "PERMISSION_NOT_DECLARED",
-                  "The game Manifest does not declare clipboard.readText",
-                );
-              }
-              return clipboard.requestReadText(clipboardReason);
-            },
+        },
+        "room.action": {
+          handle() {
+            throw rpcPlatformFault(
+              "ROOM_UNAVAILABLE_IN_SOLO_MODE",
+              "Room actions are unavailable in solo mode",
+            );
           },
-        });
-      };
-      channel.port1.start();
-      iframe.current?.contentWindow?.postMessage(
-        { type: "playweft:bridge", version: PLAYWEFT_BRIDGE_VERSION },
-        gameOrigin,
-        [channel.port2],
-      );
-    };
-
-    window.addEventListener("message", onMessage);
+        },
+        "clipboard.readText": {
+          handle() {
+            if (!clipboardDeclared) {
+              throw rpcPlatformFault(
+                "PERMISSION_NOT_DECLARED",
+                "The game Manifest does not declare clipboard.readText",
+              );
+            }
+            return clipboard.requestReadText(clipboardReason);
+          },
+        },
+      },
+    });
     return () => {
       clipboard.cancelPending();
-      port.current?.close();
-      port.current = undefined;
-      window.removeEventListener("message", onMessage);
+      detachBridge();
     };
   }, [clipboard.cancelPending, clipboard.requestReadText, gameOrigin, loaded]);
 
@@ -835,14 +802,11 @@ function SoloHost({
           <div
             className={`solo-game-surface ${frameReady ? "solo-game-surface-ready" : ""}`}
           >
-            <iframe
+            <GameFrame
               key={gameRevision}
               ref={iframe}
-              className="game-frame"
               title={gameName}
               src={loaded.game.url}
-              sandbox="allow-scripts allow-same-origin allow-forms"
-              allow="clipboard-read 'none'; clipboard-write 'none'"
               onLoad={() => setFrameReady(true)}
             />
           </div>

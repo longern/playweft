@@ -905,7 +905,7 @@ main.room-host {
   }
 }
 
-.game-options {
+.platform-menu-button {
   position: fixed;
   z-index: 5;
   top: 20px;
@@ -913,21 +913,23 @@ main.room-host {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
   width: 48px;
   height: 28px;
   padding: 0;
-  border: 0;
+  border: 1px solid rgba(127, 127, 127, 0.24);
   border-radius: 999px;
-  background: rgba(74, 78, 82, 0.36);
-  color: #fff;
-  backdrop-filter: blur(3px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.24);
+  color: black;
+  backdrop-filter: blur(1px);
+  transition:
+    background 0.16s ease,
+    backdrop-filter 0.16s ease;
 }
 
-.game-options:hover,
-.game-options:focus-visible {
-  background: rgba(45, 49, 52, 0.52);
+.platform-menu-button:hover,
+.platform-menu-button:focus-visible {
+  background: rgba(224, 224, 224, 0.24);
+  backdrop-filter: blur(3px);
   outline: 0;
 }
 
@@ -1444,7 +1446,7 @@ main.room-host {
     min-height: 48px;
   }
 
-  .game-options {
+  .platform-menu-button {
     top: 12px;
     right: 12px;
   }

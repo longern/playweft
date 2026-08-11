@@ -42,7 +42,7 @@ export default function GameViewport({
       )}
       {showOptions && (
         <button
-          className="game-options"
+          className="platform-menu-button"
           type="button"
           aria-label={t("gameInformation")}
           aria-expanded={infoExpanded}
