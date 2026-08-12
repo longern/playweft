@@ -46,6 +46,10 @@ html.game-running #root {
   overscroll-behavior-y: none;
 }
 
+html.game-running {
+  scrollbar-gutter: auto;
+}
+
 html.game-running body {
   position: fixed;
   inset: 0;

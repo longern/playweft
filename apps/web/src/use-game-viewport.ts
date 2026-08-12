@@ -2,6 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { GameManifestOrientation } from "@playweft/game-protocol";
 
 const GAME_RUNNING_CLASS = "game-running";
+const DEFAULT_GAME_BACKGROUND_COLOR = "#ffffff";
+const DEFAULT_GAME_THEME_COLOR = "#70b967";
+const WHITE = { red: 255, green: 255, blue: 255 };
+
+interface RgbColor {
+  red: number;
+  green: number;
+  blue: number;
+}
 
 export interface GameViewportPreferences {
   backgroundColor?: string;
@@ -38,6 +47,41 @@ function supportsMobileOrientationLock(): boolean {
       (navigator.maxTouchPoints > 0 ||
         window.matchMedia("(pointer: coarse)").matches),
   );
+}
+
+function renderedColor(value: string, backdrop: RgbColor): RgbColor {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return backdrop;
+  context.clearRect(0, 0, 1, 1);
+  context.fillStyle = value;
+  context.fillRect(0, 0, 1, 1);
+  const [red, green, blue, alphaByte] = context.getImageData(0, 0, 1, 1).data;
+  const alpha = alphaByte / 255;
+  return {
+    red: red * alpha + backdrop.red * (1 - alpha),
+    green: green * alpha + backdrop.green * (1 - alpha),
+    blue: blue * alpha + backdrop.blue * (1 - alpha),
+  };
+}
+
+function relativeLuminance({ red, green, blue }: RgbColor): number {
+  const linear = (component: number) => {
+    const value = component / 255;
+    return value <= 0.04045
+      ? value / 12.92
+      : Math.pow((value + 0.055) / 1.055, 2.4);
+  };
+  return linear(red) * 0.2126 + linear(green) * 0.7152 + linear(blue) * 0.0722;
+}
+
+function contrastingTextColor(background: RgbColor): "#000000" | "#ffffff" {
+  const luminance = relativeLuminance(background);
+  const blackContrast = (luminance + 0.05) / 0.05;
+  const whiteContrast = 1.05 / (luminance + 0.05);
+  return blackContrast >= whiteContrast ? "#000000" : "#ffffff";
 }
 
 async function lockGameOrientation(
@@ -153,6 +197,19 @@ export function useGameViewport(
     const previousThemeColor = themeMeta
       ? themeMeta.getAttribute("content")
       : null;
+    const backgroundValue =
+      preferences?.backgroundColor ?? DEFAULT_GAME_BACKGROUND_COLOR;
+    const themeValue = preferences?.themeColor ?? DEFAULT_GAME_THEME_COLOR;
+    const renderedBackground = renderedColor(backgroundValue, WHITE);
+    const renderedTheme = renderedColor(themeValue, renderedBackground);
+    root.style.setProperty(
+      "--game-foreground-color",
+      contrastingTextColor(renderedBackground),
+    );
+    root.style.setProperty(
+      "--game-on-theme-color",
+      contrastingTextColor(renderedTheme),
+    );
     if (preferences?.backgroundColor) {
       root.style.setProperty(
         "--game-background-color",
@@ -165,7 +222,9 @@ export function useGameViewport(
     }
     return () => {
       root.style.removeProperty("--game-background-color");
+      root.style.removeProperty("--game-foreground-color");
       root.style.removeProperty("--game-theme-color");
+      root.style.removeProperty("--game-on-theme-color");
       if (themeMeta) {
         if (previousThemeColor === null) themeMeta.removeAttribute("content");
         else themeMeta.setAttribute("content", previousThemeColor);

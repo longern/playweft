@@ -763,7 +763,7 @@ main.room-host {
 .solo-loading {
   position: absolute;
   inset: 0;
-  color: var(--game-theme-color, #202124);
+  color: var(--game-foreground-color, #202124);
   font-size: 0.94rem;
   font-weight: 750;
 }
@@ -859,7 +859,7 @@ main.room-host {
   border: 0;
   border-radius: 999px;
   background: var(--game-theme-color, var(--color-primary));
-  color: #fff;
+  color: var(--game-on-theme-color, #fff);
   font-weight: 700;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.14);
   transition:
