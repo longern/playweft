@@ -23,9 +23,19 @@ const playweft = {
       return rpcCall("room.action", { action });
     },
   },
-  clipboard: {
-    readText() {
-      return rpcCall("clipboard.readText");
+  navigator: {
+    clipboard: {
+      readText() {
+        return rpcCall("navigator.clipboard.readText");
+      },
+    },
+  },
+  window: {
+    alert(message = "") {
+      return rpcCall("window.alert", { message: String(message) });
+    },
+    confirm(message = "") {
+      return rpcCall("window.confirm", { message: String(message) });
     },
   },
 };

@@ -42,7 +42,7 @@ platform page (same origin, HttpOnly session, WebSocket) -> Worker -> Durable Ob
 The iframe never receives a platform account ID, session token, cookie, or
 WebSocket URL. A game URL resolves to `playweft.json`; the browser fetches and
 validates this Manifest, then the Worker fetches its same-origin Lua entry
-server-side before opening `client.entry`. After
+server-side before opening `start_url`. After
 the `MessagePort` handshake, every bridge message uses JSON-RPC 2.0. The
 Durable Object atomically locks the Manifest game ID/version, runtime settings
 and source hash: an identical repeat is harmless, while a different package

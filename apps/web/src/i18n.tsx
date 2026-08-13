@@ -11,6 +11,7 @@ export type Locale = (typeof locales)[number];
 export type InterpolationValues = Record<string, string | number>;
 export interface GameTranslation {
   name?: string;
+  description?: string;
 }
 
 export type GameTranslations = Record<string, GameTranslation>;
@@ -28,9 +29,14 @@ export function isGameTranslations(value: unknown): value is GameTranslations {
     )
       return false;
     const name = (translation as { name?: unknown }).name;
+    const description = (translation as { description?: unknown }).description;
     return (
-      name === undefined ||
-      (typeof name === "string" && name.length > 0 && name.length <= 100)
+      (name === undefined ||
+        (typeof name === "string" && name.length > 0 && name.length <= 100)) &&
+      (description === undefined ||
+        (typeof description === "string" &&
+          description.length > 0 &&
+          description.length <= 500))
     );
   });
 }
@@ -43,12 +49,13 @@ const english = {
   loadingGame: "Loading game",
   enterFullscreenGame: "Enter fullscreen game",
   restoreLandscapeGame: "Restore landscape",
-  checkingGame: "Loading game Manifest",
+  checkingGame: "Fetching game information",
   joiningRoom: "Joining room",
   updateAvailable: "A new version is available",
   refreshToUpdate: "Refresh to update",
   dismissUpdate: "Dismiss update",
   cancel: "Cancel",
+  ok: "OK",
   deny: "Deny",
   allowOnce: "Allow",
   readingClipboard: "Reading...",
@@ -56,6 +63,7 @@ const english = {
   clipboardGrantRemembered:
     "Playweft will remember this choice for this game site.",
   clipboardReadNotice: "{{name}} is reading the clipboard",
+  gameDialogSource: "From {{origin}}",
   dismissClipboardNotice: "Dismiss clipboard notice",
   playGamesTogether: "Play games together",
   playweftHome: "Playweft home",
@@ -75,6 +83,7 @@ const english = {
   recentlyPlayed: "Recently played",
   recommended: "Recommended",
   gameInformation: "Game information",
+  gameSource: "Game source",
   closeGameInformation: "Close game information",
   backHome: "Back home",
   playGame: "Play game",
@@ -180,18 +189,20 @@ const chineseSimplified: TranslationDictionary = {
   loadingGame: "正在加载游戏",
   enterFullscreenGame: "全屏进入游戏",
   restoreLandscapeGame: "恢复横屏",
-  checkingGame: "正在加载游戏 Manifest",
+  checkingGame: "正在获取游戏信息",
   joiningRoom: "正在加入房间",
   updateAvailable: "发现新版本",
   refreshToUpdate: "刷新并更新",
   dismissUpdate: "关闭更新提示",
   cancel: "取消",
+  ok: "确定",
   deny: "拒绝",
   allowOnce: "允许",
   readingClipboard: "正在读取…",
   clipboardReadRequest: "“{{name}}”想读取剪贴板中的文本",
   clipboardGrantRemembered: "Playweft 会为这个游戏站点记住你的选择。",
   clipboardReadNotice: "“{{name}}”正在读取剪贴板",
+  gameDialogSource: "来自 {{origin}}",
   dismissClipboardNotice: "关闭剪贴板提示",
   playGamesTogether: "一起玩游戏",
   playweftHome: "Playweft 首页",
@@ -211,6 +222,7 @@ const chineseSimplified: TranslationDictionary = {
   recentlyPlayed: "最近玩过",
   recommended: "推荐游戏",
   gameInformation: "游戏信息",
+  gameSource: "游戏来源",
   closeGameInformation: "关闭游戏信息",
   backHome: "返回首页",
   playGame: "开始游戏",
@@ -328,6 +340,19 @@ export function localizeGameName(
     translations[locale]?.name ??
     translations[locale.split("-")[0]!]?.name ??
     game.name
+  );
+}
+
+export function localizeGameDescription(
+  game: { description: string; translations?: GameTranslations },
+  locale: Locale,
+): string {
+  const translations = game.translations;
+  if (!translations) return game.description;
+  return (
+    translations[locale]?.description ??
+    translations[locale.split("-")[0]!]?.description ??
+    game.description
   );
 }
 

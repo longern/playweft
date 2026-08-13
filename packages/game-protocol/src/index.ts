@@ -15,20 +15,33 @@ export class JsonValidationError extends Error {
   }
 }
 
-export function assertJson(value: unknown, label: string): asserts value is JsonValue {
-  if (!isJson(value)) throw new JsonValidationError(`${label} must be JSON-compatible`);
+export function assertJson(
+  value: unknown,
+  label: string,
+): asserts value is JsonValue {
+  if (!isJson(value))
+    throw new JsonValidationError(`${label} must be JSON-compatible`);
 }
 
-export function assertJsonSize(value: JsonValue, label: string, maxBytes: number): void {
+export function assertJsonSize(
+  value: JsonValue,
+  label: string,
+  maxBytes: number,
+): void {
   const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
-  if (bytes > maxBytes) throw new JsonValidationError(`${label} exceeds the ${maxBytes}-byte limit`);
+  if (bytes > maxBytes)
+    throw new JsonValidationError(
+      `${label} exceeds the ${maxBytes}-byte limit`,
+    );
 }
 
 export function isJson(value: unknown, depth = 0): value is JsonValue {
   if (depth > JSON_MAX_DEPTH) return false;
-  if (value === null || typeof value === "boolean" || typeof value === "string") return true;
+  if (value === null || typeof value === "boolean" || typeof value === "string")
+    return true;
   if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every((item) => isJson(item, depth + 1));
+  if (Array.isArray(value))
+    return value.every((item) => isJson(item, depth + 1));
   if (typeof value !== "object") return false;
   return Object.entries(value as Record<string, unknown>).every(
     ([key, item]) => key.length <= 256 && isJson(item, depth + 1),
@@ -82,16 +95,14 @@ export interface GameManifestRoomMode {
 
 export interface GameManifest {
   $schema?: string;
-  manifestVersion: typeof GAME_MANIFEST_VERSION;
+  manifest_version: typeof GAME_MANIFEST_VERSION;
   id: string;
   version: string;
   protocol: {
     min: number;
     max: number;
   };
-  client: {
-    entry: string;
-  };
+  start_url: string;
   name: string;
   name_localized?: Record<string, GameManifestLocalizedText>;
   description?: string;
@@ -107,7 +118,7 @@ export interface GameManifest {
     room?: GameManifestRoomMode;
   };
   permissions?: {
-    "clipboard.readText"?: {
+    "navigator.clipboard.readText"?: {
       reason?: string;
     };
   };
@@ -123,35 +134,38 @@ export class GameManifestValidationError extends Error {
 export function parseGameManifest(value: unknown): GameManifest {
   if (!isRecord(value)) failManifest("manifest must be an object");
   const manifest = value as Record<string, unknown>;
-  assertManifestKeys(manifest, [
-    "$schema",
-    "manifestVersion",
-    "id",
-    "version",
-    "protocol",
-    "client",
-    "name",
-    "name_localized",
-    "description",
-    "description_localized",
-    "categories",
-    "icons",
-    "background_color",
-    "theme_color",
-    "orientation",
-    "help_url",
-    "modes",
-    "permissions",
-  ], "manifest");
-  if (manifest.manifestVersion !== GAME_MANIFEST_VERSION) {
-    failManifest(`manifestVersion must be ${GAME_MANIFEST_VERSION}`);
+  assertManifestKeys(
+    manifest,
+    [
+      "$schema",
+      "manifest_version",
+      "id",
+      "version",
+      "protocol",
+      "start_url",
+      "name",
+      "name_localized",
+      "description",
+      "description_localized",
+      "categories",
+      "icons",
+      "background_color",
+      "theme_color",
+      "orientation",
+      "help_url",
+      "modes",
+      "permissions",
+    ],
+    "manifest",
+  );
+  if (manifest.manifest_version !== GAME_MANIFEST_VERSION) {
+    failManifest(`manifest_version must be ${GAME_MANIFEST_VERSION}`);
   }
-  if (
-    typeof manifest.id !== "string" ||
-    !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(manifest.id) ||
-    manifest.id.length > 128
-  ) {
-    failManifest("id must be a reverse-domain identifier");
+  if (!isRelativeOrWebUrl(manifest.id, 2_048)) {
+    failManifest("id must be a relative or HTTPS URL");
+  }
+  if (!isRelativeOrWebUrl(manifest.start_url, 2_048)) {
+    failManifest("start_url must be a relative or HTTPS URL");
   }
   if (
     typeof manifest.version !== "string" ||
@@ -174,12 +188,6 @@ export function parseGameManifest(value: unknown): GameManifest {
   }
 
   const metadata = parseManifestMetadata(manifest);
-  if (!isRecord(manifest.client)) failManifest("client must be an object");
-  const client = manifest.client as Record<string, unknown>;
-  assertManifestKeys(client, ["entry"], "client");
-  if (!isRelativeOrWebUrl(client.entry, 2_048)) {
-    failManifest("client.entry must be a relative or HTTPS URL");
-  }
   const modes = parseManifestModes(manifest.modes);
   const permissions = parseManifestPermissions(manifest.permissions);
   if (manifest.$schema !== undefined && typeof manifest.$schema !== "string") {
@@ -189,16 +197,14 @@ export function parseGameManifest(value: unknown): GameManifest {
     ...(typeof manifest.$schema === "string"
       ? { $schema: manifest.$schema }
       : {}),
-    manifestVersion: GAME_MANIFEST_VERSION,
+    manifest_version: GAME_MANIFEST_VERSION,
     id: manifest.id as string,
     version: manifest.version as string,
     protocol: {
       min: protocol.min as number,
       max: protocol.max as number,
     },
-    client: {
-      entry: client.entry as string,
-    },
+    start_url: manifest.start_url as string,
     ...metadata,
     modes,
     ...(permissions ? { permissions } : {}),
@@ -379,9 +385,7 @@ function parseManifestIcons(value: unknown): GameManifestIcon[] | undefined {
       src: entry.src as string,
       ...(typeof entry.sizes === "string" ? { sizes: entry.sizes } : {}),
       ...(typeof entry.type === "string" ? { type: entry.type } : {}),
-      ...(typeof entry.purpose === "string"
-        ? { purpose: entry.purpose }
-        : {}),
+      ...(typeof entry.purpose === "string" ? { purpose: entry.purpose } : {}),
     };
   });
 }
@@ -393,7 +397,10 @@ function parseManifestModes(value: unknown): GameManifest["modes"] {
   const hasSolo = modes.solo !== undefined;
   const hasRoom = modes.room !== undefined;
   if (!hasSolo && !hasRoom) failManifest("modes must declare solo or room");
-  if (hasSolo && (!isRecord(modes.solo) || Object.keys(modes.solo).length > 0)) {
+  if (
+    hasSolo &&
+    (!isRecord(modes.solo) || Object.keys(modes.solo).length > 0)
+  ) {
     failManifest("modes.solo must be an empty object");
   }
   let room: GameManifestRoomMode | undefined;
@@ -456,26 +463,26 @@ function parseManifestPermissions(
   if (!isRecord(value)) failManifest("permissions must be an object");
   const permissions = value as Record<string, unknown>;
   for (const key of Object.keys(permissions)) {
-    if (key !== "clipboard.readText") {
+    if (key !== "navigator.clipboard.readText") {
       failManifest(`unsupported permission: ${key}`);
     }
   }
-  if (permissions["clipboard.readText"] === undefined) return {};
-  const clipboard = permissions["clipboard.readText"];
+  if (permissions["navigator.clipboard.readText"] === undefined) return {};
+  const clipboard = permissions["navigator.clipboard.readText"];
   if (!isRecord(clipboard)) {
-    failManifest("permissions.clipboard.readText must be an object");
+    failManifest("permissions.navigator.clipboard.readText must be an object");
   }
   assertManifestKeys(
     clipboard,
     ["reason"],
-    "permissions.clipboard.readText",
+    "permissions.navigator.clipboard.readText",
   );
   const reason = (clipboard as Record<string, unknown>).reason;
   if (reason !== undefined && !isTrimmedText(reason, 1, 160)) {
     failManifest("clipboard permission reason must contain 1-160 characters");
   }
   return {
-    "clipboard.readText": {
+    "navigator.clipboard.readText": {
       ...(typeof reason === "string" ? { reason } : {}),
     },
   };
@@ -491,7 +498,8 @@ function assertManifestKeys(
   label: string,
 ): void {
   const unexpected = Object.keys(value).find((key) => !allowed.includes(key));
-  if (unexpected) failManifest(`${label} contains unknown field: ${unexpected}`);
+  if (unexpected)
+    failManifest(`${label} contains unknown field: ${unexpected}`);
 }
 
 function isProtocolVersion(value: unknown): value is number {
@@ -513,7 +521,9 @@ function isPlayerLimit(value: unknown): value is number {
 }
 
 function isLocaleTag(value: string): boolean {
-  return value.length <= 35 && /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(value);
+  return (
+    value.length <= 35 && /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(value)
+  );
 }
 
 function isManifestOrientation(
@@ -535,9 +545,7 @@ function isIconSizes(value: unknown): value is string {
   return (
     typeof value === "string" &&
     value.length <= 256 &&
-    /^(?:any|[1-9]\d*x[1-9]\d*)(?: (?:any|[1-9]\d*x[1-9]\d*))*$/.test(
-      value,
-    )
+    /^(?:any|[1-9]\d*x[1-9]\d*)(?: (?:any|[1-9]\d*x[1-9]\d*))*$/.test(value)
   );
 }
 
@@ -575,7 +583,10 @@ function isTrimmedText(
   );
 }
 
-function isRelativeOrWebUrl(value: unknown, maxLength: number): value is string {
+function isRelativeOrWebUrl(
+  value: unknown,
+  maxLength: number,
+): value is string {
   if (
     typeof value !== "string" ||
     value.length === 0 ||

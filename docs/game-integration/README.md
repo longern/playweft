@@ -46,17 +46,15 @@ JSON Schema is
 
 ```json
 {
-  "$schema": "https://playweft.dev/schemas/game-manifest-v1.json",
-  "manifestVersion": 1,
-  "id": "com.example.my-game",
+  "$schema": "https://play.longern.com/schemas/game-manifest-v1.json",
+  "manifest_version": 1,
+  "id": "/my-game/",
   "version": "1.2.0",
   "protocol": {
     "min": 1,
     "max": 1
   },
-  "client": {
-    "entry": "./index.html"
-  },
+  "start_url": "./index.html",
   "name": "My Game",
   "name_localized": {
     "zh-CN": "我的游戏"
@@ -93,7 +91,7 @@ JSON Schema is
     }
   },
   "permissions": {
-    "clipboard.readText": {
+    "navigator.clipboard.readText": {
       "reason": "Import a saved game configuration"
     }
   }
@@ -102,13 +100,14 @@ JSON Schema is
 
 Key rules:
 
-- `id` is a stable reverse-domain identifier. It does not change between
-  releases of the same game.
+- `id` is a stable URL identity resolved against the `start_url` origin. It
+  must remain on that origin; its fragment is ignored. Use a stable path and do
+  not change it between releases of the same game.
 - `version` is SemVer. Playweft locks `id`, `version`, Lua source hash, player
   limits and persistence mode when a room initializes.
 - `protocol.min/max` is the range of Playweft bridge versions the package
   supports. The current version is `1`.
-- `client.entry`, `icons[].src`, `help_url` and the Lua `server.entry`
+- `start_url`, `icons[].src`, `help_url` and the Lua `server.entry`
   resolve relative to the Manifest URL and must remain on its origin.
 - `name`, `description`, `categories`, `icons`, `background_color`,
   `theme_color` and `orientation` follow Web App Manifest member syntax.
@@ -130,7 +129,7 @@ The platform limits a Manifest to 64 KiB and a Lua entry to 1 MiB.
 ## 3. Establish bridge v1
 
 After the browser has validated the Manifest and the Worker has installed any
-room server entry, Playweft opens `client.entry`. The iframe repeatedly
+room server entry, Playweft opens `start_url`. The iframe repeatedly
 announces readiness. The platform validates its origin and transfers a
 `MessagePort`.
 
@@ -197,7 +196,11 @@ the platform has already loaded the package contract. Its result is:
 {
   mode: "solo" | "room",
   protocolVersion: 1,
-  capabilities: ["clipboard.readText"],
+  capabilities: [
+    "window.alert",
+    "window.confirm",
+    "navigator.clipboard.readText",
+  ],
   // room only:
   phase: "lobby" | "playing",
   playerId: "actor_..."
@@ -262,10 +265,20 @@ A game-rule rejection is a successful RPC result with `accepted: false`.
 ## 5. Use declared permissions
 
 The iframe is explicitly denied direct Async Clipboard access. A game that
-declares `permissions["clipboard.readText"]` may call:
+declares `permissions["navigator.clipboard.readText"]` may call:
 
 ```js
-const text = await rpcCall("clipboard.readText");
+const playweft = {
+  navigator: {
+    clipboard: {
+      readText() {
+        return rpcCall("navigator.clipboard.readText");
+      },
+    },
+  },
+};
+
+const text = await playweft.navigator.clipboard.readText();
 ```
 
 The Manifest `reason` is displayed in the platform-controlled permission UI.
@@ -277,7 +290,37 @@ The result is limited to 64 KiB. Stable failure codes include `USER_DENIED`,
 `REQUEST_EXPIRED`, `NOT_SUPPORTED`, `NOT_ALLOWED`, `TOO_LARGE`, `BUSY`,
 `RATE_LIMITED`, `READ_FAILED` and `PERMISSION_NOT_DECLARED`.
 
-## 6. Write the Lua game
+## 6. Use platform window dialogs
+
+Native iframe modals remain sandboxed. Playweft exposes asynchronous mappings
+of `window.alert()` and `window.confirm()` through platform-controlled UI:
+
+```js
+const playweft = {
+  window: {
+    alert(message = "") {
+      return rpcCall("window.alert", { message: String(message) });
+    },
+    confirm(message = "") {
+      return rpcCall("window.confirm", { message: String(message) });
+    },
+  },
+};
+
+await playweft.window.alert("The round has ended.");
+if (await playweft.window.confirm("Start another round?")) {
+  // Submit the corresponding game action.
+}
+```
+
+`window.alert` resolves after dismissal. `window.confirm` resolves to `true`
+for confirmation and `false` for cancellation, Escape, the Android back action
+or backdrop dismissal. Messages are plain text and limited to 2,000
+characters. The platform derives and displays the iframe origin; games cannot
+provide or override it. Only one platform window dialog may be pending per
+game. These capabilities do not require Manifest permission declarations.
+
+## 7. Write the Lua game
 
 The platform compiles the fetched Lua entry while initializing the room.
 `setup(context)` runs only when the host starts and locks the seated roster:
@@ -402,5 +445,7 @@ WebSocket snapshot and WebSocket update. Inputs are copies, so mutations in
 - Do not treat `playerId` as a long-lived identity.
 - Do not call `navigator.clipboard.readText()` directly; declare and use the
   platform RPC.
+- Do not call native `window.alert()` or `window.confirm()` inside the
+  sandbox; await `playweft.window.alert()` or `playweft.window.confirm()`.
 
 See [`apps/rps-demo`](../../apps/rps-demo) for a complete package.

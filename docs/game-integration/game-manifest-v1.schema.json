@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://playweft.dev/schemas/game-manifest-v1.json",
+  "$id": "https://play.longern.com/schemas/game-manifest-v1.json",
   "title": "Playweft Game Manifest v1",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "manifestVersion",
+    "manifest_version",
     "id",
     "version",
     "protocol",
-    "client",
+    "start_url",
     "name",
     "modes"
   ],
@@ -17,13 +17,13 @@
     "$schema": {
       "type": "string"
     },
-    "manifestVersion": {
+    "manifest_version": {
       "const": 1
     },
     "id": {
       "type": "string",
-      "maxLength": 128,
-      "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$"
+      "minLength": 1,
+      "maxLength": 2048
     },
     "version": {
       "type": "string",
@@ -33,7 +33,10 @@
     "protocol": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["min", "max"],
+      "required": [
+        "min",
+        "max"
+      ],
       "properties": {
         "min": {
           "type": "integer",
@@ -47,15 +50,8 @@
         }
       }
     },
-    "client": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["entry"],
-      "properties": {
-        "entry": {
-          "$ref": "#/$defs/resourceUrl"
-        }
-      }
+    "start_url": {
+      "$ref": "#/$defs/resourceUrl"
     },
     "name": {
       "type": "string",
@@ -124,12 +120,18 @@
         "room": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["players", "server"],
+          "required": [
+            "players",
+            "server"
+          ],
           "properties": {
             "players": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["min", "max"],
+              "required": [
+                "min",
+                "max"
+              ],
               "properties": {
                 "min": {
                   "type": "integer",
@@ -146,7 +148,11 @@
             "server": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["runtime", "entry", "persistence"],
+              "required": [
+                "runtime",
+                "entry",
+                "persistence"
+              ],
               "properties": {
                 "runtime": {
                   "const": "lua"
@@ -155,7 +161,10 @@
                   "$ref": "#/$defs/resourceUrl"
                 },
                 "persistence": {
-                  "enum": ["durable", "live"]
+                  "enum": [
+                    "durable",
+                    "live"
+                  ]
                 }
               }
             }
@@ -167,7 +176,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "clipboard.readText": {
+        "navigator.clipboard.readText": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
@@ -236,7 +245,9 @@
     "localizedNameObject": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["value"],
+      "required": [
+        "value"
+      ],
       "properties": {
         "value": {
           "type": "string",
@@ -244,7 +255,11 @@
           "maxLength": 100
         },
         "dir": {
-          "enum": ["auto", "ltr", "rtl"]
+          "enum": [
+            "auto",
+            "ltr",
+            "rtl"
+          ]
         },
         "lang": {
           "$ref": "#/$defs/locale"
@@ -254,7 +269,9 @@
     "localizedDescriptionObject": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["value"],
+      "required": [
+        "value"
+      ],
       "properties": {
         "value": {
           "type": "string",
@@ -262,7 +279,11 @@
           "maxLength": 500
         },
         "dir": {
-          "enum": ["auto", "ltr", "rtl"]
+          "enum": [
+            "auto",
+            "ltr",
+            "rtl"
+          ]
         },
         "lang": {
           "$ref": "#/$defs/locale"
@@ -272,7 +293,9 @@
     "icon": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["src"],
+      "required": [
+        "src"
+      ],
       "properties": {
         "src": {
           "$ref": "#/$defs/resourceUrl"

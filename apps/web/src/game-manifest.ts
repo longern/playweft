@@ -105,7 +105,7 @@ export async function loadGameManifest(
     game,
     manifest,
     room: {
-      gameId: manifest.id,
+      gameId: game.manifestId,
       gameVersion: manifest.version,
       runtime: roomMode.server.runtime,
       serverUrl,
@@ -118,7 +118,7 @@ export async function loadGameManifest(
 
 export function manifestPermissionReason(
   manifest: GameManifest | undefined,
-  permission: "clipboard.readText",
+  permission: "navigator.clipboard.readText",
 ): string | undefined {
   return manifest?.permissions?.[permission]?.reason;
 }
@@ -129,6 +129,7 @@ export function isStoredDiscoveredGame(value: unknown): value is DiscoveredGame 
     typeof value.url === "string" &&
     typeof value.manifestUrl === "string" &&
     typeof value.manifestId === "string" &&
+    webUrl(value.manifestId) !== undefined &&
     typeof value.version === "string" &&
     typeof value.name === "string" &&
     typeof value.description === "string" &&
@@ -157,16 +158,28 @@ function discoveredGame(
 ): DiscoveredGame {
   const manifestOrigin = new URL(manifestUrl).origin;
   const clientUrl = sameOriginUrl(
-    manifest.client.entry,
+    manifest.start_url,
     manifestUrl,
     manifestOrigin,
   );
   if (!clientUrl) {
-    throw new Error("client.entry must resolve to the Manifest origin");
+    throw new Error("start_url must resolve to the Manifest origin");
+  }
+  const manifestId = manifestIdentity(manifest.id, clientUrl);
+  if (!manifestId) {
+    throw new Error("id must resolve to the start_url origin");
   }
   const translations: GameTranslations = {};
   for (const [locale, name] of Object.entries(manifest.name_localized ?? {})) {
     translations[locale] = { name: localizedTextValue(name) };
+  }
+  for (const [locale, description] of Object.entries(
+    manifest.description_localized ?? {},
+  )) {
+    translations[locale] = {
+      ...translations[locale],
+      description: localizedTextValue(description),
+    };
   }
   const icons = (manifest.icons ?? []).map((icon) => ({
     ...icon,
@@ -193,7 +206,7 @@ function discoveredGame(
   return {
     url: clientUrl,
     manifestUrl,
-    manifestId: manifest.id,
+    manifestId,
     version: manifest.version,
     name: manifest.name,
     ...(Object.keys(translations).length > 0 ? { translations } : {}),
@@ -216,6 +229,15 @@ function discoveredGame(
 
 function localizedTextValue(value: GameManifestLocalizedText): string {
   return typeof value === "string" ? value : value.value;
+}
+
+function manifestIdentity(value: string, startUrl: string): string | undefined {
+  const startOrigin = new URL(startUrl).origin;
+  const resolved = sameOriginUrl(value, `${startOrigin}/`, startOrigin);
+  if (!resolved) return undefined;
+  const identity = new URL(resolved);
+  identity.hash = "";
+  return identity.toString();
 }
 
 function selectGameIcon(

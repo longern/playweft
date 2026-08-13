@@ -16,6 +16,10 @@ import GameHelpDialog from "./GameHelpDialog";
 import GameInfoPanel from "./GameInfoPanel";
 import GameMenu from "./GameMenu";
 import GameFrame, { attachGameBridge } from "./GameFrame";
+import GameWindowDialog, {
+  PLATFORM_WINDOW_CAPABILITIES,
+  useGameWindowDialogs,
+} from "./GameWindowDialog";
 import GameViewport from "./GameViewport";
 import PlayerProfileMenu from "./PlayerProfileMenu";
 import UpdateToast from "./UpdateToast";
@@ -38,7 +42,12 @@ import {
   type GameMode,
 } from "./game-manifest";
 import type { MenuPosition } from "./Menu";
-import { localizeGameName, useI18n, type Translator } from "./i18n";
+import {
+  localizeGameDescription,
+  localizeGameName,
+  useI18n,
+  type Translator,
+} from "./i18n";
 import { persistPlayerNickname, readPlayerNickname } from "./player-profile";
 import { prepareGameOrientation, useGameViewport } from "./use-game-viewport";
 import { usePwaUpdate } from "./use-pwa-update";
@@ -590,6 +599,7 @@ function Home({
       )}
       {gameInfo && (
         <GameInfoPanel
+          description={localizeGameDescription(gameInfo, locale)}
           icon={gameInfo.icon}
           isFavorite={favoriteIds.has(gameInfo.manifestId)}
           manifestUrl={gameInfo.manifestUrl}
@@ -664,8 +674,10 @@ function SoloHost({
   nicknameRef.current = nickname;
   const currentGame = loaded?.game ?? game;
   const gameName = localizeGameName(currentGame, locale);
+  const gameDescription = localizeGameDescription(currentGame, locale);
   const gameOrigin = new URL(currentGame.url).origin;
   const clipboard = useClipboardRead(gameName, gameOrigin);
+  const windowDialogs = useGameWindowDialogs(gameName, gameOrigin);
   const gameViewport = useGameViewport(true, currentGame);
 
   useEffect(() => {
@@ -704,15 +716,22 @@ function SoloHost({
   useEffect(() => {
     if (!loaded) return;
     const clipboardDeclared =
-      loaded.game.permissions.includes("clipboard.readText");
+      loaded.game.permissions.includes("navigator.clipboard.readText");
     const clipboardReason = manifestPermissionReason(
       loaded.manifest,
-      "clipboard.readText",
+      "navigator.clipboard.readText",
     );
+    const capabilities = [
+      ...PLATFORM_WINDOW_CAPABILITIES,
+      ...loaded.game.permissions,
+    ];
     const detachBridge = attachGameBridge({
       frame: iframe,
       origin: gameOrigin,
-      onBeforeConnect: clipboard.cancelPending,
+      onBeforeConnect() {
+        clipboard.cancelPending();
+        windowDialogs.cancelPending();
+      },
       handlers: {
         "game.initialize": {
           handle() {
@@ -725,7 +744,7 @@ function SoloHost({
             return {
               mode: "solo",
               protocolVersion: PLAYWEFT_BRIDGE_VERSION,
-              capabilities: loaded.game.permissions,
+              capabilities,
               player: {
                 ...(nicknameRef.current ? { name: nicknameRef.current } : {}),
               },
@@ -740,24 +759,39 @@ function SoloHost({
             );
           },
         },
-        "clipboard.readText": {
+        "navigator.clipboard.readText": {
           handle() {
             if (!clipboardDeclared) {
               throw rpcPlatformFault(
                 "PERMISSION_NOT_DECLARED",
-                "The game Manifest does not declare clipboard.readText",
+                "The game Manifest does not declare navigator.clipboard.readText",
               );
             }
             return clipboard.requestReadText(clipboardReason);
           },
         },
+        "window.alert": {
+          handle: windowDialogs.requestAlert,
+        },
+        "window.confirm": {
+          handle: windowDialogs.requestConfirm,
+        },
       },
     });
     return () => {
       clipboard.cancelPending();
+      windowDialogs.cancelPending();
       detachBridge();
     };
-  }, [clipboard.cancelPending, clipboard.requestReadText, gameOrigin, loaded]);
+  }, [
+    clipboard.cancelPending,
+    clipboard.requestReadText,
+    gameOrigin,
+    loaded,
+    windowDialogs.cancelPending,
+    windowDialogs.requestAlert,
+    windowDialogs.requestConfirm,
+  ]);
 
   return (
     <div
@@ -825,6 +859,13 @@ function SoloHost({
         onDeny={clipboard.deny}
         onDismissNotice={clipboard.clearNotice}
       />
+      {windowDialogs.dialog && (
+        <GameWindowDialog
+          dialog={windowDialogs.dialog}
+          onConfirm={windowDialogs.confirm}
+          onDismiss={windowDialogs.dismiss}
+        />
+      )}
       {gameInfoOpen && (
         <GameInfoPanel
           actions={[
@@ -837,6 +878,7 @@ function SoloHost({
               },
             },
           ]}
+          description={gameDescription}
           icon={currentGame.icon}
           isFavorite={isFavorite}
           manifestUrl={currentGame.manifestUrl}

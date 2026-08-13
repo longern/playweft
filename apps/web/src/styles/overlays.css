@@ -461,6 +461,23 @@
   color: #737982;
 }
 
+.game-window-dialog-content {
+  display: grid;
+  gap: 16px;
+}
+
+.game-window-dialog-message {
+  margin: 0;
+  color: #30363d;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.game-window-dialog-content small {
+  color: #737982;
+  font-size: 0.75rem;
+}
+
 .dialog-closing .dialog-backdrop {
   animation: dialog-backdrop-out 0.16s ease-in both;
 }

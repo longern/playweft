@@ -38,6 +38,10 @@ import ErrorToast from "./ErrorToast";
 import Dialog from "./Dialog";
 import GameInfoPanel, { type GameInfoAction } from "./GameInfoPanel";
 import GameFrame, { attachGameBridge } from "./GameFrame";
+import GameWindowDialog, {
+  PLATFORM_WINDOW_CAPABILITIES,
+  useGameWindowDialogs,
+} from "./GameWindowDialog";
 import GameViewport from "./GameViewport";
 import GameHelpDialog from "./GameHelpDialog";
 import InviteDialog from "./InviteDialog";
@@ -60,7 +64,11 @@ import {
   type DiscoveredGame,
   type LoadedGame,
 } from "./game-manifest";
-import { localizeGameName, useI18n } from "./i18n";
+import {
+  localizeGameDescription,
+  localizeGameName,
+  useI18n,
+} from "./i18n";
 import {
   prepareGameOrientation,
   releaseGameFullscreen,
@@ -131,8 +139,12 @@ export default function RoomHost({
   const [changeGameOpen, setChangeGameOpen] = useState(false);
   const [dissolveDialogOpen, setDissolveDialogOpen] = useState(false);
   const gameName = game ? localizeGameName(game, locale) : t("gameRoom");
+  const gameDescription = game
+    ? localizeGameDescription(game, locale)
+    : undefined;
   const gameOrigin = gameUrl ? new URL(gameUrl).origin : undefined;
   const clipboard = useClipboardRead(gameName, gameOrigin);
+  const windowDialogs = useGameWindowDialogs(gameName, gameOrigin);
   useEffect(() => {
     if (game) setIsFavorite(isFavoriteGame(game));
   }, [game]);
@@ -287,11 +299,15 @@ export default function RoomHost({
     let entryComplete = false;
     let joinedPlayerId: string | undefined;
     const clipboardDeclared =
-      loadedGame.game.permissions.includes("clipboard.readText");
+      loadedGame.game.permissions.includes("navigator.clipboard.readText");
     const clipboardReason = manifestPermissionReason(
       loadedGame.manifest,
-      "clipboard.readText",
+      "navigator.clipboard.readText",
     );
+    const capabilities = [
+      ...PLATFORM_WINDOW_CAPABILITIES,
+      ...loadedGame.game.permissions,
+    ];
     let lastPublishedMatchId: string | undefined;
     let lastPublishedVersion = -1;
     let latestSnapshot: RoomSnapshot | undefined;
@@ -488,6 +504,7 @@ export default function RoomHost({
       origin: currentGameOrigin,
       onBeforeConnect() {
         clipboard.cancelPending();
+        windowDialogs.cancelPending();
         rejectLiveActions("BRIDGE_REPLACED", "The game bridge was replaced");
         bridgeConnected = true;
       },
@@ -506,7 +523,7 @@ export default function RoomHost({
               return {
                 mode: "room",
                 protocolVersion: PLAYWEFT_BRIDGE_VERSION,
-                capabilities: loadedGame.game.permissions,
+                capabilities,
                 phase: phaseRef.current,
                 playerId: joinedPlayerId,
                 player: {
@@ -548,7 +565,7 @@ export default function RoomHost({
               return {
                 mode: "room",
                 protocolVersion: PLAYWEFT_BRIDGE_VERSION,
-                capabilities: loadedGame.game.permissions,
+                capabilities,
                 phase: membership.phase,
                 playerId: membership.selfId,
                 player: {
@@ -621,16 +638,22 @@ export default function RoomHost({
             }
           },
         },
-        "clipboard.readText": {
+        "navigator.clipboard.readText": {
           async handle() {
             if (!clipboardDeclared) {
               throw rpcPlatformFault(
                 "PERMISSION_NOT_DECLARED",
-                "The game Manifest does not declare clipboard.readText",
+                "The game Manifest does not declare navigator.clipboard.readText",
               );
             }
             return clipboard.requestReadText(clipboardReason);
           },
+        },
+        "window.alert": {
+          handle: windowDialogs.requestAlert,
+        },
+        "window.confirm": {
+          handle: windowDialogs.requestConfirm,
         },
       },
     });
@@ -645,6 +668,7 @@ export default function RoomHost({
       socket?.close();
       rejectLiveActions("BRIDGE_CLOSED", "The game bridge was closed");
       clipboard.cancelPending();
+      windowDialogs.cancelPending();
       detachBridge();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
@@ -659,6 +683,9 @@ export default function RoomHost({
     roomId,
     clipboard.cancelPending,
     clipboard.requestReadText,
+    windowDialogs.cancelPending,
+    windowDialogs.requestAlert,
+    windowDialogs.requestConfirm,
   ]);
 
   const copyInvite = async () => {
@@ -1138,6 +1165,13 @@ export default function RoomHost({
         onDeny={clipboard.deny}
         onDismissNotice={clipboard.clearNotice}
       />
+      {windowDialogs.dialog && (
+        <GameWindowDialog
+          dialog={windowDialogs.dialog}
+          onConfirm={windowDialogs.confirm}
+          onDismiss={windowDialogs.dismiss}
+        />
+      )}
       {error && (
         <ErrorToast message={error} onDismiss={() => setError(undefined)} />
       )}
@@ -1320,6 +1354,7 @@ export default function RoomHost({
       {gameInfoOpen && gameUrl && game && (
         <GameInfoPanel
           actions={phase === "playing" ? gameInfoActions : undefined}
+          description={gameDescription}
           icon={gameIconHref}
           isFavorite={isFavorite}
           manifestUrl={game.manifestUrl}

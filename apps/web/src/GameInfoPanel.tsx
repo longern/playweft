@@ -11,6 +11,7 @@ export interface GameInfoAction {
 
 interface GameInfoPanelProps {
   actions?: GameInfoAction[];
+  description?: string;
   icon?: string;
   isFavorite?: boolean;
   manifestUrl?: string;
@@ -24,6 +25,7 @@ interface GameInfoPanelProps {
 
 export default function GameInfoPanel({
   actions,
+  description,
   icon,
   isFavorite,
   manifestUrl,
@@ -37,9 +39,16 @@ export default function GameInfoPanel({
   const { t } = useI18n();
   const [closing, setClosing] = useState(false);
   const [gameLinkCopied, setGameLinkCopied] = useState(false);
+  const [urlTooltipVisible, setUrlTooltipVisible] = useState(false);
   const afterClose = useRef<(() => void) | undefined>(undefined);
   const copyResetTimer = useRef<number | undefined>(undefined);
   const dialog = useRef<HTMLDialogElement>(null);
+  let gameSourceHost = url;
+  try {
+    gameSourceHost = new URL(url).host;
+  } catch {
+    // Keep the original value if a caller supplies a non-URL label.
+  }
 
   const close = (after?: () => void) => {
     afterClose.current = after;
@@ -126,56 +135,104 @@ export default function GameInfoPanel({
         <div className="game-info-content">
           <div className="game-info-icon" aria-hidden="true">
             {icon ? (
-              <img src={icon} alt="" referrerPolicy="no-referrer" />
+              <img
+                src={icon}
+                width="64"
+                height="64"
+                alt=""
+                referrerPolicy="no-referrer"
+              />
             ) : (
               <span>{name.slice(0, 2).toUpperCase()}</span>
             )}
           </div>
           <div className="game-info-copy">
             <h3>{name}</h3>
+            <button
+              className="game-info-url"
+              type="button"
+              aria-expanded={urlTooltipVisible}
+              aria-describedby="game-info-url-tooltip"
+              onBlur={() => setUrlTooltipVisible(false)}
+              onClick={() => setUrlTooltipVisible((visible) => !visible)}
+            >
+              <span className="game-info-url-text">{gameSourceHost}</span>
+              <span
+                id="game-info-url-tooltip"
+                className="game-info-url-tooltip"
+                role="tooltip"
+              >
+                <span className="game-info-url-tooltip-label">
+                  {t("gameSource")}
+                </span>
+                <span className="game-info-url-tooltip-value">{url}</span>
+              </span>
+            </button>
           </div>
         </div>
-        <div className="game-info-url">{url}</div>
+        {description && <p className="game-info-description">{description}</p>}
         {(onRefresh || onShowHelp || onToggleFavorite) && (
-          <div className="game-info-quick-actions">
-            {onToggleFavorite && (
-              <button
-                type="button"
-                aria-pressed={isFavorite}
-                onClick={onToggleFavorite}
-              >
-                <Star
-                  aria-hidden="true"
-                  fill={isFavorite ? "currentColor" : "none"}
-                />
-                <span>{t(isFavorite ? "unfavorite" : "favorite")}</span>
-              </button>
-            )}
-            {onRefresh && (
-              <button type="button" onClick={() => close(onRefresh)}>
-                <RefreshCw aria-hidden="true" />
-                <span>{t("refresh")}</span>
-              </button>
-            )}
-            {manifestUrl && (
-              <button type="button" onClick={() => void copyGameLink()}>
-                {gameLinkCopied ? (
-                  <Check aria-hidden="true" />
-                ) : (
-                  <Link2 aria-hidden="true" />
-                )}
-                <span aria-live="polite">
-                  {t(gameLinkCopied ? "gameLinkCopied" : "copyGameLink")}
-                </span>
-              </button>
-            )}
-            {onShowHelp && (
-              <button type="button" onClick={() => close(onShowHelp)}>
-                <CircleHelp aria-hidden="true" />
-                <span>{t("help")}</span>
-              </button>
-            )}
-          </div>
+          <>
+            <hr className="game-info-quick-actions-divider" />
+            <div className="game-info-quick-actions">
+              {onToggleFavorite && (
+                <button
+                  type="button"
+                  aria-pressed={isFavorite}
+                  onClick={onToggleFavorite}
+                >
+                  <span className="game-info-quick-action-icon">
+                    <Star
+                      aria-hidden="true"
+                      fill={isFavorite ? "currentColor" : "none"}
+                    />
+                  </span>
+                  <span className="game-info-quick-action-label">
+                    {t(isFavorite ? "unfavorite" : "favorite")}
+                  </span>
+                </button>
+              )}
+              {onRefresh && (
+                <button type="button" onClick={() => close(onRefresh)}>
+                  <span className="game-info-quick-action-icon">
+                    <RefreshCw aria-hidden="true" />
+                  </span>
+                  <span className="game-info-quick-action-label">
+                    {t("refresh")}
+                  </span>
+                </button>
+              )}
+              {manifestUrl && (
+                <button type="button" onClick={() => void copyGameLink()}>
+                  <span
+                    className={`game-info-quick-action-icon ${gameLinkCopied ? "game-info-quick-action-icon-success" : ""}`}
+                  >
+                    {gameLinkCopied ? (
+                      <Check aria-hidden="true" />
+                    ) : (
+                      <Link2 aria-hidden="true" />
+                    )}
+                  </span>
+                  <span
+                    className="game-info-quick-action-label"
+                    aria-live="polite"
+                  >
+                    {t(gameLinkCopied ? "gameLinkCopied" : "copyGameLink")}
+                  </span>
+                </button>
+              )}
+              {onShowHelp && (
+                <button type="button" onClick={() => close(onShowHelp)}>
+                  <span className="game-info-quick-action-icon">
+                    <CircleHelp aria-hidden="true" />
+                  </span>
+                  <span className="game-info-quick-action-label">
+                    {t("help")}
+                  </span>
+                </button>
+              )}
+            </div>
+          </>
         )}
         {actions && actions.length > 0 && (
           <footer className="game-info-actions">

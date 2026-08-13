@@ -328,9 +328,9 @@ export class GameRoom extends DurableObject<Env> {
         "expected { gameId, gameVersion, serverUrl, runtime, minPlayers, maxPlayers, liveRoom? }",
       );
     }
-    const gameId = validateGameId(input.gameId);
-    const gameVersion = validateGameVersion(input.gameVersion);
     const meta = await this.meta();
+    const gameId = validateGameId(input.gameId, meta.manifestUrl);
+    const gameVersion = validateGameVersion(input.gameVersion);
     const serverUrl = validateServerUrl(input.serverUrl, meta.manifestUrl);
 
     const runtime = input.runtime ?? "lua";
@@ -1637,14 +1637,29 @@ function configFromStoredValues(values: {
   };
 }
 
-function validateGameId(value: string): string {
-  if (
-    value.length > 128 ||
-    !/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/.test(value)
-  ) {
-    throw new RoomHttpError(400, "gameId must be a reverse-domain identifier");
+function validateGameId(value: string, manifestUrl: string): string {
+  let gameId: URL;
+  let manifest: URL;
+  try {
+    gameId = new URL(value);
+    manifest = new URL(manifestUrl);
+  } catch {
+    throw new RoomHttpError(400, "gameId must be an absolute URL");
   }
-  return value;
+  if (
+    value.length > 2_048 ||
+    value.trim() !== value ||
+    gameId.origin !== manifest.origin ||
+    gameId.username.length > 0 ||
+    gameId.password.length > 0
+  ) {
+    throw new RoomHttpError(
+      400,
+      "gameId must use the Manifest origin without credentials",
+    );
+  }
+  gameId.hash = "";
+  return gameId.toString();
 }
 
 function validateGameVersion(value: string): string {

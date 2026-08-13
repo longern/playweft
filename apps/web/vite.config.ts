@@ -1,13 +1,49 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
 const defaultFeaturedGamesPath = fileURLToPath(
   new URL("./featured-games.local.json", import.meta.url),
 );
+const gameManifestSchemaPath = fileURLToPath(
+  new URL(
+    "../../docs/game-integration/game-manifest-v1.schema.json",
+    import.meta.url,
+  ),
+);
+const gameManifestSchemaRoute = "/schemas/game-manifest-v1.json";
+
+function gameManifestSchema(): Plugin {
+  const readSchema = () => readFileSync(gameManifestSchemaPath, "utf8");
+  return {
+    name: "playweft-game-manifest-schema",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const pathname = new URL(
+          request.url ?? "/",
+          "http://localhost",
+        ).pathname;
+        if (pathname !== gameManifestSchemaRoute) return next();
+        response.statusCode = 200;
+        response.setHeader(
+          "Content-Type",
+          "application/schema+json; charset=utf-8",
+        );
+        response.end(readSchema());
+      });
+    },
+    generateBundle() {
+      this.emitFile({
+        type: "asset",
+        fileName: gameManifestSchemaRoute.slice(1),
+        source: readSchema(),
+      });
+    },
+  };
+}
 
 function embeddedFeaturedGameSources(): unknown[] | null {
   const configuredPath = process.env.PLAYWEFT_FEATURED_GAMES_FILE;
@@ -56,6 +92,7 @@ function embeddedFeaturedGameSources(): unknown[] | null {
 export default defineConfig({
   plugins: [
     react(),
+    gameManifestSchema(),
     VitePWA({
       registerType: "prompt",
       injectRegister: false,
