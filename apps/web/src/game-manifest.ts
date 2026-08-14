@@ -7,10 +7,7 @@ import {
   type GameManifestLocalizedText,
   type GameManifestOrientation,
 } from "@playweft/game-protocol";
-import {
-  isGameTranslations,
-  type GameTranslations,
-} from "./i18n";
+import { isGameTranslations, type GameTranslations } from "./i18n";
 
 export type GameMode = "solo" | "room";
 
@@ -30,7 +27,6 @@ export interface DiscoveredGame {
   orientation?: GameManifestOrientation;
   modes: GameMode[];
   liveRoom?: boolean;
-  permissions: string[];
 }
 
 export interface LoadedGame {
@@ -60,9 +56,7 @@ export function manifestUrlFromInput(value: string): string {
   return url.toString();
 }
 
-export async function loadGameManifest(
-  value: string,
-): Promise<LoadedGame> {
+export async function loadGameManifest(value: string): Promise<LoadedGame> {
   const manifestUrl = webUrl(value);
   if (!manifestUrl) {
     throw new Error("Manifest URL must use HTTPS (or localhost HTTP)");
@@ -116,14 +110,9 @@ export async function loadGameManifest(
   };
 }
 
-export function manifestPermissionReason(
-  manifest: GameManifest | undefined,
-  permission: "navigator.clipboard.readText",
-): string | undefined {
-  return manifest?.permissions?.[permission]?.reason;
-}
-
-export function isStoredDiscoveredGame(value: unknown): value is DiscoveredGame {
+export function isStoredDiscoveredGame(
+  value: unknown,
+): value is DiscoveredGame {
   if (!isRecord(value)) return false;
   return (
     typeof value.url === "string" &&
@@ -146,9 +135,7 @@ export function isStoredDiscoveredGame(value: unknown): value is DiscoveredGame 
     (value.liveRoom === undefined || typeof value.liveRoom === "boolean") &&
     Array.isArray(value.modes) &&
     value.modes.length > 0 &&
-    value.modes.every((mode) => mode === "solo" || mode === "room") &&
-    Array.isArray(value.permissions) &&
-    value.permissions.every((permission) => typeof permission === "string")
+    value.modes.every((mode) => mode === "solo" || mode === "room")
   );
 }
 
@@ -223,7 +210,6 @@ function discoveredGame(
     ...(manifest.modes.room?.server.persistence === "live"
       ? { liveRoom: true }
       : {}),
-    permissions: Object.keys(manifest.permissions ?? {}),
   };
 }
 
@@ -244,9 +230,8 @@ function selectGameIcon(
   icons: Array<GameManifestIcon & { src: string }>,
 ): string | undefined {
   return (
-    icons.find((icon) =>
-      (icon.purpose ?? "any").split(" ").includes("any"),
-    ) ?? icons[0]
+    icons.find((icon) => (icon.purpose ?? "any").split(" ").includes("any")) ??
+    icons[0]
   )?.src;
 }
 

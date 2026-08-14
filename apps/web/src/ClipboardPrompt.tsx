@@ -2,8 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { JsonRpcErrorCode } from "@playweft/game-protocol";
 import { RpcFault } from "./json-rpc";
 import { useI18n } from "./i18n";
+import {
+  hasPermissionGrant,
+  rememberPermissionGrant,
+} from "./permission-grants";
 
-const CLIPBOARD_GRANTS_KEY = "playweft:clipboard-read-grants";
 const MAX_CLIPBOARD_BYTES = 64 * 1024;
 const PROMPT_TIMEOUT_MS = 30_000;
 const NOTICE_DURATION_MS = 1_800;
@@ -12,7 +15,6 @@ const MIN_READ_INTERVAL_MS = 1_000;
 interface PromptState {
   gameName: string;
   origin: string;
-  reason?: string;
   reading: boolean;
 }
 
@@ -69,15 +71,18 @@ export function useClipboardRead(
     }, NOTICE_DURATION_MS);
   }, []);
 
-  const finish = useCallback((outcome: { text: string } | { error: RpcFault }) => {
-    const pending = pendingRef.current;
-    if (!pending) return;
-    pendingRef.current = undefined;
-    window.clearTimeout(pending.timeout);
-    setPrompt(undefined);
-    if ("text" in outcome) pending.resolve(outcome.text);
-    else pending.reject(outcome.error);
-  }, []);
+  const finish = useCallback(
+    (outcome: { text: string } | { error: RpcFault }) => {
+      const pending = pendingRef.current;
+      if (!pending) return;
+      pendingRef.current = undefined;
+      window.clearTimeout(pending.timeout);
+      setPrompt(undefined);
+      if ("text" in outcome) pending.resolve(outcome.text);
+      else pending.reject(outcome.error);
+    },
+    [],
+  );
 
   const readClipboard = useCallback(async () => {
     const identity = pendingRef.current?.identity;
@@ -87,7 +92,7 @@ export function useClipboardRead(
         name: identity.gameName,
       }),
     );
-    setPrompt((current) => current ? { ...current, reading: true } : current);
+    setPrompt((current) => (current ? { ...current, reading: true } : current));
     try {
       if (!navigator.clipboard?.readText) {
         throw clipboardFault(
@@ -102,7 +107,7 @@ export function useClipboardRead(
           `Clipboard text exceeds the ${MAX_CLIPBOARD_BYTES}-byte limit`,
         );
       }
-      rememberGrant(identity.manifestId);
+      rememberPermissionGrant(identity.manifestId, "clipboardRead");
       finish({ text });
     } catch (reason) {
       clearNotice();
@@ -111,7 +116,8 @@ export function useClipboardRead(
           reason instanceof RpcFault
             ? reason
             : clipboardFault(
-                reason instanceof DOMException && reason.name === "NotAllowedError"
+                reason instanceof DOMException &&
+                  reason.name === "NotAllowedError"
                   ? "NOT_ALLOWED"
                   : "READ_FAILED",
                 reason instanceof Error
@@ -123,68 +129,72 @@ export function useClipboardRead(
     }
   }, [clearNotice, finish, showNotice]);
 
-  const requestReadText = useCallback((reason?: string): Promise<string> => {
-    if (pendingRef.current) {
-      return Promise.reject(
-        clipboardFault("BUSY", "Another clipboard request is pending", true),
-      );
-    }
-    const retryAfterMs =
-      MIN_READ_INTERVAL_MS - (Date.now() - lastReadAtRef.current);
-    if (retryAfterMs > 0) {
-      return Promise.reject(
-        new RpcFault(
-          JsonRpcErrorCode.PlatformError,
-          "Clipboard reads are rate limited",
-          {
-            code: "RATE_LIMITED",
-            retryable: true,
-            retryAfterMs,
-          },
-        ),
-      );
-    }
-    lastReadAtRef.current = Date.now();
-    const identity = identityRef.current;
-    if (!identity.manifestId || !identity.gameOrigin) {
-      return Promise.reject(
-        clipboardFault("NOT_ALLOWED", "The game identity is unavailable"),
-      );
-    }
-    const requestIdentity: ResolvedGameIdentity = {
-      gameName: identity.gameName,
-      manifestId: identity.manifestId,
-      gameOrigin: identity.gameOrigin,
-    };
-
-    return new Promise<string>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        finish({
-          error: clipboardFault(
-            "REQUEST_EXPIRED",
-            "Clipboard request expired",
-            true,
-          ),
-        });
-      }, PROMPT_TIMEOUT_MS);
-      pendingRef.current = {
-        identity: requestIdentity,
-        resolve,
-        reject,
-        timeout,
-      };
-      if (hasGrant(requestIdentity.manifestId)) {
-        void readClipboard();
-        return;
+  const requestReadText = useCallback(
+    (): Promise<string> => {
+      if (pendingRef.current) {
+        return Promise.reject(
+          clipboardFault("BUSY", "Another clipboard request is pending", true),
+        );
       }
-      setPrompt({
-        gameName: requestIdentity.gameName,
-        origin: requestIdentity.gameOrigin,
-        ...(reason ? { reason } : {}),
-        reading: false,
+      const retryAfterMs =
+        MIN_READ_INTERVAL_MS - (Date.now() - lastReadAtRef.current);
+      if (retryAfterMs > 0) {
+        return Promise.reject(
+          new RpcFault(
+            JsonRpcErrorCode.PlatformError,
+            "Clipboard reads are rate limited",
+            {
+              code: "RATE_LIMITED",
+              retryable: true,
+              retryAfterMs,
+            },
+          ),
+        );
+      }
+      lastReadAtRef.current = Date.now();
+      const identity = identityRef.current;
+      if (!identity.manifestId || !identity.gameOrigin) {
+        return Promise.reject(
+          clipboardFault("NOT_ALLOWED", "The game identity is unavailable"),
+        );
+      }
+      const requestIdentity: ResolvedGameIdentity = {
+        gameName: identity.gameName,
+        manifestId: identity.manifestId,
+        gameOrigin: identity.gameOrigin,
+      };
+
+      return new Promise<string>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          finish({
+            error: clipboardFault(
+              "REQUEST_EXPIRED",
+              "Clipboard request expired",
+              true,
+            ),
+          });
+        }, PROMPT_TIMEOUT_MS);
+        pendingRef.current = {
+          identity: requestIdentity,
+          resolve,
+          reject,
+          timeout,
+        };
+        if (
+          hasPermissionGrant(requestIdentity.manifestId, "clipboardRead")
+        ) {
+          void readClipboard();
+          return;
+        }
+        setPrompt({
+          gameName: requestIdentity.gameName,
+          origin: requestIdentity.gameOrigin,
+          reading: false,
+        });
       });
-    });
-  }, [finish, readClipboard]);
+    },
+    [finish, readClipboard],
+  );
 
   const deny = useCallback(() => {
     finish({
@@ -264,22 +274,18 @@ export function ClipboardPrompt({
 
   return (
     <section
-      className="clipboard-prompt"
+      className="permission-prompt"
       role="alertdialog"
       aria-labelledby="clipboard-prompt-title"
-      aria-describedby={prompt.reason ? "clipboard-prompt-reason" : undefined}
     >
       <div>
         <strong id="clipboard-prompt-title">
           {t("clipboardReadRequest", { name: prompt.gameName })}
         </strong>
         <span>{prompt.origin}</span>
-        {prompt.reason && (
-          <p id="clipboard-prompt-reason">{prompt.reason}</p>
-        )}
         <small>{t("clipboardGrantRemembered")}</small>
       </div>
-      <div className="clipboard-prompt-actions">
+      <div className="permission-prompt-actions">
         <button
           type="button"
           autoFocus
@@ -310,32 +316,4 @@ function clipboardFault(
     code,
     retryable,
   });
-}
-
-function hasGrant(manifestId: string): boolean {
-  return readGrants().includes(manifestId);
-}
-
-function rememberGrant(manifestId: string): void {
-  const grants = new Set(readGrants());
-  grants.add(manifestId);
-  try {
-    localStorage.setItem(
-      CLIPBOARD_GRANTS_KEY,
-      JSON.stringify([...grants].slice(-128)),
-    );
-  } catch {
-    // The browser may disable local storage. The current read still succeeds.
-  }
-}
-
-function readGrants(): string[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(CLIPBOARD_GRANTS_KEY) ?? "[]");
-    return Array.isArray(value)
-      ? value.filter((item): item is string => typeof item === "string")
-      : [];
-  } catch {
-    return [];
-  }
 }

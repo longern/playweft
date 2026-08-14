@@ -56,11 +56,17 @@ export interface RoomLaunch {
 
 export interface PlatformSessionStatus {
   authenticated: boolean;
+  accountKey?: string;
   accountName?: string;
   avatarUrl?: string;
   name?: string;
   provider?: "guest" | "x";
   username?: string;
+}
+
+export interface IssuedProfileAvatar {
+  src: string | null;
+  expiresAt?: number;
 }
 
 export function initializeRoom(
@@ -121,6 +127,21 @@ export function setPlayerReady(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ready }),
   }).then(responseJson<RoomLobby>);
+}
+
+export function setRoomProfileAvatarSharing(
+  roomId: string,
+  shared: boolean,
+): Promise<RoomLobby> {
+  return fetch(
+    endpoint(`/api/rooms/${encodeURIComponent(roomId)}/profile-avatar`),
+    {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ shared }),
+    },
+  ).then(responseJson<RoomLobby>);
 }
 
 export function kickPlayer(
@@ -213,6 +234,17 @@ export function getPlatformSession(): Promise<PlatformSessionStatus> {
   }).then(responseJson<PlatformSessionStatus>);
 }
 
+export function issueProfileAvatar(
+  manifestId: string,
+): Promise<IssuedProfileAvatar> {
+  return fetch(endpoint("/api/platform/profile/avatar"), {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ manifestId }),
+  }).then(responseJson<IssuedProfileAvatar>);
+}
+
 export function xLoginUrl(): string {
   const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const url = endpoint("/api/auth/x/start");
@@ -251,4 +283,44 @@ export function connectRoom(roomId: string): WebSocket {
   const url = endpoint(`/api/rooms/${encodeURIComponent(roomId)}/connect`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return new WebSocket(url);
+}
+
+export function resolveRoomAvatarUrl(value: string): string | undefined {
+  try {
+    const platform = endpoint("/");
+    const url = new URL(value, platform);
+    if (
+      url.origin !== platform.origin ||
+      !/^\/api\/rooms\/[a-zA-Z0-9_-]{1,128}\/avatars\/[a-zA-Z0-9_-]{32}$/.test(
+        url.pathname,
+      ) ||
+      url.search ||
+      url.hash
+    ) {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveProfileAvatarUrl(value: string): string | undefined {
+  try {
+    const platform = endpoint("/");
+    const url = new URL(value, platform);
+    if (
+      url.origin !== platform.origin ||
+      !/^\/api\/platform\/profile\/avatar\/v1\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+$/.test(
+        url.pathname,
+      ) ||
+      url.search ||
+      url.hash
+    ) {
+      return undefined;
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
 }

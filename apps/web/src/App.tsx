@@ -7,7 +7,12 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { ChevronRight } from "lucide-react";
-import { createGuestSession, createRoom } from "./platform-api";
+import { JsonRpcErrorCode } from "@playweft/game-protocol";
+import {
+  createGuestSession,
+  createRoom,
+  getPlatformSession,
+} from "./platform-api";
 import RoomHost from "./RoomHost";
 import { useFeaturedGames, type FeaturedGame } from "./featured-games";
 import Dialog from "./Dialog";
@@ -26,17 +31,25 @@ import UpdateToast from "./UpdateToast";
 import { gameLaunchPath } from "./game-launch-link";
 import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
 import {
+  UserProfilePrompt,
+  userProfileFieldsFromRpcParams,
+  useUserProfileAccess,
+} from "./UserProfilePrompt";
+import {
   isFavoriteGame,
   persistFavoriteGames,
   readFavoriteGames,
   toggleFavoriteGame,
 } from "./favorite-games";
-import { PLAYWEFT_BRIDGE_VERSION, rpcPlatformFault } from "./json-rpc";
+import {
+  PLAYWEFT_BRIDGE_VERSION,
+  RpcFault,
+  rpcPlatformFault,
+} from "./json-rpc";
 import {
   isStoredDiscoveredGame,
   loadGameManifest,
   manifestUrlFromInput,
-  manifestPermissionReason,
   type LoadedGame,
   type DiscoveredGame as RecentGame,
   type GameMode,
@@ -48,7 +61,12 @@ import {
   useI18n,
   type Translator,
 } from "./i18n";
-import { persistPlayerNickname, readPlayerNickname } from "./player-profile";
+import {
+  persistAccountPlayerNickname,
+  persistGuestPlayerNickname,
+  readAccountPlayerNickname,
+  readGuestPlayerNickname,
+} from "./player-profile";
 import { prepareGameOrientation, useGameViewport } from "./use-game-viewport";
 import { usePwaUpdate } from "./use-pwa-update";
 
@@ -73,7 +91,8 @@ export default function App() {
   const [settledRoomId, setSettledRoomId] = useState<string>();
   const [soloGame, setSoloGame] = useState<RecentGame>();
   const [soloClosing, setSoloClosing] = useState(false);
-  const [nickname, setNickname] = useState(readPlayerNickname);
+  const [nickname, setNickname] = useState(readGuestPlayerNickname);
+  const accountKeyRef = useRef<string | undefined>(undefined);
   const entryGeneration = useRef(0);
   const handledExternalGameUrl = useRef<string | undefined>(undefined);
   const soloGameRef = useRef<RecentGame | undefined>(undefined);
@@ -104,6 +123,30 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void getPlatformSession()
+      .then((session) => {
+        if (cancelled) return;
+        if (session.provider === "x" && session.accountKey) {
+          accountKeyRef.current = session.accountKey;
+          setNickname(
+            readAccountPlayerNickname(
+              session.accountKey,
+              session.name ?? session.accountName,
+            ),
+          );
+          return;
+        }
+        accountKeyRef.current = undefined;
+        setNickname(readGuestPlayerNickname());
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const navigate = useCallback((nextPath: string) => {
     window.history.pushState({}, "", nextPath);
     setLocation(readAppLocation());
@@ -126,7 +169,12 @@ export default function App() {
     return true;
   }, []);
   const changeNickname = useCallback((value: string) => {
-    setNickname(persistPlayerNickname(value));
+    const accountKey = accountKeyRef.current;
+    setNickname(
+      accountKey
+        ? persistAccountPlayerNickname(accountKey, value)
+        : persistGuestPlayerNickname(value),
+    );
   }, []);
   const roomId = /^\/r\/([a-zA-Z0-9_-]{1,128})$/.exec(path)?.[1];
 
@@ -681,6 +729,12 @@ function SoloHost({
     currentGame.manifestId,
     gameOrigin,
   );
+  const userProfile = useUserProfileAccess(
+    gameName,
+    gameOrigin,
+    currentGame.manifestId,
+    nickname,
+  );
   const windowDialogs = useGameWindowDialogs(gameName, gameOrigin);
   const gameViewport = useGameViewport(true, currentGame);
 
@@ -719,21 +773,19 @@ function SoloHost({
 
   useEffect(() => {
     if (!loaded) return;
-    const clipboardDeclared =
-      loaded.game.permissions.includes("navigator.clipboard.readText");
-    const clipboardReason = manifestPermissionReason(
-      loaded.manifest,
-      "navigator.clipboard.readText",
-    );
     const capabilities = [
-      ...PLATFORM_WINDOW_CAPABILITIES,
-      ...loaded.game.permissions,
+      ...new Set([
+        ...PLATFORM_WINDOW_CAPABILITIES,
+        "user.getProfile",
+        "navigator.clipboard.readText",
+      ]),
     ];
     const detachBridge = attachGameBridge({
       frame: iframe,
       origin: gameOrigin,
       onBeforeConnect() {
         clipboard.cancelPending();
+        userProfile.cancelPending();
         windowDialogs.cancelPending();
       },
       handlers: {
@@ -765,13 +817,27 @@ function SoloHost({
         },
         "navigator.clipboard.readText": {
           handle() {
-            if (!clipboardDeclared) {
-              throw rpcPlatformFault(
-                "PERMISSION_NOT_DECLARED",
-                "The game Manifest does not declare navigator.clipboard.readText",
+            return clipboard.requestReadText();
+          },
+        },
+        "room.players.getProfile": {
+          handle() {
+            throw rpcPlatformFault(
+              "ROOM_UNAVAILABLE_IN_SOLO_MODE",
+              "Room player profiles are unavailable in solo mode",
+            );
+          },
+        },
+        "user.getProfile": {
+          handle(params) {
+            const fields = userProfileFieldsFromRpcParams(params);
+            if (!fields) {
+              throw new RpcFault(
+                JsonRpcErrorCode.InvalidParams,
+                "user.getProfile expects { fields: ['name' | 'avatar', ...] }",
               );
             }
-            return clipboard.requestReadText(clipboardReason);
+            return userProfile.requestProfile(fields);
           },
         },
         "window.alert": {
@@ -784,6 +850,7 @@ function SoloHost({
     });
     return () => {
       clipboard.cancelPending();
+      userProfile.cancelPending();
       windowDialogs.cancelPending();
       detachBridge();
     };
@@ -792,6 +859,8 @@ function SoloHost({
     clipboard.requestReadText,
     gameOrigin,
     loaded,
+    userProfile.cancelPending,
+    userProfile.requestProfile,
     windowDialogs.cancelPending,
     windowDialogs.requestAlert,
     windowDialogs.requestConfirm,
@@ -862,6 +931,11 @@ function SoloHost({
         onAllow={() => void clipboard.allow()}
         onDeny={clipboard.deny}
         onDismissNotice={clipboard.clearNotice}
+      />
+      <UserProfilePrompt
+        prompt={userProfile.prompt}
+        onAllow={userProfile.allow}
+        onDeny={userProfile.deny}
       />
       {windowDialogs.dialog && (
         <GameWindowDialog

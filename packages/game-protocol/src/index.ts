@@ -93,6 +93,8 @@ export interface GameManifestRoomMode {
   };
 }
 
+export type UserProfileField = "name" | "avatar";
+
 export interface GameManifest {
   $schema?: string;
   manifest_version: typeof GAME_MANIFEST_VERSION;
@@ -117,11 +119,6 @@ export interface GameManifest {
     solo?: Record<string, never>;
     room?: GameManifestRoomMode;
   };
-  permissions?: {
-    "navigator.clipboard.readText"?: {
-      reason?: string;
-    };
-  };
 }
 
 export class GameManifestValidationError extends Error {
@@ -134,30 +131,6 @@ export class GameManifestValidationError extends Error {
 export function parseGameManifest(value: unknown): GameManifest {
   if (!isRecord(value)) failManifest("manifest must be an object");
   const manifest = value as Record<string, unknown>;
-  assertManifestKeys(
-    manifest,
-    [
-      "$schema",
-      "manifest_version",
-      "id",
-      "version",
-      "protocol",
-      "start_url",
-      "name",
-      "name_localized",
-      "description",
-      "description_localized",
-      "categories",
-      "icons",
-      "background_color",
-      "theme_color",
-      "orientation",
-      "help_url",
-      "modes",
-      "permissions",
-    ],
-    "manifest",
-  );
   if (manifest.manifest_version !== GAME_MANIFEST_VERSION) {
     failManifest(`manifest_version must be ${GAME_MANIFEST_VERSION}`);
   }
@@ -189,7 +162,6 @@ export function parseGameManifest(value: unknown): GameManifest {
 
   const metadata = parseManifestMetadata(manifest);
   const modes = parseManifestModes(manifest.modes);
-  const permissions = parseManifestPermissions(manifest.permissions);
   if (manifest.$schema !== undefined && typeof manifest.$schema !== "string") {
     failManifest("$schema must be a string");
   }
@@ -207,7 +179,6 @@ export function parseGameManifest(value: unknown): GameManifest {
     start_url: manifest.start_url as string,
     ...metadata,
     modes,
-    ...(permissions ? { permissions } : {}),
   };
 }
 
@@ -456,38 +427,6 @@ function parseManifestModes(value: unknown): GameManifest["modes"] {
   };
 }
 
-function parseManifestPermissions(
-  value: unknown,
-): GameManifest["permissions"] | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) failManifest("permissions must be an object");
-  const permissions = value as Record<string, unknown>;
-  for (const key of Object.keys(permissions)) {
-    if (key !== "navigator.clipboard.readText") {
-      failManifest(`unsupported permission: ${key}`);
-    }
-  }
-  if (permissions["navigator.clipboard.readText"] === undefined) return {};
-  const clipboard = permissions["navigator.clipboard.readText"];
-  if (!isRecord(clipboard)) {
-    failManifest("permissions.navigator.clipboard.readText must be an object");
-  }
-  assertManifestKeys(
-    clipboard,
-    ["reason"],
-    "permissions.navigator.clipboard.readText",
-  );
-  const reason = (clipboard as Record<string, unknown>).reason;
-  if (reason !== undefined && !isTrimmedText(reason, 1, 160)) {
-    failManifest("clipboard permission reason must contain 1-160 characters");
-  }
-  return {
-    "navigator.clipboard.readText": {
-      ...(typeof reason === "string" ? { reason } : {}),
-    },
-  };
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -694,6 +633,8 @@ export interface RoomPlayer {
   id: string;
   /** Optional platform display name. Omit it when the player is anonymous. */
   name?: string;
+  /** Room-scoped proxy URL. It stops resolving when this membership ends. */
+  avatarUrl?: string;
   /** One-based position in the room. Positions remain empty when a player spectates. */
   seat: number;
   ready: boolean;
@@ -703,7 +644,7 @@ export interface RoomSpectator {
   id: string;
   /** Optional platform display name. Omit it when the spectator is anonymous. */
   name?: string;
-  /** Optional platform avatar URL reserved for spectator list presentation. */
+  /** Room-scoped proxy URL. It stops resolving when this membership ends. */
   avatarUrl?: string;
 }
 

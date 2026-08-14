@@ -89,11 +89,6 @@ JSON Schema is
         "persistence": "durable"
       }
     }
-  },
-  "permissions": {
-    "navigator.clipboard.readText": {
-      "reason": "Import a saved game configuration"
-    }
   }
 }
 ```
@@ -107,6 +102,8 @@ Key rules:
   limits and persistence mode when a room initializes.
 - `protocol.min/max` is the range of Playweft bridge versions the package
   supports. The current version is `1`.
+- Unknown top-level members are ignored. This keeps the format extensible;
+  nested members of known objects are still validated strictly.
 - `start_url`, `icons[].src`, `help_url` and the Lua `server.entry`
   resolve relative to the Manifest URL and must remain on its origin.
 - `name`, `description`, `categories`, `icons`, `background_color`,
@@ -200,6 +197,8 @@ the platform has already loaded the package contract. Its result is:
     "window.alert",
     "window.confirm",
     "navigator.clipboard.readText",
+    "room.players.getProfile",
+    "user.getProfile",
   ],
   // room only:
   phase: "lobby" | "playing",
@@ -262,10 +261,11 @@ JSON-RPC failures use standard `-32600` through `-32603` codes. Platform
 failures use `-32000` with a stable string code and retry hint in `error.data`.
 A game-rule rejection is a successful RPC result with `accepted: false`.
 
-## 5. Use declared permissions
+## 5. Request protected features at runtime
 
-The iframe is explicitly denied direct Async Clipboard access. A game that
-declares `permissions["navigator.clipboard.readText"]` may call:
+The Game Manifest does not declare permissions. The iframe is explicitly
+denied direct Async Clipboard access, so a game requests clipboard text only
+when it needs it by calling:
 
 ```js
 const playweft = {
@@ -281,14 +281,138 @@ const playweft = {
 const text = await playweft.navigator.clipboard.readText();
 ```
 
-The Manifest `reason` is displayed in the platform-controlled permission UI.
-The first approval is remembered per game origin. Later reads skip the custom
-approval prompt but still show a short top-level notice. Browser-native
-clipboard UI may still appear.
+The platform shows fixed permission UI identifying the game and provider. A
+game should explain why it needs clipboard access in its own UI before making
+the call. The first approval is remembered per Manifest `id`. Later reads skip
+the custom approval prompt but still show a short top-level notice.
+Browser-native clipboard UI may still appear.
 
 The result is limited to 64 KiB. Stable failure codes include `USER_DENIED`,
 `REQUEST_EXPIRED`, `NOT_SUPPORTED`, `NOT_ALLOWED`, `TOO_LARGE`, `BUSY`,
-`RATE_LIMITED`, `READ_FAILED` and `PERMISSION_NOT_DECLARED`.
+`RATE_LIMITED` and `READ_FAILED`.
+
+### Room player profiles
+
+A room game may request the game nickname of a player or spectator whose
+room-scoped actor ID it already knows. The optional avatar is requested at
+runtime through the same call:
+
+```js
+const playweft = {
+  room: {
+    players: {
+      getProfile({ playerId, fields }) {
+        return rpcCall("room.players.getProfile", { playerId, fields });
+      },
+    },
+  },
+};
+
+const profile = await playweft.room.players.getProfile({
+  playerId,
+  fields: ["name", "avatar"],
+});
+if (profile.avatar) {
+  const image = document.createElement("img");
+  image.src = profile.avatar.src;
+  image.alt = "";
+  playerElement.append(image);
+}
+```
+
+The result has the same shape as `user.getProfile`: requested available fields
+are returned, while an avatar that has not been shared is omitted. The `name`
+field is the room member's game nickname and needs no permission. When a
+game requests the current player's avatar for the first time, the platform
+asks that player whether the game may access it. In a room, approval also
+publishes an opaque, temporary room avatar for that player. Approval is
+remembered per Manifest `id`; subsequent rooms for the same game do not prompt
+again. Players without an account avatar are not prompted.
+
+The game does not ask a viewer to authorize access to somebody else's avatar.
+It can only receive avatars that their owners have already shared. `src` is an
+opaque, room-scoped Playweft proxy URL; it never reveals the account provider's
+image URL. Load it directly in an `img` without setting `crossOrigin`.
+
+The proxy sends no CORS permission and accepts browser image loads only. Games
+can display the image but cannot read its response or draw readable pixels
+from it through Canvas. The URL is uncacheable and stops resolving when the
+member leaves, the room changes game, the room is dissolved, or the room
+expires. Stable failure codes include `PLAYER_NOT_FOUND`,
+`AVATAR_UNAVAILABLE` and `PROFILE_SHARE_FAILED`.
+
+When a room member's requested profile data may have changed, the platform
+sends a `room.players.profileChanged` notification:
+
+```js
+onNotification("room.players.profileChanged", ({ playerId, fields }) => {
+  // Invalidate only these fields, then request the current profile again.
+  void playweft.room.players.getProfile({ playerId, fields });
+});
+```
+
+The notification contains no profile values or avatar URL. A game should
+invalidate its cached fields and call `room.players.getProfile` again. This
+also covers avatars being shared or withdrawn and room members joining or
+leaving.
+
+### Current player's profile
+
+The platform supplies the player's game nickname as `player.name` from
+`game.initialize`. This is a user-selected or randomly generated gaming alias,
+not the display name or username of a linked account. Games do not request a
+separate nickname permission. Both solo and room games use the same API:
+
+```js
+const playweft = {
+  user: {
+    getProfile({ fields }) {
+      return rpcCall("user.getProfile", { fields });
+    },
+  },
+};
+
+const namedProfile = await playweft.user.getProfile({ fields: ["name"] });
+console.log(namedProfile.name);
+```
+
+A game requests the current player's optional game avatar only when it needs
+it:
+
+```js
+
+const profile = await playweft.user.getProfile({ fields: ["avatar"] });
+if (profile.avatar) {
+  const image = document.createElement("img");
+  image.src = profile.avatar.src;
+  image.alt = "";
+  document.body.append(image);
+}
+```
+
+Fields can be combined. Only the avatar portion is permission-gated:
+
+```js
+const profile = await playweft.user.getProfile({
+  fields: ["name", "avatar"],
+});
+```
+
+The avatar-only result is `{ avatar: { src } }`, or `{}` when the player has no
+account avatar. A combined request still returns `{ name }` when no avatar is
+available. Avatar approval is remembered per Manifest `id`. `src` is a
+Playweft proxy URL containing a ten-minute encrypted token; it does not expose
+the account provider or upstream avatar URL. The response is uncacheable,
+grants no CORS access and should only be loaded directly into an `img`. Call
+`user.getProfile` again after the URL expires. Stable failure codes include
+`USER_DENIED`, `REQUEST_EXPIRED`, `PROFILE_UNAVAILABLE`,
+`AVATAR_UNAVAILABLE`, `BUSY` and `REQUEST_CANCELLED`.
+
+Avatar approval is shared across modes. A grant obtained here also lets the
+same Manifest publish the player's avatar after an avatar API is called in a
+room; a grant obtained through the current player's room profile also skips
+this prompt. `game.initialize.capabilities` reports which RPC methods the
+current mode supports; it does not report or grant user permissions.
 
 ## 6. Use platform window dialogs
 
@@ -443,8 +567,10 @@ WebSocket snapshot and WebSocket update. Inputs are copies, so mutations in
 - Do not implement authentication, room host authority, kicking, readiness,
   seating or game start inside the iframe.
 - Do not treat `playerId` as a long-lived identity.
-- Do not call `navigator.clipboard.readText()` directly; declare and use the
-  platform RPC.
+- Do not call `navigator.clipboard.readText()` directly; request it through the
+  platform RPC when the feature is needed.
+- Do not fetch room avatar proxy URLs. Request a room player profile, then use
+  the returned URL only as an image source.
 - Do not call native `window.alert()` or `window.confirm()` inside the
   sandbox; await `playweft.window.alert()` or `playweft.window.confirm()`.
 

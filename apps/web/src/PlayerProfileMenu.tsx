@@ -64,8 +64,10 @@ export default function PlayerProfileMenu({
     <img
       src={avatarUrl}
       alt=""
+      height={36}
       referrerPolicy="no-referrer"
       onError={() => setAvatarFailed(true)}
+      width={36}
     />
   ) : (
     <CircleUserRound aria-hidden="true" />

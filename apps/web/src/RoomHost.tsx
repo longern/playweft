@@ -12,6 +12,7 @@ import {
   JsonRpcErrorCode,
   isJson,
   type JsonValue,
+  type UserProfileField,
 } from "@playweft/game-protocol";
 import {
   connectRoom,
@@ -24,6 +25,7 @@ import {
   kickPlayer,
   leaveRoom,
   setPlayerReady,
+  setRoomProfileAvatarSharing,
   setRoomSeat,
   sendAction,
   startRoom,
@@ -50,6 +52,12 @@ import PlayerProfileMenu from "./PlayerProfileMenu";
 import RoomIdCopy from "./RoomIdCopy";
 import ChangeGameDialog from "./ChangeGameDialog";
 import { ClipboardPrompt, useClipboardRead } from "./ClipboardPrompt";
+import { useRoomPlayerProfileAccess } from "./RoomPlayerProfile";
+import {
+  UserProfilePrompt,
+  userProfileFieldsFromRpcParams,
+  useUserProfileAccess,
+} from "./UserProfilePrompt";
 import { isFavoriteGame, toggleFavoriteGame } from "./favorite-games";
 import {
   PLAYWEFT_BRIDGE_VERSION,
@@ -60,7 +68,6 @@ import {
 import {
   loadGameManifest,
   manifestUrlFromInput,
-  manifestPermissionReason,
   type DiscoveredGame,
   type LoadedGame,
 } from "./game-manifest";
@@ -104,6 +111,9 @@ export default function RoomHost({
   tRef.current = t;
   const iframe = useRef<HTMLIFrameElement>(null);
   const bridgePort = useRef<MessagePort | undefined>(undefined);
+  const roomProfileSnapshot = useRef<
+    Map<string, { name?: string; avatarUrl?: string }> | undefined
+  >(undefined);
   const phaseRef = useRef<"lobby" | "playing">("lobby");
   const nicknameRef = useRef(nickname);
   const syncedNickname = useRef<string | undefined>(undefined);
@@ -144,6 +154,13 @@ export default function RoomHost({
     : undefined;
   const gameOrigin = gameUrl ? new URL(gameUrl).origin : undefined;
   const clipboard = useClipboardRead(gameName, game?.manifestId, gameOrigin);
+  const roomPlayerProfiles = useRoomPlayerProfileAccess(lobby);
+  const userProfile = useUserProfileAccess(
+    gameName,
+    gameOrigin,
+    game?.manifestId,
+    nickname,
+  );
   const windowDialogs = useGameWindowDialogs(gameName, gameOrigin);
   useEffect(() => {
     if (game) setIsFavorite(isFavoriteGame(game));
@@ -166,6 +183,48 @@ export default function RoomHost({
     `player-grid-mobile-cols-${mobilePlayerGridColumns}`,
     `player-grid-${playerGridDensity}`,
   ].join(" ");
+
+  useEffect(() => {
+    if (!lobby) {
+      roomProfileSnapshot.current = undefined;
+      return;
+    }
+    const nextSnapshot = new Map(
+      [...lobby.players, ...lobby.spectators].map((member) => [
+        member.id,
+        {
+          ...(member.name ? { name: member.name } : {}),
+          ...(member.avatarUrl ? { avatarUrl: member.avatarUrl } : {}),
+        },
+      ]),
+    );
+    const previousSnapshot = roomProfileSnapshot.current;
+    roomProfileSnapshot.current = nextSnapshot;
+    if (!previousSnapshot) return;
+
+    const playerIds = new Set([
+      ...previousSnapshot.keys(),
+      ...nextSnapshot.keys(),
+    ]);
+    for (const playerId of playerIds) {
+      const previous = previousSnapshot.get(playerId);
+      const next = nextSnapshot.get(playerId);
+      const fields: UserProfileField[] = [];
+      if (!previous || !next || previous.name !== next.name) {
+        fields.push("name");
+      }
+      if (!previous || !next || previous.avatarUrl !== next.avatarUrl) {
+        fields.push("avatar");
+      }
+      if (fields.length > 0) {
+        postRpcNotification(
+          bridgePort.current,
+          "room.players.profileChanged",
+          { playerId, fields },
+        );
+      }
+    }
+  }, [lobby]);
   const firstOpenSeat = lobby
     ? Array.from({ length: lobby.maxPlayers }, (_, index) => index + 1).find(
         (seat) => !lobby.players.some((player) => player.seat === seat),
@@ -298,15 +357,13 @@ export default function RoomHost({
     let membershipReady = false;
     let entryComplete = false;
     let joinedPlayerId: string | undefined;
-    const clipboardDeclared =
-      loadedGame.game.permissions.includes("navigator.clipboard.readText");
-    const clipboardReason = manifestPermissionReason(
-      loadedGame.manifest,
-      "navigator.clipboard.readText",
-    );
     const capabilities = [
-      ...PLATFORM_WINDOW_CAPABILITIES,
-      ...loadedGame.game.permissions,
+      ...new Set([
+        ...PLATFORM_WINDOW_CAPABILITIES,
+        "user.getProfile",
+        "navigator.clipboard.readText",
+        "room.players.getProfile",
+      ]),
     ];
     let lastPublishedMatchId: string | undefined;
     let lastPublishedVersion = -1;
@@ -504,6 +561,7 @@ export default function RoomHost({
       origin: currentGameOrigin,
       onBeforeConnect() {
         clipboard.cancelPending();
+        userProfile.cancelPending();
         windowDialogs.cancelPending();
         rejectLiveActions("BRIDGE_REPLACED", "The game bridge was replaced");
         bridgeConnected = true;
@@ -640,13 +698,75 @@ export default function RoomHost({
         },
         "navigator.clipboard.readText": {
           async handle() {
-            if (!clipboardDeclared) {
-              throw rpcPlatformFault(
-                "PERMISSION_NOT_DECLARED",
-                "The game Manifest does not declare navigator.clipboard.readText",
+            return clipboard.requestReadText();
+          },
+        },
+        "room.players.getProfile": {
+          async handle(params) {
+            const request = roomPlayerProfileRequestFromRpcParams(params);
+            if (!request) {
+              throw new RpcFault(
+                JsonRpcErrorCode.InvalidParams,
+                "room.players.getProfile expects { playerId, fields: ['name' | 'avatar', ...] }",
               );
             }
-            return clipboard.requestReadText(clipboardReason);
+            if (
+              request.fields.includes("avatar") &&
+              request.playerId === joinedPlayerId
+            ) {
+              const ownProfile = await userProfile.requestProfile(
+                request.fields,
+              );
+              let nextLobby: RoomLobby;
+              try {
+                nextLobby = await setRoomProfileAvatarSharing(
+                  roomId,
+                  ownProfile.avatar !== undefined,
+                );
+              } catch (reason) {
+                throw rpcPlatformFault(
+                  "PROFILE_SHARE_FAILED",
+                  message(reason, tRef.current("unexpectedError")),
+                );
+              }
+              setLobby(nextLobby);
+              return roomPlayerProfiles.requestProfile(
+                request.playerId,
+                request.fields,
+                nextLobby,
+              );
+            }
+            return roomPlayerProfiles.requestProfile(
+              request.playerId,
+              request.fields,
+            );
+          },
+        },
+        "user.getProfile": {
+          async handle(params) {
+            const fields = userProfileFieldsFromRpcParams(params);
+            if (!fields) {
+              throw new RpcFault(
+                JsonRpcErrorCode.InvalidParams,
+                "user.getProfile expects { fields: ['name' | 'avatar', ...] }",
+              );
+            }
+            const profile = await userProfile.requestProfile(fields);
+            if (fields.includes("avatar")) {
+              try {
+                const nextLobby = await setRoomProfileAvatarSharing(
+                  roomId,
+                  profile.avatar !== undefined,
+                );
+                setLobby(nextLobby);
+              } catch (reason) {
+                throw rpcPlatformFault(
+                  "PROFILE_SHARE_FAILED",
+                  message(reason, tRef.current("unexpectedError")),
+                );
+              }
+            }
+            return profile;
           },
         },
         "window.alert": {
@@ -668,6 +788,7 @@ export default function RoomHost({
       socket?.close();
       rejectLiveActions("BRIDGE_CLOSED", "The game bridge was closed");
       clipboard.cancelPending();
+      userProfile.cancelPending();
       windowDialogs.cancelPending();
       detachBridge();
       document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -683,6 +804,9 @@ export default function RoomHost({
     roomId,
     clipboard.cancelPending,
     clipboard.requestReadText,
+    roomPlayerProfiles.requestProfile,
+    userProfile.cancelPending,
+    userProfile.requestProfile,
     windowDialogs.cancelPending,
     windowDialogs.requestAlert,
     windowDialogs.requestConfirm,
@@ -997,7 +1121,15 @@ export default function RoomHost({
                           className={`player-avatar avatar-${(seat - 1) % 4} ${isSelf ? "player-avatar-self" : ""}`}
                           title={isSelf ? t("you") : undefined}
                         >
-                          P{seat}
+                          {player.avatarUrl ? (
+                            <img
+                              src={player.avatarUrl}
+                              alt=""
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <>P{seat}</>
+                          )}
                           {!isHost && (
                             <span
                               className={`player-ready-marker ${player.ready ? "player-ready-marker-ready" : "player-ready-marker-pending"}`}
@@ -1164,6 +1296,11 @@ export default function RoomHost({
         onAllow={() => void clipboard.allow()}
         onDeny={clipboard.deny}
         onDismissNotice={clipboard.clearNotice}
+      />
+      <UserProfilePrompt
+        prompt={userProfile.prompt}
+        onAllow={userProfile.allow}
+        onDeny={userProfile.deny}
       />
       {windowDialogs.dialog && (
         <GameWindowDialog
@@ -1426,6 +1563,33 @@ function actionFromRpcParams(params: JsonValue | undefined): JsonValue {
     );
   }
   return params.action;
+}
+
+function roomPlayerProfileRequestFromRpcParams(
+  params: JsonValue | undefined,
+): { playerId: string; fields: UserProfileField[] } | undefined {
+  if (
+    params === null ||
+    typeof params !== "object" ||
+    Array.isArray(params) ||
+    Object.keys(params).length !== 2 ||
+    typeof params.playerId !== "string" ||
+    params.playerId.length === 0 ||
+    params.playerId.length > 64 ||
+    !Array.isArray(params.fields) ||
+    params.fields.length === 0 ||
+    params.fields.length > 2 ||
+    params.fields.some(
+      (field) => field !== "name" && field !== "avatar",
+    ) ||
+    new Set(params.fields).size !== params.fields.length
+  ) {
+    return undefined;
+  }
+  return {
+    playerId: params.playerId,
+    fields: params.fields as UserProfileField[],
+  };
 }
 
 function actionResultForRpc(result: RoomActionResult): JsonValue {

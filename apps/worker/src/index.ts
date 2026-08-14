@@ -11,9 +11,12 @@ import {
 } from "./platform-session";
 import { generateRoomId, roomIdMaxAttempts } from "./room-id";
 import { finishXOAuth, startXOAuth } from "./x-oauth";
+import { issueProfileAvatar, serveProfileAvatar } from "./profile-avatar";
 
 const PLAYER_ID_HEADER = "X-Playweft-Player-Id";
 const PLAYER_NAME_HEADER = "X-Playweft-Player-Name";
+const PLAYER_AVATAR_HEADER = "X-Playweft-Player-Avatar";
+const ROOM_ID_HEADER = "X-Playweft-Room-Id";
 
 export { GameRoom };
 export type { Env };
@@ -30,6 +33,12 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/api/platform/logout") {
         return clearPlatformSession(request);
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/platform/profile/avatar"
+      ) {
+        return issueProfileAvatar(request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/auth/x/start") {
         return startXOAuth(request, env);
@@ -50,6 +59,7 @@ export default {
             method: request.method,
           });
           setForwardedIdentity(forwarded, session);
+          forwarded.headers.set(ROOM_ID_HEADER, roomId);
           const response =
             await env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
           if (response.status === 409) {
@@ -70,6 +80,7 @@ export default {
           endpoints: {
             guestSession: "POST /api/platform/guest",
             platformSession: "GET /api/platform/session",
+            profileAvatar: "POST /api/platform/profile/avatar",
             logout: "POST /api/platform/logout",
             xLogin: "GET /api/auth/x/start",
             xCallback: "GET /api/auth/x/callback",
@@ -81,6 +92,7 @@ export default {
             leave: "POST /api/rooms/:roomId/leave",
             seat: "POST /api/rooms/:roomId/seat",
             ready: "POST /api/rooms/:roomId/ready",
+            roomProfileAvatar: "PUT /api/rooms/:roomId/profile-avatar",
             kick: "POST /api/rooms/:roomId/kick",
             transferHost: "POST /api/rooms/:roomId/transfer-host",
             dissolve: "POST /api/rooms/:roomId/dissolve",
@@ -89,12 +101,33 @@ export default {
             state: "GET /api/rooms/:roomId/state",
             action: "POST /api/rooms/:roomId/actions",
             connect: "GET /api/rooms/:roomId/connect (WebSocket)",
+            avatar: "GET /api/rooms/:roomId/avatars/:token",
           },
         });
       }
 
+      const avatarMatch =
+        /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/avatars\/([a-zA-Z0-9_-]{32})$/.exec(
+          url.pathname,
+        );
+      if (request.method === "GET" && avatarMatch) {
+        const roomId = avatarMatch[1]!;
+        const token = avatarMatch[2]!;
+        return env.GAME_ROOMS.getByName(roomId).fetch(
+          new Request(new URL(`/avatars/${token}`, request.url), request),
+        );
+      }
+
+      const profileAvatarMatch =
+        /^\/api\/platform\/profile\/avatar\/(v1\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+)$/.exec(
+          url.pathname,
+        );
+      if (request.method === "GET" && profileAvatarMatch) {
+        return serveProfileAvatar(request, env, profileAvatarMatch[1]!);
+      }
+
       const match =
-        /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/(game|launch|initialize|join|start|leave|seat|ready|kick|transfer-host|dissolve|return-to-room|state|actions|connect)$/.exec(
+        /^\/api\/rooms\/([a-zA-Z0-9_-]{1,128})\/(game|launch|initialize|join|start|leave|seat|ready|profile-avatar|kick|transfer-host|dissolve|return-to-room|state|actions|connect)$/.exec(
           url.pathname,
         );
       if (!match) return Response.json({ error: "not found" }, { status: 404 });
@@ -114,7 +147,7 @@ export default {
         requirePlatformOrigin(request);
       }
       const session = await requirePlatformSession(request, env);
-      setForwardedIdentity(forwarded, session);
+      setForwardedIdentity(forwarded, session, endpoint === "profile-avatar");
       return env.GAME_ROOMS.getByName(roomId).fetch(forwarded);
     } catch (error) {
       if (error instanceof PlatformSessionError)
@@ -131,10 +164,18 @@ export default {
 function setForwardedIdentity(
   request: Request,
   session: PlatformSession,
+  includeAvatar = false,
 ): void {
   request.headers.set(PLAYER_ID_HEADER, session.sub);
   request.headers.delete(PLAYER_NAME_HEADER);
+  request.headers.delete(PLAYER_AVATAR_HEADER);
   if (session.name) {
     request.headers.set(PLAYER_NAME_HEADER, encodeURIComponent(session.name));
+  }
+  if (includeAvatar && session.provider === "x" && session.avatarUrl) {
+    request.headers.set(
+      PLAYER_AVATAR_HEADER,
+      encodeURIComponent(session.avatarUrl),
+    );
   }
 }

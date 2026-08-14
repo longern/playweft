@@ -22,6 +22,7 @@ const MAX_ACTION_BYTES = 8 * 1024;
 const MAX_RECENT_ACTIONS = 256;
 const MAX_PLAYER_ID_LENGTH = 64;
 const MAX_PLAYER_NAME_LENGTH = 100;
+const MAX_AVATAR_BYTES = 1024 * 1024;
 const MAX_STATE_BYTES = 64 * 1024;
 const MAX_SERVER_SOURCE_BYTES = 1024 * 1024;
 const SERVER_FETCH_TIMEOUT_MS = 8_000;
@@ -72,6 +73,7 @@ type GameActor = {
 };
 
 interface RoomMeta {
+  roomId: string;
   manifestUrl: string;
   ownerPlayerId: string;
   phase: "lobby" | "playing";
@@ -91,6 +93,7 @@ interface RoomMember {
   actorId: string;
   name?: string;
   avatarUrl?: string;
+  avatarToken?: string;
   joinedAt: number;
   seat?: number;
   ready?: boolean;
@@ -130,6 +133,13 @@ export class GameRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
+      const avatarMatch = /^\/avatars\/([a-zA-Z0-9_-]{32})$/.exec(path);
+      if (request.method === "GET" && avatarMatch) {
+        const source = await this.enqueue(() =>
+          this.avatarSource(avatarMatch[1]!),
+        );
+        return await proxyAvatar(source, request);
+      }
       switch (`${request.method} ${path}`) {
         case "POST /create":
           return Response.json(await this.enqueue(() => this.create(request)));
@@ -158,6 +168,10 @@ export class GameRoom extends DurableObject<Env> {
         case "POST /ready":
           return Response.json(
             await this.enqueue(() => this.setReady(request)),
+          );
+        case "PUT /profile-avatar":
+          return Response.json(
+            await this.enqueue(() => this.setProfileAvatar(request)),
           );
         case "POST /kick":
           return Response.json(await this.enqueue(() => this.kick(request)));
@@ -266,11 +280,13 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(400, "expected { manifestUrl }");
     }
     const manifestUrl = normalizeManifestUrl(input.manifestUrl);
+    const roomId = this.roomId(request);
     const existing = await this.ctx.storage.get<RoomMeta>("roomMeta");
     if (existing !== undefined) {
       throw new RoomHttpError(409, "room has already been created");
     }
     await this.ctx.storage.put("roomMeta", {
+      roomId,
       manifestUrl,
       ownerPlayerId: this.playerId(request),
       phase: "lobby",
@@ -304,6 +320,10 @@ export class GameRoom extends DurableObject<Env> {
     this.disposeRuntime();
     this.liveRoomState = undefined;
     const meta = await this.meta();
+    for (const member of Object.values(meta.members)) {
+      delete member.avatarUrl;
+      delete member.avatarToken;
+    }
     meta.manifestUrl = manifestUrl;
     meta.phase = "lobby";
     meta.config = undefined;
@@ -425,10 +445,12 @@ export class GameRoom extends DurableObject<Env> {
         ready: false,
       };
       membershipChanged = true;
-    } else if (phase === "lobby" && existing.name !== name) {
-      if (name) existing.name = name;
-      else delete existing.name;
-      membershipChanged = true;
+    } else if (phase === "lobby") {
+      if (existing.name !== name) {
+        if (name) existing.name = name;
+        else delete existing.name;
+        membershipChanged = true;
+      }
     }
     if (membershipChanged) {
       await this.saveMembers(members);
@@ -808,6 +830,43 @@ export class GameRoom extends DurableObject<Env> {
     return lobby;
   }
 
+  private async setProfileAvatar(request: Request): Promise<RoomLobby> {
+    await this.launch();
+    const input = await parseRequestJson(request);
+    if (!isRecord(input) || typeof input.shared !== "boolean") {
+      throw new RoomHttpError(400, "expected { shared: boolean }");
+    }
+    const playerId = this.playerId(request);
+    const members = await this.members();
+    const member = members[playerId];
+    if (!member) {
+      throw new RoomHttpError(
+        403,
+        "join the room before sharing a profile avatar",
+      );
+    }
+    const avatarUrl = input.shared
+      ? this.playerAvatarUrl(request)
+      : undefined;
+    const unchanged = avatarUrl
+      ? member.avatarUrl === avatarUrl && Boolean(member.avatarToken)
+      : !member.avatarUrl && !member.avatarToken;
+    if (unchanged) return this.lobby();
+
+    if (avatarUrl) {
+      member.avatarUrl = avatarUrl;
+      member.avatarToken = randomAvatarToken();
+    } else {
+      delete member.avatarUrl;
+      delete member.avatarToken;
+    }
+    await this.saveMembers(members);
+    await this.touch();
+    const lobby = await this.lobby();
+    this.broadcast(lobby);
+    return lobby;
+  }
+
   private async applyAction(request: Request): Promise<object> {
     const input = await parseRequestJson(request);
     if (!isRecord(input) || !("action" in input)) {
@@ -1102,15 +1161,16 @@ export class GameRoom extends DurableObject<Env> {
     const stored = await this.ctx.storage.get<RoomMeta>("roomMeta");
     if (stored !== undefined) return stored;
 
-    const [manifestUrl, ownerPlayerId, phase, lastActivity, members] =
+    const [roomId, manifestUrl, ownerPlayerId, phase, lastActivity, members] =
       await Promise.all([
+        this.ctx.storage.get<string>("roomId"),
         this.ctx.storage.get<string>("manifestUrl"),
         this.ctx.storage.get<string>("ownerPlayerId"),
         this.ctx.storage.get<"lobby" | "playing">("phase"),
         this.ctx.storage.get<number>("lastActivity"),
         this.ctx.storage.get<Record<string, RoomMember>>("members"),
       ]);
-    if (!manifestUrl || !ownerPlayerId)
+    if (!roomId || !manifestUrl || !ownerPlayerId)
       throw new RoomHttpError(404, "room does not exist");
     if (phase !== "lobby" && phase !== "playing")
       throw new RoomHttpError(500, "room has invalid phase");
@@ -1148,6 +1208,7 @@ export class GameRoom extends DurableObject<Env> {
       liveRoom,
     });
     const meta: RoomMeta = {
+      roomId,
       manifestUrl,
       ownerPlayerId,
       phase,
@@ -1158,6 +1219,7 @@ export class GameRoom extends DurableObject<Env> {
     await this.saveMeta(meta);
     await this.ctx.storage.delete([
       "manifestUrl",
+      "roomId",
       "ownerPlayerId",
       "phase",
       "lastActivity",
@@ -1499,6 +1561,29 @@ export class GameRoom extends DurableObject<Env> {
     }
   }
 
+  private playerAvatarUrl(request: Request): string | undefined {
+    const encoded = request.headers.get("X-Playweft-Player-Avatar");
+    if (!encoded) return undefined;
+    try {
+      const url = new URL(decodeURIComponent(encoded));
+      return url.protocol === "https:" &&
+        (url.hostname === "pbs.twimg.com" ||
+          url.hostname === "abs.twimg.com")
+        ? url.toString()
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private roomId(request: Request): string {
+    const roomId = request.headers.get("X-Playweft-Room-Id");
+    if (!roomId || !/^[a-zA-Z0-9_-]{1,128}$/.test(roomId)) {
+      throw new RoomHttpError(400, "trusted room identity is required");
+    }
+    return roomId;
+  }
+
   private async actorId(request: Request): Promise<string> {
     const playerId = this.playerId(request);
     const actors =
@@ -1522,6 +1607,16 @@ export class GameRoom extends DurableObject<Env> {
     return member.actorId;
   }
 
+  private async avatarSource(token: string): Promise<string> {
+    const member = Object.values(await this.members()).find(
+      (candidate) => candidate.avatarToken === token,
+    );
+    if (!member?.avatarUrl) {
+      throw new RoomHttpError(410, "room avatar is no longer available");
+    }
+    return member.avatarUrl;
+  }
+
   private async ownerPlayerId(): Promise<string> {
     return (await this.meta()).ownerPlayerId;
   }
@@ -1531,7 +1626,7 @@ export class GameRoom extends DurableObject<Env> {
   }
 
   private async lobby(): Promise<RoomLobby> {
-    const { config, phase, members, ownerPlayerId } = await this.meta();
+    const { config, phase, members, ownerPlayerId, roomId } = await this.meta();
     if (!config) {
       throw new RoomHttpError(
         409,
@@ -1544,6 +1639,9 @@ export class GameRoom extends DurableObject<Env> {
       .map((member) => ({
         id: member.actorId,
         ...(member.name ? { name: member.name } : {}),
+        ...(member.avatarToken
+          ? { avatarUrl: roomAvatarPath(roomId, member.avatarToken) }
+          : {}),
         seat: member.seat!,
         ready: member.ready === true,
       }));
@@ -1553,7 +1651,9 @@ export class GameRoom extends DurableObject<Env> {
       .map((member) => ({
         id: member.actorId,
         ...(member.name ? { name: member.name } : {}),
-        ...(member.avatarUrl ? { avatarUrl: member.avatarUrl } : {}),
+        ...(member.avatarToken
+          ? { avatarUrl: roomAvatarPath(roomId, member.avatarToken) }
+          : {}),
       }));
     return {
       type: "lobby",
@@ -1851,6 +1951,94 @@ function validateActionId(value: unknown): string {
     );
   }
   return value;
+}
+
+function randomAvatarToken(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  let text = "";
+  for (const byte of bytes) text += String.fromCharCode(byte);
+  return btoa(text)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
+}
+
+function roomAvatarPath(roomId: string, token: string): string {
+  return `/api/rooms/${encodeURIComponent(roomId)}/avatars/${token}`;
+}
+
+async function proxyAvatar(source: string, request: Request): Promise<Response> {
+  const destination = request.headers.get("Sec-Fetch-Dest");
+  if (destination && destination !== "image") {
+    throw new RoomHttpError(403, "room avatars may only be loaded as images");
+  }
+  const sourceUrl = new URL(source);
+  if (
+    sourceUrl.protocol !== "https:" ||
+    (sourceUrl.hostname !== "pbs.twimg.com" &&
+      sourceUrl.hostname !== "abs.twimg.com")
+  ) {
+    throw new RoomHttpError(502, "room avatar source is not allowed");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const response = await fetch(sourceUrl, {
+      headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,image/gif" },
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new RoomHttpError(
+        502,
+        `room avatar request failed (${response.status})`,
+      );
+    }
+    const contentType = response.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase();
+    if (
+      contentType !== "image/avif" &&
+      contentType !== "image/gif" &&
+      contentType !== "image/jpeg" &&
+      contentType !== "image/png" &&
+      contentType !== "image/webp"
+    ) {
+      throw new RoomHttpError(502, "room avatar has an unsupported type");
+    }
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (
+      Number.isFinite(declaredLength) &&
+      declaredLength > MAX_AVATAR_BYTES
+    ) {
+      throw new RoomHttpError(502, "room avatar exceeds the size limit");
+    }
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_AVATAR_BYTES) {
+      throw new RoomHttpError(502, "room avatar exceeds the size limit");
+    }
+    return new Response(bytes, {
+      headers: {
+        "Cache-Control": "private, no-store, max-age=0",
+        "Content-Type": contentType,
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  } catch (error) {
+    if (error instanceof RoomHttpError) throw error;
+    if (controller.signal.aborted) {
+      throw new RoomHttpError(504, "room avatar request timed out");
+    }
+    throw new RoomHttpError(502, "could not load room avatar");
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function secureRandomSeed(): number {

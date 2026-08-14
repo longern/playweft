@@ -63,6 +63,9 @@ const english = {
   clipboardGrantRemembered:
     "Playweft will remember this choice for this game site.",
   clipboardReadNotice: "{{name}} is reading the clipboard",
+  userProfileAvatarRequest: "{{name}} wants to use your avatar",
+  userProfileGrantRemembered:
+    "Playweft will remember this choice for this game.",
   gameDialogSource: "From {{origin}}",
   dismissClipboardNotice: "Dismiss clipboard notice",
   playGamesTogether: "Play games together",
@@ -203,6 +206,8 @@ const chineseSimplified: TranslationDictionary = {
   clipboardReadRequest: "“{{name}}”想读取剪贴板中的文本",
   clipboardGrantRemembered: "Playweft 会为这个游戏站点记住你的选择。",
   clipboardReadNotice: "“{{name}}”正在读取剪贴板",
+  userProfileAvatarRequest: "“{{name}}”想使用你的头像",
+  userProfileGrantRemembered: "Playweft 会为这个游戏记住你的选择。",
   gameDialogSource: "来自 {{origin}}",
   dismissClipboardNotice: "关闭剪贴板提示",
   playGamesTogether: "一起玩游戏",

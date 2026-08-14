@@ -669,7 +669,7 @@
   animation: update-toast-out 0.16s ease-in both;
 }
 
-.clipboard-prompt,
+.permission-prompt,
 .clipboard-notice {
   position: fixed;
   z-index: 50;
@@ -686,7 +686,7 @@
   backdrop-filter: blur(12px);
 }
 
-.clipboard-prompt {
+.permission-prompt {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -694,18 +694,18 @@
   padding: 16px;
 }
 
-.clipboard-prompt > div:first-child {
+.permission-prompt > div:first-child {
   display: grid;
   min-width: 0;
   gap: 4px;
 }
 
-.clipboard-prompt strong {
+.permission-prompt strong {
   font-size: 0.94rem;
   line-height: 1.35;
 }
 
-.clipboard-prompt span {
+.permission-prompt span {
   overflow: hidden;
   color: #737a76;
   font-size: 0.76rem;
@@ -713,27 +713,27 @@
   white-space: nowrap;
 }
 
-.clipboard-prompt p {
+.permission-prompt p {
   margin: 5px 0 0;
   color: #4b514d;
   font-size: 0.84rem;
   line-height: 1.4;
 }
 
-.clipboard-prompt small {
+.permission-prompt small {
   margin-top: 2px;
   color: #737a76;
   font-size: 0.72rem;
   line-height: 1.35;
 }
 
-.clipboard-prompt-actions {
+.permission-prompt-actions {
   display: flex;
   flex: 0 0 auto;
   gap: 8px;
 }
 
-.clipboard-prompt-actions button {
+.permission-prompt-actions button {
   min-width: 70px;
   padding: 8px 12px;
   border: 1px solid #dce1de;
@@ -744,13 +744,13 @@
   font-weight: 750;
 }
 
-.clipboard-prompt-actions button.primary {
+.permission-prompt-actions button.primary {
   border-color: var(--color-primary);
   background: var(--color-primary);
   color: #fff;
 }
 
-.clipboard-prompt-actions button:disabled {
+.permission-prompt-actions button:disabled {
   cursor: wait;
   opacity: 0.62;
 }
@@ -874,12 +874,12 @@
 }
 
 @media (max-width: 560px) {
-  .clipboard-prompt {
+  .permission-prompt {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .clipboard-prompt-actions {
+  .permission-prompt-actions {
     justify-content: flex-end;
   }
 }

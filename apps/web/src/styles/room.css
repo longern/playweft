@@ -410,6 +410,13 @@ main.room-host {
   font-weight: 850;
 }
 
+.player-avatar > img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
 .player-avatar-wrap {
   position: relative;
   display: grid;
@@ -1484,7 +1491,7 @@ main.room-host {
   }
 
   .player-grid-dense .player-card {
-    min-height: 80px;
+    min-height: 96px;
     align-content: center;
     gap: 5px;
     padding: 8px 2px;

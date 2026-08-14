@@ -18,6 +18,7 @@ export interface PlatformSession {
 
 export interface PlatformSessionStatus {
   authenticated: boolean;
+  accountKey?: string;
   accountName?: string;
   avatarUrl?: string;
   name?: string;
@@ -82,11 +83,18 @@ export async function platformSessionStatus(
   return sessionStatusResponse({
     authenticated: true,
     provider: session.provider ?? "guest",
+    ...(session.provider === "x"
+      ? { accountKey: await accountKey(session.sub, requireSecret(env)) }
+      : {}),
     ...(session.accountName ? { accountName: session.accountName } : {}),
     ...(session.avatarUrl ? { avatarUrl: session.avatarUrl } : {}),
     ...(session.name ? { name: session.name } : {}),
     ...(session.username ? { username: session.username } : {}),
   });
+}
+
+async function accountKey(subject: string, secret: string): Promise<string> {
+  return base64Url(await hmac(`account-profile:${subject}`, secret));
 }
 
 export function clearPlatformSession(request: Request): Response {
