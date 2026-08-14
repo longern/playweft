@@ -116,7 +116,9 @@ export function isStoredDiscoveredGame(
   if (!isRecord(value)) return false;
   return (
     typeof value.url === "string" &&
+    webUrl(value.url) !== undefined &&
     typeof value.manifestUrl === "string" &&
+    webUrl(value.manifestUrl) !== undefined &&
     typeof value.manifestId === "string" &&
     webUrl(value.manifestId) !== undefined &&
     typeof value.version === "string" &&

@@ -3,30 +3,25 @@ import {
   type DiscoveredGame,
 } from "./game-manifest";
 
-const RECENT_GAMES_KEY = "playweft:recent-games:v1";
 const FAVORITE_GAMES_KEY = "playweft:favorite-games:v1";
 const MAX_FAVORITE_GAMES = 8;
 
-type StoredGame = DiscoveredGame & { pinned?: boolean };
-
 export function readFavoriteGames(): DiscoveredGame[] {
-  const savedFavorites = readStoredGames(FAVORITE_GAMES_KEY).map(normalizeGame);
-  const pinnedFavorites = readStoredGames(RECENT_GAMES_KEY)
-    .filter((game) => game.pinned)
-    .map(normalizeGame);
-  const favorites = uniqueGames([...savedFavorites, ...pinnedFavorites]).slice(
+  return uniqueGames(readStoredGames().map(normalizeGame)).slice(
     0,
     MAX_FAVORITE_GAMES,
   );
-  if (pinnedFavorites.length > 0) persistFavoriteGames(favorites);
-  return favorites;
 }
 
 export function persistFavoriteGames(
   games: DiscoveredGame[],
 ): DiscoveredGame[] {
   const next = uniqueGames(games).slice(0, MAX_FAVORITE_GAMES);
-  localStorage.setItem(FAVORITE_GAMES_KEY, JSON.stringify(next));
+  try {
+    localStorage.setItem(FAVORITE_GAMES_KEY, JSON.stringify(next));
+  } catch {
+    // Keep the in-memory list usable when browser storage is unavailable.
+  }
   return next;
 }
 
@@ -51,16 +46,13 @@ export function toggleFavoriteGame(game: DiscoveredGame): boolean {
   return !isFavorite;
 }
 
-function readStoredGames(key: string): StoredGame[] {
+function readStoredGames(): DiscoveredGame[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
+    const parsed = JSON.parse(
+      localStorage.getItem(FAVORITE_GAMES_KEY) ?? "[]",
+    ) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (value): value is StoredGame =>
-        isStoredDiscoveredGame(value) &&
-        ((value as StoredGame).pinned === undefined ||
-          typeof (value as StoredGame).pinned === "boolean"),
-    );
+    return parsed.filter(isStoredDiscoveredGame);
   } catch {
     return [];
   }

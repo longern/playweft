@@ -1,4 +1,4 @@
-const PERMISSION_GRANTS_KEY = "playweft:permission-grants";
+const PERMISSION_GRANTS_KEY = "playweft:permission-grants:v1";
 const MAX_GRANTED_GAMES = 128;
 const KNOWN_PERMISSIONS = new Set<PlatformPermission>([
   "clipboardRead",

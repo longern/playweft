@@ -1,13 +1,9 @@
 import { useState } from "react";
 import Dialog from "./Dialog";
 import { useFeaturedGames, type FeaturedGame } from "./featured-games";
-import {
-  isStoredDiscoveredGame,
-  type DiscoveredGame as RecentGame,
-} from "./game-manifest";
+import type { DiscoveredGame as RecentGame } from "./game-manifest";
 import { localizeGameName, useI18n } from "./i18n";
-
-const RECENT_GAMES_KEY = "playweft:recent-games:v1";
+import { readRecentGames } from "./recent-games";
 
 interface ChangeGameDialogProps {
   onClose(): void;
@@ -119,20 +115,4 @@ function GameChoices({
       </div>
     </section>
   );
-}
-
-function readRecentGames(): RecentGame[] {
-  try {
-    const value = JSON.parse(
-      localStorage.getItem(RECENT_GAMES_KEY) ?? "[]",
-    ) as unknown;
-    if (!Array.isArray(value)) return [];
-    return value.filter(isRecentGame).slice(0, 8);
-  } catch {
-    return [];
-  }
-}
-
-function isRecentGame(value: unknown): value is RecentGame {
-  return isStoredDiscoveredGame(value);
 }

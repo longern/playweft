@@ -130,8 +130,9 @@ the server reveals both choices only after a second player chooses. A draw clear
 both choices and starts the next round.
 
 The platform keeps a browser-local list of recently used game Manifests. Names,
-translations, icons, modes and requested permissions all come from the validated
-Manifest; the iframe cannot replace catalogue metadata at runtime. The room Durable Object
+translations, icons and modes all come from the validated Manifest; protected
+features are requested at runtime, and the iframe cannot replace catalogue
+metadata. The room Durable Object
 stores only the Manifest URL, fixed package identity, Lua configuration and player limits, game
 state, the room creator, and opaque room-scoped player membership.
 

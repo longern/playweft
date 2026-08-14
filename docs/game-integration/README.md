@@ -40,8 +40,9 @@ or `http://127.0.0.1`.
 
 ## 2. Define `playweft.json`
 
-Manifest v1 is strict: unknown fields and malformed values are rejected. The
-JSON Schema is
+Manifest v1 strictly validates known fields and their nested structures;
+unknown top-level fields are ignored so the format can be extended. The JSON
+Schema is
 [`game-manifest-v1.schema.json`](game-manifest-v1.schema.json).
 
 ```json
@@ -118,8 +119,9 @@ Key rules:
 - `persistence: "durable"` persists authoritative state after each accepted
   action and permits Durable Object hibernation. `"live"` keeps active state in
   memory and routes actions over the room WebSocket.
-- Permissions must be declared before use. The platform exposes only the
-  declared, supported capabilities.
+- Protected features are requested at runtime and are not declared in the
+  Manifest. The platform exposes only capabilities supported by the current
+  mode.
 
 The platform limits a Manifest to 64 KiB and a Lua entry to 1 MiB.
 

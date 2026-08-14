@@ -328,7 +328,7 @@ export class GameRoom extends DurableObject<Env> {
     meta.phase = "lobby";
     meta.config = undefined;
     await this.saveMeta(meta);
-    await this.ctx.storage.delete(["gameState", "state", "version"]);
+    await this.ctx.storage.delete("gameState");
     await this.touch();
     this.broadcast({ type: "game_changed", manifestUrl });
     return { manifestUrl };
@@ -353,10 +353,10 @@ export class GameRoom extends DurableObject<Env> {
     const gameVersion = validateGameVersion(input.gameVersion);
     const serverUrl = validateServerUrl(input.serverUrl, meta.manifestUrl);
 
-    const runtime = input.runtime ?? "lua";
-    if (typeof runtime !== "string" || !isRuntimeKind(runtime)) {
+    if (typeof input.runtime !== "string" || !isRuntimeKind(input.runtime)) {
       throw new RoomHttpError(400, "runtime must be a supported runtime kind");
     }
+    const runtime = input.runtime;
 
     const minPlayers = validatePlayerLimit(input.minPlayers, "minPlayers");
     const maxPlayers = validatePlayerLimit(input.maxPlayers, "maxPlayers");
@@ -1154,88 +1154,14 @@ export class GameRoom extends DurableObject<Env> {
       this.liveRoomState = undefined;
       return;
     }
-    await this.ctx.storage.delete(["gameState", "state", "version"]);
+    await this.ctx.storage.delete("gameState");
   }
 
   private async meta(): Promise<RoomMeta> {
     const stored = await this.ctx.storage.get<RoomMeta>("roomMeta");
-    if (stored !== undefined) return stored;
-
-    const [roomId, manifestUrl, ownerPlayerId, phase, lastActivity, members] =
-      await Promise.all([
-        this.ctx.storage.get<string>("roomId"),
-        this.ctx.storage.get<string>("manifestUrl"),
-        this.ctx.storage.get<string>("ownerPlayerId"),
-        this.ctx.storage.get<"lobby" | "playing">("phase"),
-        this.ctx.storage.get<number>("lastActivity"),
-        this.ctx.storage.get<Record<string, RoomMember>>("members"),
-      ]);
-    if (!roomId || !manifestUrl || !ownerPlayerId)
+    if (stored === undefined)
       throw new RoomHttpError(404, "room does not exist");
-    if (phase !== "lobby" && phase !== "playing")
-      throw new RoomHttpError(500, "room has invalid phase");
-
-    const [
-      gameId,
-      gameVersion,
-      serverUrl,
-      runtime,
-      script,
-      scriptHash,
-      minPlayers,
-      maxPlayers,
-      liveRoom,
-    ] = await Promise.all([
-        this.ctx.storage.get<string>("gameId"),
-        this.ctx.storage.get<string>("gameVersion"),
-        this.ctx.storage.get<string>("serverUrl"),
-        this.ctx.storage.get<string>("runtime"),
-        this.ctx.storage.get<string>("script"),
-        this.ctx.storage.get<string>("scriptHash"),
-        this.ctx.storage.get<number>("minPlayers"),
-        this.ctx.storage.get<number>("maxPlayers"),
-        this.ctx.storage.get<boolean>("liveRoom"),
-      ]);
-    const config = configFromStoredValues({
-      gameId,
-      gameVersion,
-      serverUrl,
-      runtime,
-      script,
-      scriptHash,
-      minPlayers,
-      maxPlayers,
-      liveRoom,
-    });
-    const meta: RoomMeta = {
-      roomId,
-      manifestUrl,
-      ownerPlayerId,
-      phase,
-      lastActivity,
-      members: members ?? {},
-      config,
-    };
-    await this.saveMeta(meta);
-    await this.ctx.storage.delete([
-      "manifestUrl",
-      "roomId",
-      "ownerPlayerId",
-      "phase",
-      "lastActivity",
-      "members",
-      "runtime",
-      "gameId",
-      "gameVersion",
-      "serverUrl",
-      "script",
-      "scriptHash",
-      "minPlayers",
-      "maxPlayers",
-      "randomSeed",
-      "liveRoom",
-    ]);
-    return meta;
+    return stored;
   }
 
   private async saveMeta(meta: RoomMeta): Promise<void> {
@@ -1459,7 +1385,7 @@ export class GameRoom extends DurableObject<Env> {
     room: RoomState,
     action: StoredAction,
   ): StoredAction[] {
-    return [...(room.recentActions ?? []), action].slice(-MAX_RECENT_ACTIONS);
+    return [...room.recentActions, action].slice(-MAX_RECENT_ACTIONS);
   }
 
   private sendPreparedBroadcast(messages: Array<[WebSocket, string]>): void {
@@ -1672,69 +1598,6 @@ function isRecent(
   timeoutMs: number,
 ): boolean {
   return lastSeenAt !== undefined && Date.now() - lastSeenAt < timeoutMs;
-}
-
-function configFromStoredValues(values: {
-  gameId: string | undefined;
-  gameVersion: string | undefined;
-  serverUrl: string | undefined;
-  runtime: string | undefined;
-  script: string | undefined;
-  scriptHash: string | undefined;
-  minPlayers: number | undefined;
-  maxPlayers: number | undefined;
-  liveRoom: boolean | undefined;
-}): RoomConfig | undefined {
-  const {
-    gameId,
-    gameVersion,
-    serverUrl,
-    runtime,
-    script,
-    scriptHash,
-    minPlayers,
-    maxPlayers,
-    liveRoom,
-  } = values;
-  if (
-    gameId === undefined &&
-    gameVersion === undefined &&
-    serverUrl === undefined &&
-    runtime === undefined &&
-    script === undefined &&
-    scriptHash === undefined &&
-    minPlayers === undefined &&
-    maxPlayers === undefined
-  )
-    return undefined;
-  if (
-    !gameId ||
-    !gameVersion ||
-    !serverUrl ||
-    !runtime ||
-    !isRuntimeKind(runtime) ||
-    !script ||
-    !scriptHash ||
-    !isPlayerLimit(minPlayers) ||
-    !isPlayerLimit(maxPlayers) ||
-    minPlayers > maxPlayers
-  ) {
-    throw new RoomHttpError(
-      500,
-      "room has invalid persisted game configuration",
-    );
-  }
-  return {
-    gameId,
-    gameVersion,
-    serverUrl,
-    runtime,
-    script,
-    scriptHash,
-    minPlayers,
-    maxPlayers,
-    liveRoom: liveRoom === true,
-  };
 }
 
 function validateGameId(value: string, manifestUrl: string): string {

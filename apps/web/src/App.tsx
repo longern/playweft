@@ -47,7 +47,6 @@ import {
   rpcPlatformFault,
 } from "./json-rpc";
 import {
-  isStoredDiscoveredGame,
   loadGameManifest,
   manifestUrlFromInput,
   type LoadedGame,
@@ -67,18 +66,16 @@ import {
   readAccountPlayerNickname,
   readGuestPlayerNickname,
 } from "./player-profile";
+import { persistRecentGames, readRecentGames } from "./recent-games";
 import { prepareGameOrientation, useGameViewport } from "./use-game-viewport";
 import { usePwaUpdate } from "./use-pwa-update";
 
-const RECENT_GAMES_KEY = "playweft:recent-games:v1";
-const MAX_RECENT_GAMES = 8;
 const SOLO_EXIT_DURATION_MS = 160;
 const DEFAULT_ROOM_ID_FORMAT = "code:4";
 const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 type ShelfGame = RecentGame | FeaturedGame;
 type GameShelfKind = "favorite" | "recent" | "recommended";
 type ShelfGamePhase = "entering" | "exiting";
-type StoredRecentGame = RecentGame & { pinned?: boolean };
 type RoomIdFormat =
   | { kind: "uuid" }
   | { kind: "code" | "digits" | "base64url"; length: number };
@@ -1228,24 +1225,6 @@ function UnsupportedGameDialog({
   );
 }
 
-function readRecentGames(): RecentGame[] {
-  return readStoredRecentGames().map(toRecentGame).slice(0, MAX_RECENT_GAMES);
-}
-
-function readStoredRecentGames(): StoredRecentGame[] {
-  return readStoredGames(RECENT_GAMES_KEY);
-}
-
-function readStoredGames(key: string): StoredRecentGame[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(key) ?? "[]") as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isStoredRecentGame);
-  } catch {
-    return [];
-  }
-}
-
 function saveRecentGame(game: RecentGame): void {
   const favorites = readFavoriteGames();
   if (favorites.some((item) => item.manifestId === game.manifestId)) {
@@ -1259,29 +1238,6 @@ function saveRecentGame(game: RecentGame): void {
     game,
     ...current.filter((item) => item.manifestId !== game.manifestId),
   ]);
-}
-
-function persistRecentGames(games: RecentGame[]): RecentGame[] {
-  const next = uniqueGames(games).slice(0, MAX_RECENT_GAMES);
-  localStorage.setItem(RECENT_GAMES_KEY, JSON.stringify(next));
-  return next;
-}
-
-function uniqueGames(games: RecentGame[]): RecentGame[] {
-  const seenIds = new Set<string>();
-  return games.filter((game) => {
-    if (seenIds.has(game.manifestId)) return false;
-    seenIds.add(game.manifestId);
-    return true;
-  });
-}
-
-function isStoredRecentGame(value: unknown): value is StoredRecentGame {
-  return (
-    isStoredDiscoveredGame(value) &&
-    ((value as StoredRecentGame).pinned === undefined ||
-      typeof (value as StoredRecentGame).pinned === "boolean")
-  );
 }
 
 function toRecentGame(game: ShelfGame): RecentGame {

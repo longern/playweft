@@ -9,10 +9,10 @@ const MAX_ACCOUNT_NAME_LENGTH = 100;
 export interface PlatformSession {
   sub: string;
   exp: number;
+  provider: "guest" | "x";
   name?: string;
   accountName?: string;
   avatarUrl?: string;
-  provider?: "x";
   username?: string;
 }
 
@@ -55,10 +55,10 @@ export async function issueGuestSession(request: Request, env: Env): Promise<Res
   const payload: PlatformSession = {
     sub: current?.sub ?? `guest_${crypto.randomUUID()}`,
     exp: now + sessionTtl,
+    provider: current?.provider ?? "guest",
     ...(name ? { name } : {}),
     ...(current?.accountName ? { accountName: current.accountName } : {}),
     ...(current?.avatarUrl ? { avatarUrl: current.avatarUrl } : {}),
-    ...(current?.provider ? { provider: current.provider } : {}),
     ...(current?.username ? { username: current.username } : {}),
   };
   const cookie = await sessionCookie(request, payload, secret, sessionTtl);
@@ -82,7 +82,7 @@ export async function platformSessionStatus(
   }
   return sessionStatusResponse({
     authenticated: true,
-    provider: session.provider ?? "guest",
+    provider: session.provider,
     ...(session.provider === "x"
       ? { accountKey: await accountKey(session.sub, requireSecret(env)) }
       : {}),
@@ -113,10 +113,14 @@ export function clearPlatformSession(request: Request): Response {
 export async function authenticatedSessionCookie(
   request: Request,
   env: Env,
-  identity: Pick<
-    PlatformSession,
-    "sub" | "accountName" | "avatarUrl" | "name" | "provider" | "username"
-  >,
+  identity: {
+    sub: string;
+    provider: "x";
+    accountName: string;
+    username: string;
+    avatarUrl?: string;
+    name?: string;
+  },
 ): Promise<string> {
   const payload: PlatformSession = {
     ...identity,
@@ -195,7 +199,11 @@ async function verify(token: string, secret: string): Promise<PlatformSession | 
     const payload = JSON.parse(
       new TextDecoder().decode(base64UrlDecode(body)),
     ) as Record<string, unknown>;
-    if (typeof payload.sub !== "string" || typeof payload.exp !== "number") {
+    if (
+      typeof payload.sub !== "string" ||
+      typeof payload.exp !== "number" ||
+      (payload.provider !== "guest" && payload.provider !== "x")
+    ) {
       return undefined;
     }
     const name = displayName(payload.name);
@@ -205,16 +213,24 @@ async function verify(token: string, secret: string): Promise<PlatformSession | 
     const avatarUrl = accountAvatarUrl(payload.avatarUrl);
     if (payload.avatarUrl !== undefined && !avatarUrl) return undefined;
     const provider = payload.provider;
-    if (provider !== undefined && provider !== "x") return undefined;
     const username = accountUsername(payload.username);
     if (payload.username !== undefined && !username) return undefined;
+    if (provider === "x" && (!accountName || !username)) return undefined;
+    if (
+      provider === "guest" &&
+      (accountName !== undefined ||
+        avatarUrl !== undefined ||
+        username !== undefined)
+    ) {
+      return undefined;
+    }
     return {
       sub: payload.sub,
       exp: payload.exp,
+      provider,
       ...(name ? { name } : {}),
       ...(accountName ? { accountName } : {}),
       ...(avatarUrl ? { avatarUrl } : {}),
-      ...(provider ? { provider } : {}),
       ...(username ? { username } : {}),
     };
   } catch {
@@ -225,10 +241,8 @@ async function verify(token: string, secret: string): Promise<PlatformSession | 
 function accountDefaultName(
   session: PlatformSession | undefined,
 ): string | undefined {
-  if (session?.provider !== "x") return undefined;
-  const accountName = session.accountName ?? session.name;
-  if (!accountName) return undefined;
-  return defaultDisplayName(accountName);
+  if (session?.provider !== "x" || !session.accountName) return undefined;
+  return defaultDisplayName(session.accountName);
 }
 
 export function defaultDisplayName(value: string): string {
