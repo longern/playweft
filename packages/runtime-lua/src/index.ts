@@ -1,6 +1,11 @@
 import { LuaFactory, LuaGlobal, LuaLibraries, LuaType } from "wasmoon";
 import type LuaWasm from "wasmoon/dist/luawasm";
-import { assertJson, assertJsonSize, JSON_MAX_DEPTH, type JsonValue } from "@playweft/game-protocol";
+import {
+  assertJson,
+  assertJsonSize,
+  JSON_MAX_DEPTH,
+  type JsonValue,
+} from "@playweft/game-protocol";
 import {
   GameRuntimeError,
   type GameActionResult,
@@ -145,9 +150,15 @@ class LuaJsonBridge {
     return this.readInner(index, 0, new Set<number>());
   }
 
-  private readInner(index: number, depth: number, visited: Set<number>): JsonValue {
+  private readInner(
+    index: number,
+    depth: number,
+    visited: Set<number>,
+  ): JsonValue {
     if (depth > MAX_DEPTH) {
-      throw new LuaScriptError(`Lua result exceeds the ${MAX_DEPTH}-level nesting limit`);
+      throw new LuaScriptError(
+        `Lua result exceeds the ${MAX_DEPTH}-level nesting limit`,
+      );
     }
 
     const state = this.global.address;
@@ -161,7 +172,8 @@ class LuaJsonBridge {
         return Boolean(this.module.lua_toboolean(state, absoluteIndex));
       case LuaType.Number: {
         const number = this.module.lua_tonumberx(state, absoluteIndex, null);
-        if (!Number.isFinite(number)) throw new LuaScriptError("Lua result contains a non-finite number");
+        if (!Number.isFinite(number))
+          throw new LuaScriptError("Lua result contains a non-finite number");
         return number;
       }
       case LuaType.String:
@@ -169,14 +181,21 @@ class LuaJsonBridge {
       case LuaType.Table:
         return this.readTable(absoluteIndex, depth, visited);
       default:
-        throw new LuaScriptError(`Lua result contains unsupported ${this.module.lua_typename(state, type)} data`);
+        throw new LuaScriptError(
+          `Lua result contains unsupported ${this.module.lua_typename(state, type)} data`,
+        );
     }
   }
 
-  private readTable(index: number, depth: number, visited: Set<number>): JsonValue {
+  private readTable(
+    index: number,
+    depth: number,
+    visited: Set<number>,
+  ): JsonValue {
     const state = this.global.address;
     const pointer = this.module.lua_topointer(state, index);
-    if (visited.has(pointer)) throw new LuaScriptError("Lua result contains a cyclic table");
+    if (visited.has(pointer))
+      throw new LuaScriptError("Lua result contains a cyclic table");
     visited.add(pointer);
 
     const object: Record<string, JsonValue> = {};
@@ -189,7 +208,9 @@ class LuaJsonBridge {
       if (entries > MAX_TABLE_ENTRIES) {
         this.global.pop(1);
         visited.delete(pointer);
-        throw new LuaScriptError(`Lua table exceeds the ${MAX_TABLE_ENTRIES}-entry limit`);
+        throw new LuaScriptError(
+          `Lua table exceeds the ${MAX_TABLE_ENTRIES}-entry limit`,
+        );
       }
 
       const keyType = this.module.lua_type(state, -2);
@@ -202,13 +223,17 @@ class LuaJsonBridge {
         if (!Number.isInteger(numericKey) || numericKey < 1) {
           this.global.pop(1);
           visited.delete(pointer);
-          throw new LuaScriptError("Lua tables may only use positive integer or string keys");
+          throw new LuaScriptError(
+            "Lua tables may only use positive integer or string keys",
+          );
         }
         array.set(numericKey, value);
       } else {
         this.global.pop(1);
         visited.delete(pointer);
-        throw new LuaScriptError("Lua tables may only use positive integer or string keys");
+        throw new LuaScriptError(
+          "Lua tables may only use positive integer or string keys",
+        );
       }
 
       // lua_next keeps the key on the stack; pop only the value.
@@ -224,7 +249,8 @@ class LuaJsonBridge {
     const result: JsonValue[] = [];
     for (let index = 1; index <= array.size; index += 1) {
       const item = array.get(index);
-      if (item === undefined) throw new LuaScriptError("Lua arrays must not be sparse");
+      if (item === undefined)
+        throw new LuaScriptError("Lua arrays must not be sparse");
       result.push(item);
     }
     return result;
@@ -246,7 +272,9 @@ export class LuaGameRuntime implements GameRuntime {
 
   static async create(source: string): Promise<LuaGameRuntime> {
     if (new TextEncoder().encode(source).byteLength > MAX_SCRIPT_BYTES) {
-      throw new LuaScriptError(`Lua source exceeds the ${MAX_SCRIPT_BYTES}-byte limit`);
+      throw new LuaScriptError(
+        `Lua source exceeds the ${MAX_SCRIPT_BYTES}-byte limit`,
+      );
     }
 
     const module = await getLuaModule();
@@ -341,7 +369,8 @@ export class LuaGameRuntime implements GameRuntime {
 
   returnToRoom(state: JsonValue, context: JsonValue): boolean {
     const result = this.invoke("return_to_room", state, null, context)[0];
-    if (typeof result !== "boolean") throw new LuaScriptError("on_return_to_room must return true or false");
+    if (typeof result !== "boolean")
+      throw new LuaScriptError("on_return_to_room must return true or false");
     return result;
   }
 
@@ -350,7 +379,9 @@ export class LuaGameRuntime implements GameRuntime {
     handler: string,
   ): GameTransitionResult {
     if (!isPlainObject(result) || !("state" in result)) {
-      throw new LuaScriptError(`${handler} must return { state = ..., events = {...} }`);
+      throw new LuaScriptError(
+        `${handler} must return { state = ..., events = {...} }`,
+      );
     }
 
     // Lua has no native distinction between {} and an empty array. In the
@@ -366,20 +397,40 @@ export class LuaGameRuntime implements GameRuntime {
   }
 
   dispose(): void {
-    this.module.luaL_unref(this.global.address, LUA_REGISTRY_INDEX, this.functionRef);
+    this.module.luaL_unref(
+      this.global.address,
+      LUA_REGISTRY_INDEX,
+      this.functionRef,
+    );
     this.global.close();
   }
 
-  private invoke(kind: "setup" | "action" | "view" | "player_left" | "return_to_room", state: JsonValue, action: JsonValue, context: JsonValue): JsonValue[] {
+  private invoke(
+    kind: "setup" | "action" | "view" | "player_left" | "return_to_room",
+    state: JsonValue,
+    action: JsonValue,
+    context: JsonValue,
+  ): JsonValue[] {
     const base = this.global.getTop();
     try {
-      this.module.lua_rawgeti(this.global.address, LUA_REGISTRY_INDEX, BigInt(this.functionRef));
+      this.module.lua_rawgeti(
+        this.global.address,
+        LUA_REGISTRY_INDEX,
+        BigInt(this.functionRef),
+      );
       this.bridge.push(kind);
       this.bridge.push(state);
       this.bridge.push(action);
       this.bridge.push(context);
 
-      const status = this.module.lua_pcallk(this.global.address, 4, LUA_MULTRET, 0, 0, null);
+      const status = this.module.lua_pcallk(
+        this.global.address,
+        4,
+        LUA_MULTRET,
+        0,
+        0,
+        null,
+      );
       if (status !== 0) throw readLuaError(this.global, this.module);
 
       const results: JsonValue[] = [];
@@ -399,7 +450,9 @@ function readLuaError(global: LuaGlobal, module: LuaWasm): LuaScriptError {
   return new LuaScriptError(value || "Lua execution failed");
 }
 
-function isPlainObject(value: JsonValue | undefined): value is { [key: string]: JsonValue } {
+function isPlainObject(
+  value: JsonValue | undefined,
+): value is { [key: string]: JsonValue } {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 

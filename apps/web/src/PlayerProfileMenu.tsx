@@ -1,8 +1,14 @@
-import { CircleUserRound, LogIn, Pencil } from "lucide-react";
-import { useState } from "react";
+import { CircleUserRound, LogIn, LogOut, Pencil } from "lucide-react";
+import { useEffect, useState } from "react";
 import AnchoredMenu from "./AnchoredMenu";
 import Dialog from "./Dialog";
 import { useI18n } from "./i18n";
+import {
+  getPlatformSession,
+  logoutPlatformSession,
+  type PlatformSessionStatus,
+  xLoginUrl,
+} from "./platform-api";
 import {
   MAX_PLAYER_NICKNAME_LENGTH,
   normalizePlayerNickname,
@@ -18,11 +24,52 @@ export default function PlayerProfileMenu({
   const { t } = useI18n();
   const [nicknameDialogOpen, setNicknameDialogOpen] = useState(false);
   const [draftNickname, setDraftNickname] = useState(nickname);
+  const [session, setSession] = useState<PlatformSessionStatus>();
+  const [avatarFailed, setAvatarFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getPlatformSession()
+      .then((nextSession) => {
+        if (cancelled) return;
+        setSession(nextSession);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => setAvatarFailed(false), [session?.avatarUrl]);
 
   const editNickname = () => {
-    setDraftNickname(nickname);
+    setDraftNickname(nickname || session?.name || "");
     setNicknameDialogOpen(true);
   };
+
+  const signInWithX = () => window.location.assign(xLoginUrl());
+  const signOut = async () => {
+    try {
+      await logoutPlatformSession();
+    } finally {
+      window.location.assign("/");
+    }
+  };
+
+  const signedInWithX = session?.provider === "x";
+  const avatarUrl =
+    signedInWithX && !avatarFailed ? session.avatarUrl : undefined;
+
+  const accountAvatar = avatarUrl ? (
+    <img
+      src={avatarUrl}
+      alt=""
+      referrerPolicy="no-referrer"
+      onError={() => setAvatarFailed(true)}
+    />
+  ) : (
+    <CircleUserRound aria-hidden="true" />
+  );
 
   return (
     <div className="player-profile">
@@ -51,23 +98,46 @@ export default function PlayerProfileMenu({
             onMouseEnter={onMouseEnter}
             onMouseLeave={onMouseLeave}
           >
-            <CircleUserRound aria-hidden="true" />
+            {accountAvatar}
           </button>
         )}
       >
         {(closeMenu) => (
           <>
-            <div
-              className={`profile-menu-nickname${nickname ? "" : " profile-menu-nickname-empty"}`}
-              title={nickname || t("nicknameNotSet")}
-            >
-              {nickname || t("nicknameNotSet")}
+            <div className="profile-menu-account">
+              <span className="profile-menu-avatar" aria-hidden="true">
+                {accountAvatar}
+              </span>
+              <div
+                className={`profile-menu-nickname${nickname || session?.name ? "" : " profile-menu-nickname-empty"}`}
+                title={nickname || session?.name || t("nicknameNotSet")}
+              >
+                <span>{nickname || session?.name || t("nicknameNotSet")}</span>
+                {signedInWithX && session.username && (
+                  <small>@{session.username} · X</small>
+                )}
+              </div>
             </div>
             <div className="profile-menu-divider" role="separator" />
-            <button type="button" role="menuitem" disabled>
-              <LogIn aria-hidden="true" />
-              <span>{t("loginUnavailable")}</span>
-            </button>
+            {signedInWithX ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => closeMenu(() => void signOut())}
+              >
+                <LogOut aria-hidden="true" />
+                <span>{t("signOut")}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => closeMenu(signInWithX)}
+              >
+                <LogIn aria-hidden="true" />
+                <span>{t("signInWithX")}</span>
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"

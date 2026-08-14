@@ -2,12 +2,27 @@ import type { Env } from "./env";
 
 const COOKIE_NAME = "playweft_session";
 const SESSION_TTL_SECONDS = 24 * 60 * 60;
-const MAX_DISPLAY_NAME_LENGTH = 100;
+const AUTHENTICATED_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const MAX_DISPLAY_NAME_LENGTH = 24;
+const MAX_ACCOUNT_NAME_LENGTH = 100;
 
 export interface PlatformSession {
   sub: string;
   exp: number;
   name?: string;
+  accountName?: string;
+  avatarUrl?: string;
+  provider?: "x";
+  username?: string;
+}
+
+export interface PlatformSessionStatus {
+  authenticated: boolean;
+  accountName?: string;
+  avatarUrl?: string;
+  name?: string;
+  provider?: "guest" | "x";
+  username?: string;
 }
 
 export class PlatformSessionError extends Error {
@@ -29,23 +44,83 @@ export async function issueGuestSession(request: Request, env: Env): Promise<Res
   const current = existing && existing.exp > now ? existing : undefined;
   const name = requestedName === undefined
     ? current?.name
-    : requestedName ?? undefined;
+    : requestedName ?? accountDefaultName(current);
   if (current && current.name === name) {
     return Response.json({ authenticated: true }, { headers: { "Cache-Control": "no-store" } });
   }
+  const sessionTtl = current?.provider === "x"
+    ? AUTHENTICATED_SESSION_TTL_SECONDS
+    : SESSION_TTL_SECONDS;
   const payload: PlatformSession = {
     sub: current?.sub ?? `guest_${crypto.randomUUID()}`,
-    exp: now + SESSION_TTL_SECONDS,
+    exp: now + sessionTtl,
     ...(name ? { name } : {}),
+    ...(current?.accountName ? { accountName: current.accountName } : {}),
+    ...(current?.avatarUrl ? { avatarUrl: current.avatarUrl } : {}),
+    ...(current?.provider ? { provider: current.provider } : {}),
+    ...(current?.username ? { username: current.username } : {}),
   };
-  const token = await sign(payload, secret);
-  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  const cookie = await sessionCookie(request, payload, secret, sessionTtl);
   return Response.json({ authenticated: true }, {
     headers: {
-      "Set-Cookie": `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_SECONDS}${secure}`,
+      "Set-Cookie": cookie,
       "Cache-Control": "no-store",
     },
   });
+}
+
+export async function platformSessionStatus(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const token = readCookie(request.headers.get("Cookie"), COOKIE_NAME);
+  if (!token) return sessionStatusResponse({ authenticated: false });
+  const session = await verify(token, requireSecret(env));
+  if (!session || session.exp <= Math.floor(Date.now() / 1000)) {
+    return sessionStatusResponse({ authenticated: false });
+  }
+  return sessionStatusResponse({
+    authenticated: true,
+    provider: session.provider ?? "guest",
+    ...(session.accountName ? { accountName: session.accountName } : {}),
+    ...(session.avatarUrl ? { avatarUrl: session.avatarUrl } : {}),
+    ...(session.name ? { name: session.name } : {}),
+    ...(session.username ? { username: session.username } : {}),
+  });
+}
+
+export function clearPlatformSession(request: Request): Response {
+  requirePlatformOrigin(request);
+  return Response.json(
+    { authenticated: false },
+    {
+      headers: {
+        "Set-Cookie": expiredSessionCookie(request),
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+}
+
+export async function authenticatedSessionCookie(
+  request: Request,
+  env: Env,
+  identity: Pick<
+    PlatformSession,
+    "sub" | "accountName" | "avatarUrl" | "name" | "provider" | "username"
+  >,
+): Promise<string> {
+  const payload: PlatformSession = {
+    ...identity,
+    exp:
+      Math.floor(Date.now() / 1000) + AUTHENTICATED_SESSION_TTL_SECONDS,
+  };
+  return sessionCookie(
+    request,
+    payload,
+    requireSecret(env),
+    AUTHENTICATED_SESSION_TTL_SECONDS,
+  );
 }
 
 async function requestedDisplayName(
@@ -117,14 +192,97 @@ async function verify(token: string, secret: string): Promise<PlatformSession | 
     }
     const name = displayName(payload.name);
     if (payload.name !== undefined && !name) return undefined;
+    const accountName = accountDisplayName(payload.accountName);
+    if (payload.accountName !== undefined && !accountName) return undefined;
+    const avatarUrl = accountAvatarUrl(payload.avatarUrl);
+    if (payload.avatarUrl !== undefined && !avatarUrl) return undefined;
+    const provider = payload.provider;
+    if (provider !== undefined && provider !== "x") return undefined;
+    const username = accountUsername(payload.username);
+    if (payload.username !== undefined && !username) return undefined;
     return {
       sub: payload.sub,
       exp: payload.exp,
       ...(name ? { name } : {}),
+      ...(accountName ? { accountName } : {}),
+      ...(avatarUrl ? { avatarUrl } : {}),
+      ...(provider ? { provider } : {}),
+      ...(username ? { username } : {}),
     };
   } catch {
     return undefined;
   }
+}
+
+function accountDefaultName(
+  session: PlatformSession | undefined,
+): string | undefined {
+  if (session?.provider !== "x") return undefined;
+  const accountName = session.accountName ?? session.name;
+  if (!accountName) return undefined;
+  return defaultDisplayName(accountName);
+}
+
+export function defaultDisplayName(value: string): string {
+  let result = "";
+  for (const character of value.trim()) {
+    if (result.length + character.length > MAX_DISPLAY_NAME_LENGTH) break;
+    result += character;
+  }
+  return result;
+}
+
+function accountDisplayName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const name = value.trim();
+  return name.length > 0 && name.length <= MAX_ACCOUNT_NAME_LENGTH
+    ? name
+    : undefined;
+}
+
+function accountAvatarUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 2_048) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") return undefined;
+    if (url.hostname === "pbs.twimg.com") {
+      url.pathname = url.pathname.replace(
+        /_normal(\.[a-z0-9]+)$/i,
+        "_bigger$1",
+      );
+    }
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+function accountUsername(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const username = value.trim();
+  return username.length > 0 && username.length <= 100
+    ? username
+    : undefined;
+}
+
+async function sessionCookie(
+  request: Request,
+  payload: PlatformSession,
+  secret: string,
+  maxAge: number,
+): Promise<string> {
+  const token = await sign(payload, secret);
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+}
+
+function expiredSessionCookie(request: Request): string {
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
+}
+
+function sessionStatusResponse(status: PlatformSessionStatus): Response {
+  return Response.json(status, { headers: { "Cache-Control": "no-store" } });
 }
 
 function displayName(value: unknown): string | undefined {

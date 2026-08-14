@@ -18,8 +18,16 @@ export type GameActionResult =
 
 export interface GameRuntime {
   setup(context: JsonValue): JsonValue;
-  applyAction(state: JsonValue, action: JsonValue, context: JsonValue): GameActionResult;
-  view(state: JsonValue, events: JsonValue[], context: JsonValue): GameTransitionResult;
+  applyAction(
+    state: JsonValue,
+    action: JsonValue,
+    context: JsonValue,
+  ): GameActionResult;
+  view(
+    state: JsonValue,
+    events: JsonValue[],
+    context: JsonValue,
+  ): GameTransitionResult;
   playerLeft(state: JsonValue, context: JsonValue): GameTransitionResult;
   returnToRoom(state: JsonValue, context: JsonValue): boolean;
   dispose(): void;

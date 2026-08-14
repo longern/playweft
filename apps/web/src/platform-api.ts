@@ -54,6 +54,15 @@ export interface RoomLaunch {
   manifestUrl: string;
 }
 
+export interface PlatformSessionStatus {
+  authenticated: boolean;
+  accountName?: string;
+  avatarUrl?: string;
+  name?: string;
+  provider?: "guest" | "x";
+  username?: string;
+}
+
 export function initializeRoom(
   roomId: string,
   initialization: RoomInitialization,
@@ -194,6 +203,34 @@ export function createGuestSession(nickname = ""): Promise<void> {
         ((await response.json()) as { error?: string }).error ??
           "could not create platform session",
       );
+  });
+}
+
+export function getPlatformSession(): Promise<PlatformSessionStatus> {
+  return fetch(endpoint("/api/platform/session"), {
+    credentials: "same-origin",
+    cache: "no-store",
+  }).then(responseJson<PlatformSessionStatus>);
+}
+
+export function xLoginUrl(): string {
+  const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const url = endpoint("/api/auth/x/start");
+  url.searchParams.set("return_to", returnTo);
+  return url.toString();
+}
+
+export function logoutPlatformSession(): Promise<void> {
+  return fetch(endpoint("/api/platform/logout"), {
+    method: "POST",
+    credentials: "same-origin",
+  }).then(async (response) => {
+    if (!response.ok) {
+      throw new Error(
+        ((await response.json()) as { error?: string }).error ??
+          "could not end platform session",
+      );
+    }
   });
 }
 

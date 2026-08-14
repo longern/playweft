@@ -24,5 +24,10 @@ export function persistPlayerNickname(value: string): string {
 }
 
 export function normalizePlayerNickname(value: string): string {
-  return value.trim().slice(0, MAX_PLAYER_NICKNAME_LENGTH);
+  let nickname = "";
+  for (const character of value.trim()) {
+    if (nickname.length + character.length > MAX_PLAYER_NICKNAME_LENGTH) break;
+    nickname += character;
+  }
+  return nickname;
 }

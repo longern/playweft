@@ -676,7 +676,11 @@ function SoloHost({
   const gameName = localizeGameName(currentGame, locale);
   const gameDescription = localizeGameDescription(currentGame, locale);
   const gameOrigin = new URL(currentGame.url).origin;
-  const clipboard = useClipboardRead(gameName, gameOrigin);
+  const clipboard = useClipboardRead(
+    gameName,
+    currentGame.manifestId,
+    gameOrigin,
+  );
   const windowDialogs = useGameWindowDialogs(gameName, gameOrigin);
   const gameViewport = useGameViewport(true, currentGame);
 

@@ -1,13 +1,16 @@
 import { GameRoom } from "./room";
 import type { Env } from "./env";
 import {
+  clearPlatformSession,
   issueGuestSession,
+  platformSessionStatus,
   PlatformSessionError,
   requirePlatformOrigin,
   requirePlatformSession,
   type PlatformSession,
 } from "./platform-session";
 import { generateRoomId, roomIdMaxAttempts } from "./room-id";
+import { finishXOAuth, startXOAuth } from "./x-oauth";
 
 const PLAYER_ID_HEADER = "X-Playweft-Player-Id";
 const PLAYER_NAME_HEADER = "X-Playweft-Player-Name";
@@ -21,6 +24,18 @@ export default {
       const url = new URL(request.url);
       if (request.method === "POST" && url.pathname === "/api/platform/guest") {
         return issueGuestSession(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/platform/session") {
+        return platformSessionStatus(request, env);
+      }
+      if (request.method === "POST" && url.pathname === "/api/platform/logout") {
+        return clearPlatformSession(request);
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/x/start") {
+        return startXOAuth(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/x/callback") {
+        return finishXOAuth(request, env);
       }
       if (request.method === "POST" && url.pathname === "/api/rooms") {
         requirePlatformOrigin(request);
@@ -54,6 +69,10 @@ export default {
           service: "playweft-game-rooms",
           endpoints: {
             guestSession: "POST /api/platform/guest",
+            platformSession: "GET /api/platform/session",
+            logout: "POST /api/platform/logout",
+            xLogin: "GET /api/auth/x/start",
+            xCallback: "GET /api/auth/x/callback",
             createRoom: "POST /api/rooms",
             launch: "GET /api/rooms/:roomId/launch",
             initialize: "PUT /api/rooms/:roomId/initialize",

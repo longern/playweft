@@ -3,7 +3,7 @@ import { JsonRpcErrorCode } from "@playweft/game-protocol";
 import { RpcFault } from "./json-rpc";
 import { useI18n } from "./i18n";
 
-const CLIPBOARD_GRANTS_KEY = "playweft:clipboard-read-grants:v1";
+const CLIPBOARD_GRANTS_KEY = "playweft:clipboard-read-grants";
 const MAX_CLIPBOARD_BYTES = 64 * 1024;
 const PROMPT_TIMEOUT_MS = 30_000;
 const NOTICE_DURATION_MS = 1_800;
@@ -17,15 +17,35 @@ interface PromptState {
 }
 
 interface PendingRead {
+  identity: ResolvedGameIdentity;
   resolve(value: string): void;
   reject(reason: RpcFault): void;
   timeout: number;
 }
 
-export function useClipboardRead(gameName: string, gameOrigin: string | undefined) {
+interface GameIdentity {
+  gameName: string;
+  manifestId: string | undefined;
+  gameOrigin: string | undefined;
+}
+
+interface ResolvedGameIdentity extends GameIdentity {
+  manifestId: string;
+  gameOrigin: string;
+}
+
+export function useClipboardRead(
+  gameName: string,
+  manifestId: string | undefined,
+  gameOrigin: string | undefined,
+) {
   const { t } = useI18n();
-  const identityRef = useRef({ gameName, gameOrigin });
-  identityRef.current = { gameName, gameOrigin };
+  const identityRef = useRef<GameIdentity>({
+    gameName,
+    manifestId,
+    gameOrigin,
+  });
+  identityRef.current = { gameName, manifestId, gameOrigin };
   const translatorRef = useRef(t);
   translatorRef.current = t;
   const pendingRef = useRef<PendingRead | undefined>(undefined);
@@ -60,7 +80,8 @@ export function useClipboardRead(gameName: string, gameOrigin: string | undefine
   }, []);
 
   const readClipboard = useCallback(async () => {
-    const identity = identityRef.current;
+    const identity = pendingRef.current?.identity;
+    if (!identity) return;
     showNotice(
       translatorRef.current("clipboardReadNotice", {
         name: identity.gameName,
@@ -81,7 +102,7 @@ export function useClipboardRead(gameName: string, gameOrigin: string | undefine
           `Clipboard text exceeds the ${MAX_CLIPBOARD_BYTES}-byte limit`,
         );
       }
-      if (identity.gameOrigin) rememberGrant(identity.gameOrigin);
+      rememberGrant(identity.manifestId);
       finish({ text });
     } catch (reason) {
       clearNotice();
@@ -124,13 +145,17 @@ export function useClipboardRead(gameName: string, gameOrigin: string | undefine
       );
     }
     lastReadAtRef.current = Date.now();
-    const { gameName: currentName, gameOrigin: currentOrigin } =
-      identityRef.current;
-    if (!currentOrigin) {
+    const identity = identityRef.current;
+    if (!identity.manifestId || !identity.gameOrigin) {
       return Promise.reject(
-        clipboardFault("NOT_ALLOWED", "The game origin is unavailable"),
+        clipboardFault("NOT_ALLOWED", "The game identity is unavailable"),
       );
     }
+    const requestIdentity: ResolvedGameIdentity = {
+      gameName: identity.gameName,
+      manifestId: identity.manifestId,
+      gameOrigin: identity.gameOrigin,
+    };
 
     return new Promise<string>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
@@ -142,19 +167,24 @@ export function useClipboardRead(gameName: string, gameOrigin: string | undefine
           ),
         });
       }, PROMPT_TIMEOUT_MS);
-      pendingRef.current = { resolve, reject, timeout };
-      if (hasGrant(currentOrigin)) {
+      pendingRef.current = {
+        identity: requestIdentity,
+        resolve,
+        reject,
+        timeout,
+      };
+      if (hasGrant(requestIdentity.manifestId)) {
         void readClipboard();
         return;
       }
       setPrompt({
-        gameName: currentName,
-        origin: currentOrigin,
+        gameName: requestIdentity.gameName,
+        origin: requestIdentity.gameOrigin,
         ...(reason ? { reason } : {}),
         reading: false,
       });
     });
-  }, [finish, readClipboard, showNotice]);
+  }, [finish, readClipboard]);
 
   const deny = useCallback(() => {
     finish({
@@ -282,13 +312,13 @@ function clipboardFault(
   });
 }
 
-function hasGrant(origin: string): boolean {
-  return readGrants().includes(origin);
+function hasGrant(manifestId: string): boolean {
+  return readGrants().includes(manifestId);
 }
 
-function rememberGrant(origin: string): void {
+function rememberGrant(manifestId: string): void {
   const grants = new Set(readGrants());
-  grants.add(origin);
+  grants.add(manifestId);
   try {
     localStorage.setItem(
       CLIPBOARD_GRANTS_KEY,

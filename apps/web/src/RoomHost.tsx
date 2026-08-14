@@ -143,7 +143,7 @@ export default function RoomHost({
     ? localizeGameDescription(game, locale)
     : undefined;
   const gameOrigin = gameUrl ? new URL(gameUrl).origin : undefined;
-  const clipboard = useClipboardRead(gameName, gameOrigin);
+  const clipboard = useClipboardRead(gameName, game?.manifestId, gameOrigin);
   const windowDialogs = useGameWindowDialogs(gameName, gameOrigin);
   useEffect(() => {
     if (game) setIsFavorite(isFavoriteGame(game));

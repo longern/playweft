@@ -60,11 +60,10 @@ npm run dev:rps
 npm run dev:web
 ```
 
-`AUTH_SECRET` signs the HttpOnly demo guest session and must be a
-Worker secret in a real deployment. The guest issuer is only a minimal
-local/demo identity provider and should be replaced with the platform's real
-account/session issuer. The demo UI may copy its browser-local nickname into
-the signed guest session as an optional display name. Browser-facing
+`AUTH_SECRET` signs the HttpOnly platform session and must be a Worker secret
+in a real deployment. Without an X account, the platform issues a temporary
+guest identity. The UI may copy its browser-local nickname into the signed
+session as an optional display name. Browser-facing
 mutations and WebSocket upgrades must have an `Origin` equal to the Worker
 endpoint origin. Authenticated read requests remain usable in browsers that
 omit `Origin` for a same-origin GET.
@@ -201,7 +200,20 @@ put` immediately creates a new Worker version:
 
 ```sh
 npx wrangler secret put AUTH_SECRET --config apps/worker/wrangler.jsonc
+npx wrangler secret put X_CLIENT_ID --config apps/worker/wrangler.jsonc
+npx wrangler secret put X_CLIENT_SECRET --config apps/worker/wrangler.jsonc
 ```
+
+To enable Sign in with X, configure the X App as an OAuth 2.0 Web App and
+register this exact Callback URL, replacing the example host with the deployed
+platform origin:
+
+```text
+https://play.example.com/api/auth/x/callback
+```
+
+The Worker derives this URL from the incoming request origin. The flow uses
+Authorization Code with PKCE and requests only `tweet.read` and `users.read`.
 
 Room ID generation is optional to configure. By default, the Worker uses
 `ROOM_ID_FORMAT=code:4` with the friendly alphabet

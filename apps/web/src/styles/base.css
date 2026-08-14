@@ -159,6 +159,13 @@ p {
   height: 24px;
 }
 
+.player-profile-button img {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
 .player-profile-button:hover,
 .player-profile-button:focus-visible,
 .player-profile-button[aria-expanded="true"] {
