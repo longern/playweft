@@ -954,6 +954,11 @@ function SoloHost({
           name={gameName}
           url={currentGame.url}
           onClose={() => setGameInfoOpen(false)}
+          onEnterFullscreen={
+            gameViewport.showFullscreenAction
+              ? () => void gameViewport.enterPreferredOrientation()
+              : undefined
+          }
           onRefresh={
             loaded
               ? () => {

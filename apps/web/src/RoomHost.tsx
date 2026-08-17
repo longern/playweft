@@ -71,11 +71,7 @@ import {
   type DiscoveredGame,
   type LoadedGame,
 } from "./game-manifest";
-import {
-  localizeGameDescription,
-  localizeGameName,
-  useI18n,
-} from "./i18n";
+import { localizeGameDescription, localizeGameName, useI18n } from "./i18n";
 import {
   prepareGameOrientation,
   releaseGameFullscreen,
@@ -217,11 +213,10 @@ export default function RoomHost({
         fields.push("avatar");
       }
       if (fields.length > 0) {
-        postRpcNotification(
-          bridgePort.current,
-          "room.players.profileChanged",
-          { playerId, fields },
-        );
+        postRpcNotification(bridgePort.current, "room.players.profileChanged", {
+          playerId,
+          fields,
+        });
       }
     }
   }, [lobby]);
@@ -1495,15 +1490,18 @@ export default function RoomHost({
           name={gameName}
           url={game.url}
           onClose={() => setGameInfoOpen(false)}
+          onEnterFullscreen={
+            gameViewport.showFullscreenAction
+              ? () => void gameViewport.enterPreferredOrientation()
+              : undefined
+          }
           onShowHelp={gameHelpHref ? () => setGameHelpOpen(true) : undefined}
           onRefresh={
             phase === "playing"
               ? () => setGameRevision((revision) => revision + 1)
               : undefined
           }
-          onToggleFavorite={() =>
-            setIsFavorite(toggleFavoriteGame(game))
-          }
+          onToggleFavorite={() => setIsFavorite(toggleFavoriteGame(game))}
         />
       )}
     </div>
@@ -1576,9 +1574,7 @@ function roomPlayerProfileRequestFromRpcParams(
     !Array.isArray(params.fields) ||
     params.fields.length === 0 ||
     params.fields.length > 2 ||
-    params.fields.some(
-      (field) => field !== "name" && field !== "avatar",
-    ) ||
+    params.fields.some((field) => field !== "name" && field !== "avatar") ||
     new Set(params.fields).size !== params.fields.length
   ) {
     return undefined;

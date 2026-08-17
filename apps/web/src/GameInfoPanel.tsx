@@ -3,6 +3,7 @@ import {
   Check,
   CircleHelp,
   Link2,
+  Maximize2,
   Power,
   RefreshCw,
   Star,
@@ -25,6 +26,7 @@ interface GameInfoPanelProps {
   name: string;
   url: string;
   onClose(): void;
+  onEnterFullscreen?(): void;
   onRefresh?(): void;
   onShowHelp?(): void;
   onToggleFavorite?(): void;
@@ -39,6 +41,7 @@ export default function GameInfoPanel({
   name,
   url,
   onClose,
+  onEnterFullscreen,
   onRefresh,
   onShowHelp,
   onToggleFavorite,
@@ -191,7 +194,11 @@ export default function GameInfoPanel({
           </div>
         </div>
         {description && <p className="game-info-description">{description}</p>}
-        {(manifestUrl || onRefresh || onShowHelp || onToggleFavorite) && (
+        {(manifestUrl ||
+          onEnterFullscreen ||
+          onRefresh ||
+          onShowHelp ||
+          onToggleFavorite) && (
           <>
             <hr className="game-info-quick-actions-divider" />
             <div className="game-info-quick-actions">
@@ -238,6 +245,22 @@ export default function GameInfoPanel({
                   </span>
                   <span className="game-info-quick-action-label">
                     {t("help")}
+                  </span>
+                </button>
+              )}
+              {onEnterFullscreen && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onEnterFullscreen();
+                    close();
+                  }}
+                >
+                  <span className="game-info-quick-action-icon">
+                    <Maximize2 aria-hidden="true" />
+                  </span>
+                  <span className="game-info-quick-action-label">
+                    {t("fullscreen")}
                   </span>
                 </button>
               )}
