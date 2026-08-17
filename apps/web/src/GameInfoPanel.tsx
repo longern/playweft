@@ -1,17 +1,24 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Check, CircleHelp, Link2, RefreshCw, Star, X } from "lucide-react";
+import {
+  Check,
+  CircleHelp,
+  Link2,
+  Power,
+  RefreshCw,
+  Star,
+  X,
+} from "lucide-react";
 import { useI18n } from "./i18n";
 import { gameLaunchLink } from "./game-launch-link";
 
-export interface GameInfoAction {
+interface GameInfoExitAction {
   label: string;
-  variant?: "primary" | "secondary";
   onSelect(): void;
 }
 
 interface GameInfoPanelProps {
-  actions?: GameInfoAction[];
   description?: string;
+  exitAction?: GameInfoExitAction;
   icon?: string;
   isFavorite?: boolean;
   manifestUrl?: string;
@@ -24,8 +31,8 @@ interface GameInfoPanelProps {
 }
 
 export default function GameInfoPanel({
-  actions,
   description,
+  exitAction,
   icon,
   isFavorite,
   manifestUrl,
@@ -124,13 +131,26 @@ export default function GameInfoPanel({
       >
         <header className="game-info-header">
           <h2 id="game-info-title">{t("gameInformation")}</h2>
-          <button
-            type="button"
-            aria-label={t("closeGameInformation")}
-            onClick={() => close()}
-          >
-            <X aria-hidden="true" />
-          </button>
+          <div className="game-info-header-actions">
+            {exitAction && (
+              <button
+                className="game-info-header-exit"
+                type="button"
+                aria-label={exitAction.label}
+                title={exitAction.label}
+                onClick={() => close(exitAction.onSelect)}
+              >
+                <Power aria-hidden="true" />
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label={t("closeGameInformation")}
+              onClick={() => close()}
+            >
+              <X aria-hidden="true" />
+            </button>
+          </div>
         </header>
         <div className="game-info-content">
           <div className="game-info-icon" aria-hidden="true">
@@ -171,7 +191,7 @@ export default function GameInfoPanel({
           </div>
         </div>
         {description && <p className="game-info-description">{description}</p>}
-        {(onRefresh || onShowHelp || onToggleFavorite) && (
+        {(manifestUrl || onRefresh || onShowHelp || onToggleFavorite) && (
           <>
             <hr className="game-info-quick-actions-divider" />
             <div className="game-info-quick-actions">
@@ -189,16 +209,6 @@ export default function GameInfoPanel({
                   </span>
                   <span className="game-info-quick-action-label">
                     {t(isFavorite ? "unfavorite" : "favorite")}
-                  </span>
-                </button>
-              )}
-              {onRefresh && (
-                <button type="button" onClick={() => close(onRefresh)}>
-                  <span className="game-info-quick-action-icon">
-                    <RefreshCw aria-hidden="true" />
-                  </span>
-                  <span className="game-info-quick-action-label">
-                    {t("refresh")}
                   </span>
                 </button>
               )}
@@ -231,22 +241,18 @@ export default function GameInfoPanel({
                   </span>
                 </button>
               )}
+              {onRefresh && (
+                <button type="button" onClick={() => close(onRefresh)}>
+                  <span className="game-info-quick-action-icon">
+                    <RefreshCw aria-hidden="true" />
+                  </span>
+                  <span className="game-info-quick-action-label">
+                    {t("refresh")}
+                  </span>
+                </button>
+              )}
             </div>
           </>
-        )}
-        {actions && actions.length > 0 && (
-          <footer className="game-info-actions">
-            {actions.map((action) => (
-              <button
-                key={action.label}
-                className={`game-info-action game-info-action-${action.variant ?? "secondary"}`}
-                type="button"
-                onClick={() => close(action.onSelect)}
-              >
-                {action.label}
-              </button>
-            ))}
-          </footer>
         )}
       </section>
     </dialog>

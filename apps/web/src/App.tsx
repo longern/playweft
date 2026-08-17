@@ -943,17 +943,11 @@ function SoloHost({
       )}
       {gameInfoOpen && (
         <GameInfoPanel
-          actions={[
-            {
-              label: t("backHome"),
-              variant: "primary",
-              onSelect: () => {
-                setGameInfoOpen(false);
-                onBack();
-              },
-            },
-          ]}
           description={gameDescription}
+          exitAction={{
+            label: t("backHome"),
+            onSelect: onBack,
+          }}
           icon={currentGame.icon}
           isFavorite={isFavorite}
           manifestUrl={currentGame.manifestUrl}

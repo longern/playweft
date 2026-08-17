@@ -1010,6 +1010,11 @@ main.room-host {
   font-size: 1rem;
 }
 
+.game-info-header-actions {
+  display: flex;
+  align-items: center;
+}
+
 .game-info-header button {
   display: grid;
   width: 36px;
@@ -1026,6 +1031,16 @@ main.room-host {
   background: #ededed;
   color: #202124;
   outline: 0;
+}
+
+.game-info-header button.game-info-header-exit {
+  color: #b23b48;
+}
+
+.game-info-header button.game-info-header-exit:hover,
+.game-info-header button.game-info-header-exit:focus-visible {
+  background: rgba(178, 59, 72, 0.1);
+  color: #982e39;
 }
 
 .game-info-header svg {
@@ -1238,44 +1253,6 @@ main.room-host {
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
-}
-
-.game-info-actions {
-  display: grid;
-  gap: 10px;
-  padding: 0 20px 20px;
-}
-
-.game-info-action {
-  width: 100%;
-  min-height: 44px;
-  border: 1px solid var(--surface-border);
-  border-radius: 10px;
-  font-size: 0.9rem;
-  font-weight: 750;
-}
-
-.game-info-action-primary {
-  border-color: transparent;
-  background: var(--color-primary);
-  color: #fff;
-}
-
-.game-info-action-secondary {
-  background: #fff;
-  color: #202124;
-}
-
-.game-info-action-primary:hover,
-.game-info-action-primary:focus-visible {
-  background: var(--color-primary-hover);
-  outline: 0;
-}
-
-.game-info-action-secondary:hover,
-.game-info-action-secondary:focus-visible {
-  background: #f1f3f4;
-  outline: 0;
 }
 
 @keyframes game-info-backdrop-in {

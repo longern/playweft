@@ -38,7 +38,7 @@ import {
 } from "./platform-api";
 import ErrorToast from "./ErrorToast";
 import Dialog from "./Dialog";
-import GameInfoPanel, { type GameInfoAction } from "./GameInfoPanel";
+import GameInfoPanel from "./GameInfoPanel";
 import GameFrame, { attachGameBridge } from "./GameFrame";
 import GameWindowDialog, {
   PLATFORM_WINDOW_CAPABILITIES,
@@ -975,16 +975,6 @@ export default function RoomHost({
     setPlayerMenuId(playerId);
   };
 
-  const gameInfoActions: GameInfoAction[] = isOwner
-    ? [
-        {
-          label: t("returnToRoom"),
-          variant: "primary",
-          onSelect: () => void returnToRoom(),
-        },
-      ]
-    : [];
-
   return (
     <div className={`room-shell ${phase === "playing" ? "room-playing" : ""}`}>
       {phase === "lobby" && (
@@ -1490,8 +1480,15 @@ export default function RoomHost({
       )}
       {gameInfoOpen && gameUrl && game && (
         <GameInfoPanel
-          actions={phase === "playing" ? gameInfoActions : undefined}
           description={gameDescription}
+          exitAction={
+            phase === "playing" && isOwner
+              ? {
+                  label: t("returnToRoom"),
+                  onSelect: () => void returnToRoom(),
+                }
+              : undefined
+          }
           icon={gameIconHref}
           isFavorite={isFavorite}
           manifestUrl={game.manifestUrl}
