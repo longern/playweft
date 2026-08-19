@@ -53,7 +53,7 @@ interface RoomState {
   match: {
     id: string;
     startedAt: number;
-    randomSeed: number;
+    randomSeed: string;
   };
   recentActions: StoredAction[];
 }
@@ -1904,11 +1904,12 @@ async function proxyAvatar(source: string, request: Request): Promise<Response> 
   }
 }
 
-function secureRandomSeed(): number {
-  const values = new Uint32Array(1);
+function secureRandomSeed(): string {
+  const values = new Uint8Array(16);
   crypto.getRandomValues(values);
-  // Avoid zero so games can safely use xorshift-style PRNGs as well as LCGs.
-  return values[0] || 1;
+  return Array.from(values, (value) => value.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 async function parseRequestJson(request: Request): Promise<unknown> {

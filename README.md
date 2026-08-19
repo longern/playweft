@@ -295,8 +295,10 @@ Values crossing the Lua boundary must be JSON-compatible: null, booleans,
 finite numbers, strings, arrays, and objects with string keys. `setup` receives
 `{ protocolVersion, match, players }` after the roster locks. `players` is the
 seat-ordered `{ id, seat, name? }` roster. `match` contains `{ id, ownerId,
-startedAt, randomSeed }`; it is regenerated whenever the room starts another
-game. Action context contains `{ protocolVersion, matchId, actionId, actionAt,
+startedAt, randomSeed }`; `randomSeed` is a platform-generated 128-bit random
+value encoded as a fixed 32-character lowercase hexadecimal string, and is
+regenerated whenever the room starts another game. Action context contains
+`{ protocolVersion, matchId, actionId, actionAt,
 version, actor }`. `actor` has `{ id, role, seat?, name?, isOwner }`.
 
 `on_action` must explicitly return either `{ accepted = true, state, events }`

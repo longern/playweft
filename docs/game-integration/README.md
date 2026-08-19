@@ -491,7 +491,7 @@ end
     id = "match_...",
     ownerId = "actor_...",
     startedAt = 1785123456789,
-    randomSeed = 123,
+    randomSeed = "a18c4f092bd771e03aa5c6d9ef104b82",
   },
   players = {
     { id = "actor_...", name = "Alice", seat = 1 },
@@ -504,6 +504,11 @@ Player IDs are opaque and room-scoped. Names are optional presentation data,
 never authorization keys. `on_action` receives `{ protocolVersion, matchId,
 actionId, actionAt, version, actor }`; actor contains `{ id, role, seat?, name?,
 isOwner }`.
+
+`match.randomSeed` is a platform-generated 128-bit random value, encoded as a
+fixed 32-character lowercase hexadecimal string. It is regenerated for every
+new match. Games may use it to initialize a deterministic PRNG; do not expose
+it in player-visible state before the game no longer depends on hidden draws.
 
 An action must explicitly return:
 
