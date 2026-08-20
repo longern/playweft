@@ -24,10 +24,11 @@ const platformBaseUrl = new URL("/", window.location.href).href;
 
 let featuredGamesPromise: Promise<FeaturedGame[]> | undefined;
 
-export function useFeaturedGames(): FeaturedGame[] {
+export function useFeaturedGames(enabled = true): FeaturedGame[] {
   const [games, setGames] = useState<FeaturedGame[]>([]);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     featuredGamesPromise ??= loadFeaturedGames(configuredSources);
     void featuredGamesPromise.then((loaded) => {
@@ -36,7 +37,7 @@ export function useFeaturedGames(): FeaturedGame[] {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
   return games;
 }

@@ -242,6 +242,7 @@ export default function App() {
       >
         <Home
           externalGameUrl={soloGame ? undefined : externalGameUrl}
+          suppressGameShelves={Boolean(externalGameUrl || soloGame)}
           nickname={nickname}
           onNavigate={navigate}
           onBeginEntry={beginEntry}
@@ -275,6 +276,7 @@ export default function App() {
 
 interface HomeProps {
   externalGameUrl?: string;
+  suppressGameShelves: boolean;
   nickname: string;
   onNavigate(path: string): void;
   onBeginEntry(): () => boolean;
@@ -286,6 +288,7 @@ interface HomeProps {
 
 function Home({
   externalGameUrl,
+  suppressGameShelves,
   nickname,
   onNavigate,
   onBeginEntry,
@@ -307,7 +310,7 @@ function Home({
   const [favoriteGamePhases, setFavoriteGamePhases] = useState<
     Record<string, ShelfGamePhase>
   >({});
-  const featuredGames = useFeaturedGames();
+  const featuredGames = useFeaturedGames(!suppressGameShelves);
   const [error, setError] = useState<string>();
   const [gameMenu, setGameMenu] = useState<{
     game: ShelfGame;
@@ -577,7 +580,7 @@ function Home({
           </form>
         </section>
 
-        {renderedFavoriteGames.length > 0 && (
+        {!suppressGameShelves && renderedFavoriteGames.length > 0 && (
           <GameShelf
             title={t("favorites")}
             kind="favorite"
@@ -596,7 +599,7 @@ function Home({
             onContextMenu={openGameMenu}
           />
         )}
-        {renderedRecentGames.length > 0 && (
+        {!suppressGameShelves && renderedRecentGames.length > 0 && (
           <GameShelf
             title={t("recentlyPlayed")}
             kind="recent"
@@ -613,18 +616,20 @@ function Home({
             onContextMenu={openGameMenu}
           />
         )}
-        <GameShelf
-          title={t("recommended")}
-          kind="recommended"
-          games={featuredGames}
-          activeGameId={
-            gameMenu?.kind === "recommended"
-              ? gameMenu.game.manifestId
-              : undefined
-          }
-          onSelect={launchGame}
-          onContextMenu={openGameMenu}
-        />
+        {!suppressGameShelves && (
+          <GameShelf
+            title={t("recommended")}
+            kind="recommended"
+            games={featuredGames}
+            activeGameId={
+              gameMenu?.kind === "recommended"
+                ? gameMenu.game.manifestId
+                : undefined
+            }
+            onSelect={launchGame}
+            onContextMenu={openGameMenu}
+          />
+        )}
       </main>
       {error && (
         <ErrorToast message={error} onDismiss={() => setError(undefined)} />
