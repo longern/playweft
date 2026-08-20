@@ -35,23 +35,33 @@ export class PlatformSessionError extends Error {
   }
 }
 
-export async function issueGuestSession(request: Request, env: Env): Promise<Response> {
+export async function issueGuestSession(
+  request: Request,
+  env: Env,
+): Promise<Response> {
   requirePlatformOrigin(request);
   const secret = requireSecret(env);
   const requestedName = await requestedDisplayName(request);
   const existingToken = readCookie(request.headers.get("Cookie"), COOKIE_NAME);
-  const existing = existingToken ? await verify(existingToken, secret) : undefined;
+  const existing = existingToken
+    ? await verify(existingToken, secret)
+    : undefined;
   const now = Math.floor(Date.now() / 1000);
   const current = existing && existing.exp > now ? existing : undefined;
-  const name = requestedName === undefined
-    ? current?.name
-    : requestedName ?? accountDefaultName(current);
+  const name =
+    requestedName === undefined
+      ? current?.name
+      : (requestedName ?? accountDefaultName(current));
   if (current && current.name === name) {
-    return Response.json({ authenticated: true }, { headers: { "Cache-Control": "no-store" } });
+    return Response.json(
+      { authenticated: true },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
-  const sessionTtl = current?.provider === "x"
-    ? AUTHENTICATED_SESSION_TTL_SECONDS
-    : SESSION_TTL_SECONDS;
+  const sessionTtl =
+    current?.provider === "x"
+      ? AUTHENTICATED_SESSION_TTL_SECONDS
+      : SESSION_TTL_SECONDS;
   const payload: PlatformSession = {
     sub: current?.sub ?? `guest_${crypto.randomUUID()}`,
     exp: now + sessionTtl,
@@ -62,12 +72,15 @@ export async function issueGuestSession(request: Request, env: Env): Promise<Res
     ...(current?.username ? { username: current.username } : {}),
   };
   const cookie = await sessionCookie(request, payload, secret, sessionTtl);
-  return Response.json({ authenticated: true }, {
-    headers: {
-      "Set-Cookie": cookie,
-      "Cache-Control": "no-store",
+  return Response.json(
+    { authenticated: true },
+    {
+      headers: {
+        "Set-Cookie": cookie,
+        "Cache-Control": "no-store",
+      },
     },
-  });
+  );
 }
 
 export async function platformSessionStatus(
@@ -124,8 +137,7 @@ export async function authenticatedSessionCookie(
 ): Promise<string> {
   const payload: PlatformSession = {
     ...identity,
-    exp:
-      Math.floor(Date.now() / 1000) + AUTHENTICATED_SESSION_TTL_SECONDS,
+    exp: Math.floor(Date.now() / 1000) + AUTHENTICATED_SESSION_TTL_SECONDS,
   };
   return sessionCookie(
     request,
@@ -162,12 +174,18 @@ async function requestedDisplayName(
   return name;
 }
 
-export async function requirePlatformSession(request: Request, env: Env): Promise<PlatformSession> {
+export async function requirePlatformSession(
+  request: Request,
+  env: Env,
+): Promise<PlatformSession> {
   const token = readCookie(request.headers.get("Cookie"), COOKIE_NAME);
   if (!token) throw new PlatformSessionError(401, "platform session required");
   const payload = await verify(token, requireSecret(env));
   if (!payload || payload.exp <= Math.floor(Date.now() / 1000)) {
-    throw new PlatformSessionError(401, "platform session is invalid or expired");
+    throw new PlatformSessionError(
+      401,
+      "platform session is invalid or expired",
+    );
   }
   return payload;
 }
@@ -175,7 +193,10 @@ export async function requirePlatformSession(request: Request, env: Env): Promis
 export function requirePlatformOrigin(request: Request): void {
   const requestOrigin = new URL(request.url).origin;
   if (request.headers.get("Origin") !== requestOrigin) {
-    throw new PlatformSessionError(403, "request must originate from the same origin as the platform endpoint");
+    throw new PlatformSessionError(
+      403,
+      "request must originate from the same origin as the platform endpoint",
+    );
   }
 }
 
@@ -192,9 +213,17 @@ async function sign(payload: PlatformSession, secret: string): Promise<string> {
   return `${body}.${base64Url(signature)}`;
 }
 
-async function verify(token: string, secret: string): Promise<PlatformSession | undefined> {
+async function verify(
+  token: string,
+  secret: string,
+): Promise<PlatformSession | undefined> {
   const [body, signature] = token.split(".");
-  if (!body || !signature || !constantTimeEqual(base64UrlDecode(signature), await hmac(body, secret))) return undefined;
+  if (
+    !body ||
+    !signature ||
+    !constantTimeEqual(base64UrlDecode(signature), await hmac(body, secret))
+  )
+    return undefined;
   try {
     const payload = JSON.parse(
       new TextDecoder().decode(base64UrlDecode(body)),
@@ -270,7 +299,7 @@ function accountAvatarUrl(value: unknown): string | undefined {
     if (url.hostname === "pbs.twimg.com") {
       url.pathname = url.pathname.replace(
         /_normal(\.[a-z0-9]+)$/i,
-        "_bigger$1",
+        "_200x200$1",
       );
     }
     return url.toString();
@@ -282,9 +311,7 @@ function accountAvatarUrl(value: unknown): string | undefined {
 function accountUsername(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const username = value.trim();
-  return username.length > 0 && username.length <= 100
-    ? username
-    : undefined;
+  return username.length > 0 && username.length <= 100 ? username : undefined;
 }
 
 async function sessionCookie(
@@ -323,27 +350,39 @@ async function hmac(value: string, secret: string): Promise<Uint8Array> {
     false,
     ["sign"],
   );
-  return new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)));
+  return new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)),
+  );
 }
 
 function readCookie(header: string | null, name: string): string | undefined {
-  return header?.split(";").map((value) => value.trim()).find((value) => value.startsWith(`${name}=`))?.slice(name.length + 1);
+  return header
+    ?.split(";")
+    .map((value) => value.trim())
+    .find((value) => value.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
 }
 
 function base64Url(bytes: Uint8Array): string {
   let text = "";
   for (const byte of bytes) text += String.fromCharCode(byte);
-  return btoa(text).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  return btoa(text)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
 }
 
 function base64UrlDecode(value: string): Uint8Array {
-  const padded = value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - value.length % 4) % 4);
+  const padded =
+    value.replaceAll("-", "+").replaceAll("_", "/") +
+    "=".repeat((4 - (value.length % 4)) % 4);
   return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
 }
 
 function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;
   let difference = 0;
-  for (let index = 0; index < left.byteLength; index += 1) difference |= left[index]! ^ right[index]!;
+  for (let index = 0; index < left.byteLength; index += 1)
+    difference |= left[index]! ^ right[index]!;
   return difference === 0;
 }
