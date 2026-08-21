@@ -6,6 +6,7 @@ import {
   Maximize2,
   Power,
   RefreshCw,
+  Share,
   Star,
   X,
 } from "lucide-react";
@@ -112,6 +113,21 @@ export default function GameInfoPanel({
     }
   };
 
+  const shareGameLink = async () => {
+    if (!manifestUrl || typeof navigator.share !== "function") return;
+    try {
+      await navigator.share({
+        title: name,
+        url: gameLaunchLink(manifestUrl),
+      });
+    } catch {
+      // A dismissed share sheet is not an error that needs to be surfaced.
+    }
+  };
+
+  const canShareGameLink =
+    Boolean(manifestUrl) && typeof navigator.share === "function";
+
   return (
     <dialog
       ref={dialog}
@@ -216,6 +232,16 @@ export default function GameInfoPanel({
                   </span>
                   <span className="game-info-quick-action-label">
                     {t(isFavorite ? "unfavorite" : "favorite")}
+                  </span>
+                </button>
+              )}
+              {canShareGameLink && (
+                <button type="button" onClick={() => void shareGameLink()}>
+                  <span className="game-info-quick-action-icon">
+                    <Share aria-hidden="true" />
+                  </span>
+                  <span className="game-info-quick-action-label">
+                    {t("shareGame")}
                   </span>
                 </button>
               )}
