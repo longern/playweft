@@ -1270,8 +1270,7 @@ export class GameRoom extends DurableObject<Env> {
         lastSeenAt: now,
         isOwner: playerId === (await this.ownerPlayerId()),
       } satisfies SocketAttachment;
-      if (attachment.isOwner)
-        await this.ctx.storage.setAlarm(now + HOST_OFFLINE_TIMEOUT_MS);
+      if (attachment.isOwner) await this.scheduleAlarm(undefined, now);
       return { attachment, liveRoom: config.liveRoom };
     });
 
@@ -1446,8 +1445,7 @@ export class GameRoom extends DurableObject<Env> {
   ): Promise<void> {
     const now = Date.now();
     this.saveSocketAttachment(webSocket, { ...attachment, lastSeenAt: now });
-    if (attachment.isOwner)
-      await this.ctx.storage.setAlarm(now + HOST_OFFLINE_TIMEOUT_MS);
+    if (attachment.isOwner) await this.scheduleAlarm(undefined, now);
   }
 
   private async transferOfflineHost(
@@ -1478,15 +1476,18 @@ export class GameRoom extends DurableObject<Env> {
     const nextOwnerLastSeenAt = lastSeenByPlayer.get(nextOwner[0]);
     this.updateSocketOwnership(nextOwner[0]);
     if (nextOwnerLastSeenAt !== undefined)
-      await this.ctx.storage.setAlarm(
-        nextOwnerLastSeenAt + HOST_OFFLINE_TIMEOUT_MS,
-      );
+      await this.scheduleAlarm(undefined, nextOwnerLastSeenAt);
     this.broadcast(await this.lobby());
   }
 
-  private async scheduleAlarm(fallbackAt?: number): Promise<void> {
+  private async scheduleAlarm(
+    fallbackAt?: number,
+    ownerLastSeenAtOverride?: number,
+  ): Promise<void> {
     const { ownerPlayerId, lastActivity } = await this.meta();
-    const ownerLastSeenAt = this.socketLastSeenByPlayer().get(ownerPlayerId);
+    const ownerLastSeenAt =
+      ownerLastSeenAtOverride ??
+      this.socketLastSeenByPlayer().get(ownerPlayerId);
     const presenceCheckAt =
       ownerLastSeenAt && Date.now() - ownerLastSeenAt < HOST_OFFLINE_TIMEOUT_MS
         ? ownerLastSeenAt + HOST_OFFLINE_TIMEOUT_MS
