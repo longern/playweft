@@ -7,9 +7,23 @@ export class GameRuntimeError extends Error {
   }
 }
 
+export type GameTimerOperation =
+  | {
+      op: "schedule";
+      id: string;
+      afterMs: number;
+      payload?: JsonValue;
+    }
+  | {
+      op: "cancel";
+      id: string;
+    };
+
 export interface GameTransitionResult {
   state: JsonValue;
   events: JsonValue[];
+  /** Authoritative timer mutations to commit with this state transition. */
+  timerOps?: GameTimerOperation[];
 }
 
 export type GameActionResult =
@@ -17,7 +31,7 @@ export type GameActionResult =
   | { accepted: false; error: ActionError };
 
 export interface GameRuntime {
-  setup(context: JsonValue): JsonValue;
+  setup(context: JsonValue): GameTransitionResult;
   applyAction(
     state: JsonValue,
     action: JsonValue,
@@ -29,6 +43,11 @@ export interface GameRuntime {
     context: JsonValue,
   ): GameTransitionResult;
   playerLeft(state: JsonValue, context: JsonValue): GameTransitionResult;
+  onTimer(
+    state: JsonValue,
+    timer: JsonValue,
+    context: JsonValue,
+  ): GameTransitionResult;
   returnToRoom(state: JsonValue, context: JsonValue): boolean;
   dispose(): void;
 }

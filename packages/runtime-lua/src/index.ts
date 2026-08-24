@@ -10,6 +10,7 @@ import {
   GameRuntimeError,
   type GameActionResult,
   type GameRuntime,
+  type GameTimerOperation,
   type GameTransitionResult,
 } from "@playweft/runtime-core";
 import "./wasm";
@@ -21,6 +22,11 @@ const MAX_TABLE_ENTRIES = 2_048;
 const MAX_SCRIPT_BYTES = 256 * 1024;
 const MAX_VALUE_BYTES = 64 * 1024;
 const FUEL_LIMIT = 50_000;
+const MAX_TIMER_OPS = 32;
+const MAX_TIMER_PAYLOAD_BYTES = 8 * 1024;
+const MIN_TIMER_DELAY_MS = 1_000;
+const MAX_TIMER_DELAY_MS = 60 * 60 * 1_000;
+const TIMER_ID_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
 
 let luaModulePromise: Promise<LuaWasm> | undefined;
 
@@ -75,16 +81,24 @@ if type(setup) ~= "function" or type(on_action) ~= "function" or type(view) ~= "
   error("Lua game must define setup(context), on_action(state, action, context), and view(state, events, context)", 0)
 end
 
+local __playweft_has_timer_handler = type(on_timer) == "function"
+local function __playweft_transition(result)
+  if not __playweft_has_timer_handler and type(result) == "table" and result.timerOps ~= nil then
+    error("on_timer must be defined before this game can schedule timers", 0)
+  end
+  return result
+end
+
 return function(kind, state, action, context)
   __playweft_fuel = 0
   if kind == "setup" then
-    return setup(context)
+    return __playweft_transition(setup(context))
   end
   if kind == "player_left" then
     if on_player_left == nil then
       return { state = state, events = {} }
     end
-    return on_player_left(state, context)
+    return __playweft_transition(on_player_left(state, context))
   end
   if kind == "view" then
     return view(state, action, context)
@@ -95,7 +109,13 @@ return function(kind, state, action, context)
     end
     return on_return_to_room(state, context)
   end
-  return on_action(state, action, context)
+  if kind == "timer" then
+    if not __playweft_has_timer_handler then
+      error("on_timer must be defined before this game can schedule timers", 0)
+    end
+    return __playweft_transition(on_timer(state, action, context))
+  end
+  return __playweft_transition(on_action(state, action, context))
 end
 `;
 }
@@ -308,11 +328,17 @@ export class LuaGameRuntime implements GameRuntime {
     }
   }
 
-  setup(context: JsonValue): JsonValue {
-    const state = this.invoke("setup", null, null, context)[0] ?? null;
-    assertJson(state, "setup result");
-    assertJsonSize(state, "setup result", MAX_VALUE_BYTES);
-    return state;
+  setup(context: JsonValue): GameTransitionResult {
+    const result = this.invoke("setup", null, null, context)[0];
+    // Keep older games deployable while allowing newer games to opt into
+    // transition metadata such as authoritative timer operations.
+    if (result === undefined) {
+      return this.transitionResult(result, "setup");
+    }
+    if (!isPlainObject(result) || !("state" in result)) {
+      return this.transitionResult({ state: result, events: [] }, "setup");
+    }
+    return this.transitionResult(result, "setup");
   }
 
   applyAction(
@@ -359,12 +385,21 @@ export class LuaGameRuntime implements GameRuntime {
     context: JsonValue,
   ): GameTransitionResult {
     const result = this.invoke("view", state, events, context)[0];
-    return this.transitionResult(result, "view");
+    return this.transitionResult(result, "view", false);
   }
 
   playerLeft(state: JsonValue, context: JsonValue): GameTransitionResult {
     const result = this.invoke("player_left", state, null, context)[0];
     return this.transitionResult(result, "on_player_left");
+  }
+
+  onTimer(
+    state: JsonValue,
+    timer: JsonValue,
+    context: JsonValue,
+  ): GameTransitionResult {
+    const result = this.invoke("timer", state, timer, context)[0];
+    return this.transitionResult(result, "on_timer");
   }
 
   returnToRoom(state: JsonValue, context: JsonValue): boolean {
@@ -377,6 +412,7 @@ export class LuaGameRuntime implements GameRuntime {
   private transitionResult(
     result: JsonValue | undefined,
     handler: string,
+    allowTimerOps = true,
   ): GameTransitionResult {
     if (!isPlainObject(result) || !("state" in result)) {
       throw new LuaScriptError(
@@ -393,7 +429,103 @@ export class LuaGameRuntime implements GameRuntime {
     assertJson(events, `${handler} result.events`);
     assertJsonSize(result.state, `${handler} result.state`, MAX_VALUE_BYTES);
     assertJsonSize(events, `${handler} result.events`, 16 * 1024);
-    return { state: result.state, events };
+    if (!allowTimerOps && "timerOps" in result) {
+      throw new LuaScriptError(`${handler} must not return timerOps`);
+    }
+    const timerOps = allowTimerOps
+      ? this.timerOps(result.timerOps, handler)
+      : undefined;
+    return {
+      state: result.state,
+      events,
+      ...(timerOps?.length ? { timerOps } : {}),
+    };
+  }
+
+  private timerOps(
+    value: JsonValue | undefined,
+    handler: string,
+  ): GameTimerOperation[] {
+    if (value === undefined || isEmptyObject(value)) return [];
+    if (!Array.isArray(value))
+      throw new LuaScriptError(`${handler} result.timerOps must be an array`);
+    if (value.length > MAX_TIMER_OPS) {
+      throw new LuaScriptError(
+        `${handler} result.timerOps exceeds the ${MAX_TIMER_OPS}-operation limit`,
+      );
+    }
+    const ids = new Set<string>();
+    return value.map((operation, index) => {
+      if (!isPlainObject(operation)) {
+        throw new LuaScriptError(
+          `${handler} result.timerOps[${index}] must be an object`,
+        );
+      }
+      if (
+        typeof operation.id !== "string" ||
+        !TIMER_ID_PATTERN.test(operation.id)
+      ) {
+        throw new LuaScriptError(
+          `${handler} result.timerOps[${index}].id is invalid`,
+        );
+      }
+      if (ids.has(operation.id)) {
+        throw new LuaScriptError(
+          `${handler} result.timerOps must not contain duplicate timer ids`,
+        );
+      }
+      ids.add(operation.id);
+      if (operation.op === "cancel") {
+        if (Object.keys(operation).some((key) => key !== "op" && key !== "id")) {
+          throw new LuaScriptError(
+            `${handler} result.timerOps[${index}] cancel accepts only op and id`,
+          );
+        }
+        return { op: "cancel", id: operation.id };
+      }
+      if (operation.op !== "schedule") {
+        throw new LuaScriptError(
+          `${handler} result.timerOps[${index}].op must be schedule or cancel`,
+        );
+      }
+      if (
+        typeof operation.afterMs !== "number" ||
+        !Number.isInteger(operation.afterMs) ||
+        operation.afterMs < MIN_TIMER_DELAY_MS ||
+        operation.afterMs > MAX_TIMER_DELAY_MS
+      ) {
+        throw new LuaScriptError(
+          `${handler} result.timerOps[${index}].afterMs must be an integer between ${MIN_TIMER_DELAY_MS} and ${MAX_TIMER_DELAY_MS}`,
+        );
+      }
+      if (operation.payload !== undefined) {
+        assertJson(operation.payload, `${handler} result.timerOps[${index}].payload`);
+        assertJsonSize(
+          operation.payload,
+          `${handler} result.timerOps[${index}].payload`,
+          MAX_TIMER_PAYLOAD_BYTES,
+        );
+      }
+      if (
+        Object.keys(operation).some(
+          (key) =>
+            key !== "op" &&
+            key !== "id" &&
+            key !== "afterMs" &&
+            key !== "payload",
+        )
+      ) {
+        throw new LuaScriptError(
+          `${handler} result.timerOps[${index}] contains an unknown field`,
+        );
+      }
+      return {
+        op: "schedule",
+        id: operation.id,
+        afterMs: operation.afterMs,
+        ...(operation.payload === undefined ? {} : { payload: operation.payload }),
+      };
+    });
   }
 
   dispose(): void {
@@ -406,7 +538,13 @@ export class LuaGameRuntime implements GameRuntime {
   }
 
   private invoke(
-    kind: "setup" | "action" | "view" | "player_left" | "return_to_room",
+    kind:
+      | "setup"
+      | "action"
+      | "view"
+      | "player_left"
+      | "return_to_room"
+      | "timer",
     state: JsonValue,
     action: JsonValue,
     context: JsonValue,

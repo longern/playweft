@@ -10,7 +10,11 @@ import {
   type RoomPlayer,
   type RoomSnapshot,
 } from "@playweft/game-protocol";
-import { GameRuntimeError, type GameRuntime } from "@playweft/runtime-core";
+import {
+  GameRuntimeError,
+  type GameRuntime,
+  type GameTimerOperation,
+} from "@playweft/runtime-core";
 import type { Env } from "./env";
 import {
   createRuntime,
@@ -30,6 +34,9 @@ const ROOM_IDLE_TTL_MS = 60 * 60 * 1_000;
 const HOST_OFFLINE_TIMEOUT_MS = 45_000;
 const MAX_PLAYERS = 32;
 const GAME_PROTOCOL_VERSION = 1;
+const MAX_PENDING_TIMERS = 32;
+const MAX_TIMER_PAYLOAD_BYTES = 8 * 1024;
+const MAX_TIMER_PAYLOAD_TOTAL_BYTES = 32 * 1024;
 
 interface RoomConfig {
   gameId: string;
@@ -56,6 +63,13 @@ interface RoomState {
     randomSeed: string;
   };
   recentActions: StoredAction[];
+  timers: RoomTimer[];
+}
+
+interface RoomTimer {
+  id: string;
+  dueAt: number;
+  payload?: JsonValue;
 }
 
 interface StoredAction {
@@ -77,6 +91,10 @@ interface RoomMeta {
   manifestUrl: string;
   ownerPlayerId: string;
   phase: "lobby" | "playing";
+  fault?: {
+    message: string;
+    at: number;
+  };
   lastActivity?: number;
   members: Record<string, RoomMember>;
   config?: RoomConfig;
@@ -210,13 +228,16 @@ export class GameRoom extends DurableObject<Env> {
       await this.ctx.storage.deleteAll();
       return;
     }
+    await this.runDueTimers(Date.now());
+    meta = await this.meta();
     await this.transferOfflineHost();
     if (this.sockets().length > 0) {
       await this.touch();
       return;
     }
     const expiresAt = (meta.lastActivity ?? 0) + ROOM_IDLE_TTL_MS;
-    if (Date.now() >= expiresAt) {
+    const hasTimers = await this.hasPendingTimers();
+    if (!hasTimers && Date.now() >= expiresAt) {
       this.disposeRuntime();
       await this.ctx.storage.deleteAll();
       return;
@@ -254,12 +275,14 @@ export class GameRoom extends DurableObject<Env> {
       }
       const actionId = validateActionId(input.requestId);
       requestId = actionId;
+      const receivedAt = Date.now();
       const response = await this.enqueue(() =>
         this.applyActionInput({
           playerId: attachment.playerId,
           actorId: attachment.actorId,
           requestId: actionId,
           action: input.action,
+          receivedAt,
         }),
       );
       webSocket.send(JSON.stringify(response.result));
@@ -501,8 +524,9 @@ export class GameRoom extends DurableObject<Env> {
       startedAt,
       randomSeed: secureRandomSeed(),
     };
-    const state = engine.setup({
+    const setup = engine.setup({
       protocolVersion: GAME_PROTOCOL_VERSION,
+      serverTime: startedAt,
       match: {
         id: match.id,
         ownerId: members[ownerPlayerId]!.actorId,
@@ -511,10 +535,13 @@ export class GameRoom extends DurableObject<Env> {
       },
       players,
     });
-    assertJsonSize(state, "initial state", MAX_STATE_BYTES);
+    assertJsonSize(setup.state, "initial state", MAX_STATE_BYTES);
+    this.assertTimerSupport(config, setup.timerOps ?? []);
+    const timers = this.applyTimerOps([], setup.timerOps ?? [], startedAt);
     const snapshot: RoomSnapshot = {
       type: "snapshot",
-      state,
+      state: setup.state,
+      events: setup.events,
       matchId: match.id,
       version: 0,
       serverTime: startedAt,
@@ -535,10 +562,11 @@ export class GameRoom extends DurableObject<Env> {
     meta.phase = "playing";
     await this.saveMeta(meta);
     await this.saveRoomState({
-      state,
+      state: setup.state,
       version: 0,
       match,
       recentActions: [],
+      timers,
     });
     await this.touch();
     this.sendPreparedBroadcast(messages);
@@ -653,6 +681,7 @@ export class GameRoom extends DurableObject<Env> {
     if ((await this.phase()) !== "playing") {
       throw new RoomHttpError(409, "the room is already in the lobby");
     }
+    await this.runDueTimers(Date.now());
 
     const [config, room, members, ownerPlayerId] = await Promise.all([
       this.config(),
@@ -662,16 +691,19 @@ export class GameRoom extends DurableObject<Env> {
     ]);
     const engine = await this.engine(config);
     const serverTime = Date.now();
-    const allowed = engine.returnToRoom(room.state, {
-      protocolVersion: GAME_PROTOCOL_VERSION,
-      matchId: room.match.id,
-      version: room.version,
-      serverTime,
-      actor: this.gameActor(
-        members[playerId]!,
-        playerId === ownerPlayerId,
-      ),
-    });
+    const currentMeta = await this.meta();
+    const allowed = currentMeta.fault
+      ? true
+      : engine.returnToRoom(room.state, {
+          protocolVersion: GAME_PROTOCOL_VERSION,
+          matchId: room.match.id,
+          version: room.version,
+          serverTime,
+          actor: this.gameActor(
+            members[playerId]!,
+            playerId === ownerPlayerId,
+          ),
+        });
     if (!allowed) {
       throw new RoomHttpError(
         409,
@@ -686,6 +718,7 @@ export class GameRoom extends DurableObject<Env> {
     const meta = await this.meta();
     meta.phase = "lobby";
     meta.members = members;
+    delete meta.fault;
     await this.saveMeta(meta);
     await this.clearRoomState(config);
     await this.touch();
@@ -715,6 +748,8 @@ export class GameRoom extends DurableObject<Env> {
       return lobby;
     }
 
+    await this.runDueTimers(Date.now());
+
     const [config, room] = await Promise.all([this.config(), this.roomState()]);
     const engine = await this.engine(config);
     const leftAt = Date.now();
@@ -723,6 +758,7 @@ export class GameRoom extends DurableObject<Env> {
       matchId: room.match.id,
       version: room.version,
       leftAt,
+      serverTime: leftAt,
       actor: this.gameActor(member, playerId === ownerPlayerId),
     });
     const version = room.version + 1;
@@ -747,7 +783,13 @@ export class GameRoom extends DurableObject<Env> {
       ownerPlayerId,
     );
     delete members[playerId];
-    await this.saveRoomState({ ...room, state: result.state, version });
+    this.assertTimerSupport(config, result.timerOps ?? []);
+    await this.saveRoomState({
+      ...room,
+      state: result.state,
+      version,
+      timers: this.applyTimerOps(room.timers, result.timerOps ?? [], leftAt),
+    });
     await this.saveMembers(members);
     await this.touch();
     this.sendPreparedBroadcast(messages);
@@ -873,11 +915,13 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(400, "expected { requestId, action }");
     }
     const playerId = this.playerId(request);
+    const receivedAt = Date.now();
     return this.applyActionInput({
       playerId,
       actorId: await this.memberActorId(playerId),
       requestId: validateActionId(input.requestId),
       action: input.action,
+      receivedAt,
     });
   }
 
@@ -886,6 +930,7 @@ export class GameRoom extends DurableObject<Env> {
     actorId: string;
     requestId: string;
     action: unknown;
+    receivedAt: number;
   }): Promise<RoomActionResponse> {
     if (!input.actorId || input.actorId.length > MAX_PLAYER_ID_LENGTH) {
       throw new RoomHttpError(
@@ -897,6 +942,13 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(409, "the game has not started");
     if ((await this.memberActorId(input.playerId)) !== input.actorId) {
       throw new RoomHttpError(403, "player is not in this game");
+    }
+    if ((await this.meta()).fault) {
+      throw new RoomHttpError(409, "the game is paused after a timer error");
+    }
+    await this.runDueTimers(input.receivedAt);
+    if ((await this.meta()).fault) {
+      throw new RoomHttpError(409, "the game is paused after a timer error");
     }
     assertJson(input.action, "action");
     assertJsonSize(input.action, "action", MAX_ACTION_BYTES);
@@ -923,12 +975,13 @@ export class GameRoom extends DurableObject<Env> {
 
     const engine = await this.engine(config);
     const member = meta.members[input.playerId]!;
-    const actionAt = Date.now();
+    const serverTime = Date.now();
     const result = engine.applyAction(room.state, input.action, {
       protocolVersion: GAME_PROTOCOL_VERSION,
       matchId: room.match.id,
       actionId: input.requestId,
-      actionAt,
+      actionAt: input.receivedAt,
+      serverTime,
       version: room.version,
       actor: this.gameActor(
         member,
@@ -964,7 +1017,7 @@ export class GameRoom extends DurableObject<Env> {
       events: result.events,
       matchId: room.match.id,
       version,
-      serverTime: actionAt,
+      serverTime,
       scriptHash: config.scriptHash,
     };
     const visibleUpdate = this.snapshotForViewer(
@@ -985,10 +1038,12 @@ export class GameRoom extends DurableObject<Env> {
       matchId: room.match.id,
       version,
     };
+    this.assertTimerSupport(config, result.timerOps ?? []);
     await this.saveRoomState({
       ...room,
       state: result.state,
       version,
+      timers: this.applyTimerOps(room.timers, result.timerOps ?? [], serverTime),
       recentActions: this.rememberAction(room, {
         actorId: input.actorId,
         requestId: input.requestId,
@@ -1001,7 +1056,178 @@ export class GameRoom extends DurableObject<Env> {
     return { result: actionResult, update: visibleUpdate };
   }
 
+  /**
+   * Alarms are best-effort, so every action also drains timers that were due
+   * when its request reached the room. This prevents a late alarm from letting
+   * an action bypass an authoritative deadline.
+   */
+  private async runDueTimers(cutoffAt: number): Promise<void> {
+    if ((await this.phase()) !== "playing") return;
+    const config = await this.config();
+    if (config.liveRoom) return;
+
+    for (let count = 0; count < 16; count += 1) {
+      const [room, meta] = await Promise.all([this.roomState(), this.meta()]);
+      const timer = room.timers
+        .filter((candidate) => candidate.dueAt <= cutoffAt)
+        .sort(compareTimers)[0];
+      if (!timer) return;
+
+      const engine = await this.engine(config);
+      const firedAt = Date.now();
+      let result;
+      try {
+        result = engine.onTimer(
+          room.state,
+          {
+            id: timer.id,
+            ...(timer.payload === undefined ? {} : { payload: timer.payload }),
+          },
+          {
+            protocolVersion: GAME_PROTOCOL_VERSION,
+            matchId: room.match.id,
+            version: room.version,
+            dueAt: timer.dueAt,
+            firedAt,
+            lateByMs: Math.max(0, firedAt - timer.dueAt),
+          },
+        );
+      } catch (error) {
+        if (!(error instanceof GameRuntimeError)) throw error;
+        await this.pauseForTimerError(room, error, firedAt);
+        return;
+      }
+      const version = room.version + 1;
+      const snapshot: RoomSnapshot = {
+        type: "state",
+        state: result.state,
+        events: result.events,
+        matchId: room.match.id,
+        version,
+        serverTime: firedAt,
+        scriptHash: config.scriptHash,
+      };
+      const messages = this.prepareStateBroadcast(
+        snapshot,
+        engine,
+        meta.members,
+        meta.ownerPlayerId,
+      );
+      let timers: RoomTimer[];
+      try {
+        timers = this.applyTimerOps(
+          room.timers.filter((candidate) => candidate.id !== timer.id),
+          result.timerOps ?? [],
+          firedAt,
+        );
+      } catch (error) {
+        if (!(error instanceof GameRuntimeError)) throw error;
+        await this.pauseForTimerError(room, error, firedAt);
+        return;
+      }
+      await this.saveRoomState({
+        ...room,
+        state: result.state,
+        version,
+        timers,
+      });
+      await this.touch();
+      this.sendPreparedBroadcast(messages);
+    }
+  }
+
+  private applyTimerOps(
+    existing: RoomTimer[],
+    operations: GameTimerOperation[],
+    scheduledAt: number,
+  ): RoomTimer[] {
+    const timers = new Map(existing.map((timer) => [timer.id, timer]));
+    for (const operation of operations) {
+      if (operation.op === "cancel") {
+        timers.delete(operation.id);
+        continue;
+      }
+      if (operation.payload !== undefined) {
+        assertJsonSize(
+          operation.payload,
+          `timer ${operation.id} payload`,
+          MAX_TIMER_PAYLOAD_BYTES,
+        );
+      }
+      timers.set(operation.id, {
+        id: operation.id,
+        dueAt: scheduledAt + operation.afterMs,
+        ...(operation.payload === undefined
+          ? {}
+          : { payload: operation.payload }),
+      });
+    }
+    if (timers.size > MAX_PENDING_TIMERS) {
+      throw new GameRuntimeError(
+        `a room may have at most ${MAX_PENDING_TIMERS} pending timers`,
+      );
+    }
+    const result = [...timers.values()].sort(compareTimers);
+    const payloadBytes = result.reduce(
+      (total, timer) =>
+        total +
+        (timer.payload === undefined
+          ? 0
+          : new TextEncoder().encode(JSON.stringify(timer.payload)).byteLength),
+      0,
+    );
+    if (payloadBytes > MAX_TIMER_PAYLOAD_TOTAL_BYTES) {
+      throw new GameRuntimeError(
+        `timer payloads exceed the ${MAX_TIMER_PAYLOAD_TOTAL_BYTES}-byte room limit`,
+      );
+    }
+    return result;
+  }
+
+  private assertTimerSupport(
+    config: RoomConfig,
+    operations: GameTimerOperation[],
+  ): void {
+    if (config.liveRoom && operations.length > 0) {
+      throw new GameRuntimeError(
+        "timerOps require persisted room storage; live rooms cannot schedule timers",
+      );
+    }
+  }
+
+  private async pauseForTimerError(
+    room: RoomState,
+    error: GameRuntimeError,
+    at: number,
+  ): Promise<void> {
+    const meta = await this.meta();
+    meta.fault = { message: error.message.slice(0, 500), at };
+    await this.saveMeta(meta);
+    await this.saveRoomState({ ...room, timers: [] });
+    this.disposeRuntime();
+    this.broadcast({
+      type: "error",
+      error: "The game was paused because a scheduled event failed",
+    });
+    await this.scheduleAlarm();
+  }
+
+  private async hasPendingTimers(): Promise<boolean> {
+    if ((await this.phase()) !== "playing") return false;
+    const config = await this.config();
+    if (config.liveRoom) return false;
+    return (await this.roomState()).timers.length > 0;
+  }
+
+  private async nextTimerAt(): Promise<number> {
+    if ((await this.phase()) !== "playing") return Number.POSITIVE_INFINITY;
+    const config = await this.config();
+    if (config.liveRoom) return Number.POSITIVE_INFINITY;
+    return (await this.roomState()).timers[0]?.dueAt ?? Number.POSITIVE_INFINITY;
+  }
+
   private async snapshot(actorId: string): Promise<RoomSnapshot> {
+    await this.runDueTimers(Date.now());
     const [config, room, meta] = await Promise.all([
       this.config(),
       this.roomState(),
@@ -1132,7 +1358,7 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(409, "room has no live state; start it first");
     }
     const stored = await this.ctx.storage.get<RoomState>("gameState");
-    if (stored !== undefined) return stored;
+    if (stored !== undefined) return { ...stored, timers: stored.timers ?? [] };
     throw new RoomHttpError(
       409,
       "room has no persisted state; start a new match first",
@@ -1265,8 +1491,13 @@ export class GameRoom extends DurableObject<Env> {
       ownerLastSeenAt && Date.now() - ownerLastSeenAt < HOST_OFFLINE_TIMEOUT_MS
         ? ownerLastSeenAt + HOST_OFFLINE_TIMEOUT_MS
         : Number.POSITIVE_INFINITY;
-    const idleExpiryAt = fallbackAt ?? (lastActivity ?? Date.now()) + ROOM_IDLE_TTL_MS;
-    await this.ctx.storage.setAlarm(Math.min(presenceCheckAt, idleExpiryAt));
+    const timerAt = await this.nextTimerAt();
+    const idleExpiryAt = Number.isFinite(timerAt)
+      ? Number.POSITIVE_INFINITY
+      : (fallbackAt ?? (lastActivity ?? Date.now()) + ROOM_IDLE_TTL_MS);
+    await this.ctx.storage.setAlarm(
+      Math.min(presenceCheckAt, timerAt, idleExpiryAt),
+    );
   }
 
   private socketLastSeenByPlayer(): Map<string, number> {
@@ -1930,6 +2161,10 @@ function parseJson(value: string): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function compareTimers(left: RoomTimer, right: RoomTimer): number {
+  return left.dueAt - right.dueAt || left.id.localeCompare(right.id);
 }
 
 function errorMessage(error: unknown): string {

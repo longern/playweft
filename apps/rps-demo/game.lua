@@ -25,10 +25,13 @@ end
 
 function setup(context)
   return {
-    round = 1,
-    players = context.players,
-    match = context.match,
-    choices = {},
+    state = {
+      round = 1,
+      players = context.players,
+      match = context.match,
+      choices = {},
+    },
+    events = {},
   }
 end
 
