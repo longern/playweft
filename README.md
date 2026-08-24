@@ -315,8 +315,8 @@ compiling Wasm inside a request. `patches/wasmoon+1.16.0.patch` is source
 control, not build output: `patch-package` applies it after every install so
 Wasmoon's generated loader accepts the Worker-provided `WebAssembly.Module`.
 
-The runtime enforces a 64 KiB source/state limit, 8 KiB action limit, 16 KiB
-event limit, 32 levels of nesting, 2,048 table entries, and 50,000 Lua
+The runtime enforces a 256 KiB source limit, 64 KiB state limit, 8 KiB action
+limit, 16 KiB event limit, 32 levels of nesting, 2,048 table entries, and 50,000 Lua
 instructions per invocation. Lua does not receive I/O, OS, package/require,
 coroutines, random, or debug APIs. The current generic Wasm build cannot impose
 a separate hard Lua heap cap without invoking a dynamically generated callback
