@@ -107,6 +107,7 @@ export default function RoomHost({
   tRef.current = t;
   const iframe = useRef<HTMLIFrameElement>(null);
   const bridgePort = useRef<MessagePort | undefined>(undefined);
+  const latestSnapshotRef = useRef<RoomSnapshot | undefined>(undefined);
   const roomProfileSnapshot = useRef<
     Map<string, { name?: string; avatarUrl?: string }> | undefined
   >(undefined);
@@ -116,6 +117,7 @@ export default function RoomHost({
   nicknameRef.current = nickname;
   const [manifestUrl, setManifestUrl] = useState<string>();
   const [gameUrl, setGameUrl] = useState<string>();
+  const [gameFrameActive, setGameFrameActive] = useState(true);
   const [loadedGame, setLoadedGame] = useState<LoadedGame>();
   const [gameRevision, setGameRevision] = useState(0);
   const [game, setGame] = useState<DiscoveredGame>();
@@ -161,6 +163,12 @@ export default function RoomHost({
   useEffect(() => {
     if (game) setIsFavorite(isFavoriteGame(game));
   }, [game]);
+
+  useEffect(() => {
+    if (gameFrameActive) return;
+    bridgePort.current?.close();
+    bridgePort.current = undefined;
+  }, [gameFrameActive]);
 
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
@@ -322,6 +330,7 @@ export default function RoomHost({
         setGameHelpHref(loaded.game.helpUrl);
         onGameDiscovered(loaded.game);
         setLoadedGame(loaded);
+        setGameFrameActive(true);
         setGameUrl(loaded.game.url);
       })
       .catch((reason) => {
@@ -362,7 +371,6 @@ export default function RoomHost({
     ];
     let lastPublishedMatchId: string | undefined;
     let lastPublishedVersion = -1;
-    let latestSnapshot: RoomSnapshot | undefined;
     const liveActionRequests = new Map<
       string,
       {
@@ -394,7 +402,7 @@ export default function RoomHost({
       }
       if (snapshot.version <= lastPublishedVersion) return;
       lastPublishedVersion = snapshot.version;
-      latestSnapshot = snapshot;
+      latestSnapshotRef.current = snapshot;
       sendSnapshot(snapshot);
     };
 
@@ -496,6 +504,10 @@ export default function RoomHost({
           setManifestUrl(payload.manifestUrl);
           setGameRevision((revision) => revision + 1);
         } else if (payload.type === "lobby") {
+          if (phaseRef.current === "playing") {
+            latestSnapshotRef.current = undefined;
+            setGameFrameActive(false);
+          }
           setLobby(payload);
         } else {
           publish(payload);
@@ -568,9 +580,11 @@ export default function RoomHost({
         "game.initialize": {
           async handle() {
             if (joined && joinedPlayerId) {
-              if (latestSnapshot) {
+              const snapshot = latestSnapshotRef.current;
+              if (snapshot) {
                 window.setTimeout(() => {
-                  if (!closed && latestSnapshot) sendSnapshot(latestSnapshot);
+                  if (!closed && latestSnapshotRef.current === snapshot)
+                    sendSnapshot(snapshot);
                 }, 0);
               }
               return {
@@ -822,10 +836,13 @@ export default function RoomHost({
       loadedGame?.game.orientation,
     );
     let started = false;
+    const frameWasActive = gameFrameActive;
     setStarting(true);
     try {
       setError(undefined);
       const snapshot = await startRoom(roomId);
+      latestSnapshotRef.current = snapshot;
+      setGameFrameActive(true);
       postRpcNotification(bridgePort.current, "game.state", {
         phase: "playing",
         state: snapshot.state,
@@ -843,6 +860,7 @@ export default function RoomHost({
     } finally {
       setStarting(false);
       if (!started) {
+        setGameFrameActive(frameWasActive);
         void orientationAttempt.then(() => releaseGameFullscreen());
       }
     }
@@ -869,7 +887,10 @@ export default function RoomHost({
   const returnToRoom = async () => {
     try {
       setError(undefined);
-      setLobby(await returnRoomToLobby(roomId));
+      const nextLobby = await returnRoomToLobby(roomId);
+      latestSnapshotRef.current = undefined;
+      setGameFrameActive(false);
+      setLobby(nextLobby);
       setGameInfoOpen(false);
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
@@ -1265,7 +1286,7 @@ export default function RoomHost({
           }
           showOptions={phase === "playing"}
         >
-          {gameUrl && (
+          {gameUrl && gameFrameActive && (
             <GameFrame
               key={gameRevision}
               ref={iframe}

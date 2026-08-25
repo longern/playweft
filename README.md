@@ -320,10 +320,14 @@ Each timer `id` is a single replaceable slot: scheduling an existing id replaces
 it, while cancelling a missing id is harmless. A callback may contain only one
 operation for each id. IDs are 1-64 characters matching
 `[A-Za-z][A-Za-z0-9._:-]*`. `afterMs` is measured from the server time of the
-transition, must be an integer from 1 second through 1 hour, and timer payloads
+transition, must be an integer from 100 milliseconds through 1 hour, and timer payloads
 are server-only JSON values (8 KiB each, 32 KiB total). There may be up to 32
 pending timers per persisted room. `view` must not return `timerOps`.
 Any callback returning `timerOps` requires the game to define `on_timer`.
+Timer execution uses a lazy per-room token budget: it starts with 16 tokens,
+refills one token every 5 seconds, and is capped at 2,000 executions per UTC
+day. Waiting for tokens does not schedule background work; the next timer is
+simply deferred to the first allowed time.
 
 When a timer becomes due, the platform calls the optional callback:
 

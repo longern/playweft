@@ -37,6 +37,10 @@ const GAME_PROTOCOL_VERSION = 1;
 const MAX_PENDING_TIMERS = 32;
 const MAX_TIMER_PAYLOAD_BYTES = 8 * 1024;
 const MAX_TIMER_PAYLOAD_TOTAL_BYTES = 32 * 1024;
+const TIMER_BUDGET_CAPACITY = 16;
+const TIMER_BUDGET_REFILL_MS = 5_000;
+const MAX_TIMER_FIRES_PER_DAY = 2_000;
+const DAY_MS = 24 * 60 * 60 * 1_000;
 
 interface RoomConfig {
   gameId: string;
@@ -64,6 +68,7 @@ interface RoomState {
   };
   recentActions: StoredAction[];
   timers: RoomTimer[];
+  timerBudget: TimerBudget;
 }
 
 interface RoomTimer {
@@ -71,6 +76,17 @@ interface RoomTimer {
   dueAt: number;
   payload?: JsonValue;
 }
+
+interface TimerBudget {
+  tokens: number;
+  updatedAt: number;
+  dayStart: number;
+  firedToday: number;
+}
+
+type TimerBudgetConsumption =
+  | { allowed: true; budget: TimerBudget }
+  | { allowed: false; budget: TimerBudget; nextAllowedAt: number };
 
 interface StoredAction {
   actorId: string;
@@ -567,6 +583,7 @@ export class GameRoom extends DurableObject<Env> {
       match,
       recentActions: [],
       timers,
+      timerBudget: initialTimerBudget(startedAt),
     });
     await this.touch();
     this.sendPreparedBroadcast(messages);
@@ -1073,8 +1090,25 @@ export class GameRoom extends DurableObject<Env> {
         .sort(compareTimers)[0];
       if (!timer) return;
 
-      const engine = await this.engine(config);
       const firedAt = Date.now();
+      const budget = consumeTimerBudget(room.timerBudget, firedAt);
+      if (!budget.allowed) {
+        await this.saveRoomState({
+          ...room,
+          timers: room.timers
+            .map((candidate) =>
+              candidate.id === timer.id
+                ? { ...candidate, dueAt: budget.nextAllowedAt }
+                : candidate,
+            )
+            .sort(compareTimers),
+          timerBudget: budget.budget,
+        });
+        await this.scheduleAlarm();
+        return;
+      }
+
+      const engine = await this.engine(config);
       let result;
       try {
         result = engine.onTimer(
@@ -1130,6 +1164,7 @@ export class GameRoom extends DurableObject<Env> {
         state: result.state,
         version,
         timers,
+        timerBudget: budget.budget,
       });
       await this.touch();
       this.sendPreparedBroadcast(messages);
@@ -1270,7 +1305,8 @@ export class GameRoom extends DurableObject<Env> {
         lastSeenAt: now,
         isOwner: playerId === (await this.ownerPlayerId()),
       } satisfies SocketAttachment;
-      if (attachment.isOwner) await this.scheduleAlarm(undefined, now);
+      if (attachment.isOwner)
+        await this.scheduleAlarm(undefined, now, true);
       return { attachment, liveRoom: config.liveRoom };
     });
 
@@ -1357,7 +1393,13 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(409, "room has no live state; start it first");
     }
     const stored = await this.ctx.storage.get<RoomState>("gameState");
-    if (stored !== undefined) return { ...stored, timers: stored.timers ?? [] };
+    if (stored !== undefined) {
+      return {
+        ...stored,
+        timers: stored.timers ?? [],
+        timerBudget: stored.timerBudget ?? initialTimerBudget(Date.now()),
+      };
+    }
     throw new RoomHttpError(
       409,
       "room has no persisted state; start a new match first",
@@ -1445,7 +1487,7 @@ export class GameRoom extends DurableObject<Env> {
   ): Promise<void> {
     const now = Date.now();
     this.saveSocketAttachment(webSocket, { ...attachment, lastSeenAt: now });
-    if (attachment.isOwner) await this.scheduleAlarm(undefined, now);
+    if (attachment.isOwner) await this.scheduleAlarm(undefined, now, true);
   }
 
   private async transferOfflineHost(
@@ -1483,6 +1525,7 @@ export class GameRoom extends DurableObject<Env> {
   private async scheduleAlarm(
     fallbackAt?: number,
     ownerLastSeenAtOverride?: number,
+    onlyAdvance = false,
   ): Promise<void> {
     const { ownerPlayerId, lastActivity } = await this.meta();
     const ownerLastSeenAt =
@@ -1496,9 +1539,12 @@ export class GameRoom extends DurableObject<Env> {
     const idleExpiryAt = Number.isFinite(timerAt)
       ? Number.POSITIVE_INFINITY
       : (fallbackAt ?? (lastActivity ?? Date.now()) + ROOM_IDLE_TTL_MS);
-    await this.ctx.storage.setAlarm(
-      Math.min(presenceCheckAt, timerAt, idleExpiryAt),
-    );
+    const scheduledAt = Math.min(presenceCheckAt, timerAt, idleExpiryAt);
+    if (onlyAdvance) {
+      const existing = await this.ctx.storage.getAlarm();
+      if (existing !== null && existing <= scheduledAt) return;
+    }
+    await this.ctx.storage.setAlarm(scheduledAt);
   }
 
   private socketLastSeenByPlayer(): Map<string, number> {
@@ -2166,6 +2212,49 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function compareTimers(left: RoomTimer, right: RoomTimer): number {
   return left.dueAt - right.dueAt || left.id.localeCompare(right.id);
+}
+
+function initialTimerBudget(now: number): TimerBudget {
+  return {
+    tokens: TIMER_BUDGET_CAPACITY,
+    updatedAt: now,
+    dayStart: utcDayStart(now),
+    firedToday: 0,
+  };
+}
+
+function consumeTimerBudget(
+  stored: TimerBudget,
+  now: number,
+): TimerBudgetConsumption {
+  const dayStart = utcDayStart(now);
+  const firedToday = stored.dayStart === dayStart ? stored.firedToday : 0;
+  const tokens = Math.min(
+    TIMER_BUDGET_CAPACITY,
+    stored.tokens + Math.max(0, now - stored.updatedAt) / TIMER_BUDGET_REFILL_MS,
+  );
+  if (firedToday >= MAX_TIMER_FIRES_PER_DAY) {
+    return {
+      allowed: false,
+      budget: { tokens, updatedAt: now, dayStart, firedToday },
+      nextAllowedAt: dayStart + DAY_MS,
+    };
+  }
+  if (tokens < 1) {
+    return {
+      allowed: false,
+      budget: { tokens, updatedAt: now, dayStart, firedToday },
+      nextAllowedAt: now + Math.ceil((1 - tokens) * TIMER_BUDGET_REFILL_MS),
+    };
+  }
+  return {
+    allowed: true,
+    budget: { tokens: tokens - 1, updatedAt: now, dayStart, firedToday: firedToday + 1 },
+  };
+}
+
+function utcDayStart(now: number): number {
+  return Math.floor(now / DAY_MS) * DAY_MS;
 }
 
 function errorMessage(error: unknown): string {

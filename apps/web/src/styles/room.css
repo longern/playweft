@@ -1410,8 +1410,8 @@ main.room-host {
     flex: 1 1 auto;
     max-width: none;
     margin: 0;
-    padding: 0;
-    row-gap: 0;
+    padding: 12px 0;
+    row-gap: 8px;
   }
 
   .player-grid .player-card {

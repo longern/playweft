@@ -24,7 +24,7 @@ const MAX_VALUE_BYTES = 64 * 1024;
 const FUEL_LIMIT = 50_000;
 const MAX_TIMER_OPS = 32;
 const MAX_TIMER_PAYLOAD_BYTES = 8 * 1024;
-const MIN_TIMER_DELAY_MS = 1_000;
+const MIN_TIMER_DELAY_MS = 100;
 const MAX_TIMER_DELAY_MS = 60 * 60 * 1_000;
 const TIMER_ID_PATTERN = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
 
