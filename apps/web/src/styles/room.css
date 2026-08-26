@@ -748,7 +748,7 @@ main.room-host {
   pointer-events: none;
 }
 
-.room-playing .game-frame {
+.room-playing .game-frame.is-loaded {
   visibility: visible;
   pointer-events: auto;
 }

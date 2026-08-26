@@ -2,25 +2,25 @@ import { useCallback, useRef } from "react";
 import {
   JsonRpcErrorCode,
   type JsonValue,
-  type RoomLobby,
+  type RoomPresence,
   type UserProfileField,
 } from "@playweft/game-protocol";
 import { RpcFault } from "./json-rpc";
 import { resolveRoomAvatarUrl } from "./platform-api";
 
-export function useRoomPlayerProfileAccess(lobby: RoomLobby | undefined) {
-  const lobbyRef = useRef(lobby);
-  lobbyRef.current = lobby;
+export function useRoomPlayerProfileAccess(room: RoomPresence | undefined) {
+  const roomRef = useRef(room);
+  roomRef.current = room;
 
   const requestProfile = useCallback(
     (
       playerId: string,
       fields: UserProfileField[],
-      roomOverride?: RoomLobby,
+      roomOverride?: RoomPresence,
     ): Promise<Record<string, JsonValue>> => {
-      const room = roomOverride ?? lobbyRef.current;
-      const member = room
-        ? [...room.players, ...room.spectators].find(
+      const presence = roomOverride ?? roomRef.current;
+      const member = presence
+        ? [...presence.players, ...presence.spectators].find(
             (candidate) => candidate.id === playerId,
           )
         : undefined;

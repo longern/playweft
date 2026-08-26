@@ -11,15 +11,16 @@ const GAME_FRAME_ALLOW = "clipboard-read 'none'; clipboard-write 'none'";
 interface GameFrameProps {
   src: string;
   title: string;
+  loaded: boolean;
   onLoad?(event: SyntheticEvent<HTMLIFrameElement>): void;
 }
 
 const GameFrame = forwardRef<HTMLIFrameElement, GameFrameProps>(
-  function GameFrame({ src, title, onLoad }, ref) {
+  function GameFrame({ src, title, loaded, onLoad }, ref) {
     return (
       <iframe
         ref={ref}
-        className="game-frame"
+        className={`game-frame${loaded ? " is-loaded" : ""}`}
         title={title}
         src={src}
         sandbox={GAME_FRAME_SANDBOX}

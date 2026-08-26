@@ -3,16 +3,18 @@ import type {
   RoomActionResponse,
   RoomActionResult,
   RoomJoin,
-  RoomLobby,
+  RoomPresence,
   RoomSnapshot,
+  RoomStart,
 } from "@playweft/game-protocol";
 
 export type {
   RoomActionResponse,
   RoomActionResult,
   RoomJoin,
-  RoomLobby,
+  RoomPresence,
   RoomSnapshot,
+  RoomStart,
 } from "@playweft/game-protocol";
 
 const apiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
@@ -72,7 +74,7 @@ export interface IssuedProfileAvatar {
 export function initializeRoom(
   roomId: string,
   initialization: RoomInitialization,
-): Promise<RoomLobby> {
+): Promise<RoomPresence> {
   return fetch(
     endpoint(`/api/rooms/${encodeURIComponent(roomId)}/initialize`),
     {
@@ -81,7 +83,7 @@ export function initializeRoom(
       headers: { "content-type": "application/json" },
       body: JSON.stringify(initialization),
     },
-  ).then(responseJson<RoomLobby>);
+  ).then(responseJson<RoomPresence>);
 }
 
 export function joinRoom(roomId: string): Promise<RoomJoin> {
@@ -91,48 +93,50 @@ export function joinRoom(roomId: string): Promise<RoomJoin> {
   }).then(responseJson<RoomJoin>);
 }
 
-export function startRoom(roomId: string): Promise<RoomSnapshot> {
+export function startRoom(roomId: string): Promise<RoomStart> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/start`), {
     method: "POST",
     credentials: "same-origin",
-  }).then(responseJson<RoomSnapshot>);
+  }).then(responseJson<RoomStart>);
 }
 
-export function leaveRoom(roomId: string): Promise<RoomLobby | RoomSnapshot> {
+export function leaveRoom(
+  roomId: string,
+): Promise<RoomPresence | RoomSnapshot> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/leave`), {
     method: "POST",
     credentials: "same-origin",
-  }).then(responseJson<RoomLobby | RoomSnapshot>);
+  }).then(responseJson<RoomPresence | RoomSnapshot>);
 }
 
 export function setRoomSeat(
   roomId: string,
   seat: number | null,
-): Promise<RoomLobby> {
+): Promise<RoomPresence> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/seat`), {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ seat }),
-  }).then(responseJson<RoomLobby>);
+  }).then(responseJson<RoomPresence>);
 }
 
 export function setPlayerReady(
   roomId: string,
   ready: boolean,
-): Promise<RoomLobby> {
+): Promise<RoomPresence> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/ready`), {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ ready }),
-  }).then(responseJson<RoomLobby>);
+  }).then(responseJson<RoomPresence>);
 }
 
 export function setRoomProfileAvatarSharing(
   roomId: string,
   shared: boolean,
-): Promise<RoomLobby> {
+): Promise<RoomPresence> {
   return fetch(
     endpoint(`/api/rooms/${encodeURIComponent(roomId)}/profile-avatar`),
     {
@@ -141,25 +145,25 @@ export function setRoomProfileAvatarSharing(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ shared }),
     },
-  ).then(responseJson<RoomLobby>);
+  ).then(responseJson<RoomPresence>);
 }
 
 export function kickPlayer(
   roomId: string,
   playerId: string,
-): Promise<RoomLobby> {
+): Promise<RoomPresence> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/kick`), {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ playerId }),
-  }).then(responseJson<RoomLobby>);
+  }).then(responseJson<RoomPresence>);
 }
 
 export function transferRoomHost(
   roomId: string,
   playerId: string,
-): Promise<RoomLobby> {
+): Promise<RoomPresence> {
   return fetch(
     endpoint(`/api/rooms/${encodeURIComponent(roomId)}/transfer-host`),
     {
@@ -168,7 +172,7 @@ export function transferRoomHost(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ playerId }),
     },
-  ).then(responseJson<RoomLobby>);
+  ).then(responseJson<RoomPresence>);
 }
 
 export function dissolveRoom(roomId: string): Promise<{ dissolved: true }> {
@@ -178,11 +182,11 @@ export function dissolveRoom(roomId: string): Promise<{ dissolved: true }> {
   }).then(responseJson<{ dissolved: true }>);
 }
 
-export function returnRoomToLobby(roomId: string): Promise<RoomLobby> {
+export function returnRoomToLobby(roomId: string): Promise<RoomPresence> {
   return fetch(
     endpoint(`/api/rooms/${encodeURIComponent(roomId)}/return-to-room`),
     { method: "POST", credentials: "same-origin" },
-  ).then(responseJson<RoomLobby>);
+  ).then(responseJson<RoomPresence>);
 }
 
 export function createRoom(manifestUrl: string): Promise<CreatedRoom> {

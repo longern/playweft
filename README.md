@@ -86,11 +86,12 @@ omit `Origin` for a same-origin GET.
 | `POST /api/rooms/:roomId/actions` | Submit `{ requestId, action }`; player identity comes from the platform session and `requestId` makes retries idempotent. |
 | `GET /api/rooms/:roomId/connect` | Open a platform-owned WebSocket; requires a platform session. |
 
-Before start, HTTP/WebSocket updates use `type: "lobby"` with the opaque
-player list, `spectators` entries containing `{ id, name?, avatarUrl? }`, host,
-phase, and player limits. `avatarUrl` is reserved for platform-authenticated
-profiles; clients should show a fallback avatar when it is absent. After start
-they contain `type`,
+Before start, HTTP/WebSocket updates use `type: "room.presence"` with a
+monotonic `revision`, the opaque player list, `spectators` entries containing
+`{ id, name?, avatarUrl? }`, host, phase, and player limits. `avatarUrl` is
+reserved for platform-authenticated profiles; clients should show a fallback
+avatar when it is absent. Presence updates continue during play and are
+independent from game snapshots. After start snapshots contain `type`,
 `matchId`, the requesting player's visible `state` and `events`, `version`,
 `serverTime`, and `scriptHash`. The required `view(state, events, context)`
 callback runs separately for each recipient at every state-delivery boundary,

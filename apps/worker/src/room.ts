@@ -6,9 +6,10 @@ import {
   type RoomActionResponse,
   type RoomActionResult,
   type JsonValue,
-  type RoomLobby,
+  type RoomPresence,
   type RoomPlayer,
   type RoomSnapshot,
+  type RoomStart,
 } from "@playweft/game-protocol";
 import {
   GameRuntimeError,
@@ -107,6 +108,8 @@ interface RoomMeta {
   manifestUrl: string;
   ownerPlayerId: string;
   phase: "lobby" | "playing";
+  /** Monotonic version of membership and outer room lifecycle state. */
+  presenceRevision: number;
   fault?: {
     message: string;
     at: number;
@@ -240,7 +243,8 @@ export class GameRoom extends DurableObject<Env> {
     try {
       meta = await this.meta();
     } catch (error) {
-      if (!(error instanceof RoomHttpError) || error.status !== 404) throw error;
+      if (!(error instanceof RoomHttpError) || error.status !== 404)
+        throw error;
       await this.ctx.storage.deleteAll();
       return;
     }
@@ -329,6 +333,7 @@ export class GameRoom extends DurableObject<Env> {
       manifestUrl,
       ownerPlayerId: this.playerId(request),
       phase: "lobby",
+      presenceRevision: 0,
       members: {},
     });
     await this.touch();
@@ -366,14 +371,16 @@ export class GameRoom extends DurableObject<Env> {
     meta.manifestUrl = manifestUrl;
     meta.phase = "lobby";
     meta.config = undefined;
+    this.bumpPresenceRevision(meta);
     await this.saveMeta(meta);
     await this.ctx.storage.delete("gameState");
     await this.touch();
     this.broadcast({ type: "game_changed", manifestUrl });
+    this.broadcast(await this.presence());
     return { manifestUrl };
   }
 
-  private async initialize(request: Request): Promise<RoomLobby> {
+  private async initialize(request: Request): Promise<RoomPresence> {
     await this.launch();
     const input = await parseRequestJson(request);
     if (
@@ -419,7 +426,7 @@ export class GameRoom extends DurableObject<Env> {
           "room is already initialized with a different game configuration",
         );
       }
-      return this.lobby();
+      return this.presence();
     }
 
     const script = await fetchServerSource(
@@ -443,9 +450,10 @@ export class GameRoom extends DurableObject<Env> {
         maxPlayers,
         liveRoom,
       };
+      this.bumpPresenceRevision(meta);
       await this.saveMeta(meta);
       await this.touch();
-      return this.lobby();
+      return this.presence();
     } catch (error) {
       throw error;
     } finally {
@@ -455,7 +463,7 @@ export class GameRoom extends DurableObject<Env> {
 
   private async join(
     request: Request,
-  ): Promise<RoomLobby & { selfId: string }> {
+  ): Promise<RoomPresence & { selfId: string }> {
     await this.launch();
     const config = await this.config();
     const playerId = this.playerId(request);
@@ -494,12 +502,12 @@ export class GameRoom extends DurableObject<Env> {
     if (membershipChanged) {
       await this.saveMembers(members);
       await this.touch();
-      this.broadcast(await this.lobby());
+      this.broadcast(await this.presence());
     }
-    return { ...(await this.lobby()), selfId: members[playerId]!.actorId };
+    return { ...(await this.presence()), selfId: members[playerId]!.actorId };
   }
 
-  private async start(request: Request): Promise<RoomSnapshot> {
+  private async start(request: Request): Promise<RoomStart> {
     await this.launch();
     const playerId = this.playerId(request);
     if (playerId !== (await this.ownerPlayerId()))
@@ -576,7 +584,9 @@ export class GameRoom extends DurableObject<Env> {
     );
     const meta = await this.meta();
     meta.phase = "playing";
+    this.bumpPresenceRevision(meta);
     await this.saveMeta(meta);
+    const presence = await this.presence();
     await this.saveRoomState({
       state: setup.state,
       version: 0,
@@ -586,11 +596,12 @@ export class GameRoom extends DurableObject<Env> {
       timerBudget: initialTimerBudget(startedAt),
     });
     await this.touch();
+    this.broadcast(presence);
     this.sendPreparedBroadcast(messages);
-    return visibleSnapshot;
+    return { presence, snapshot: visibleSnapshot };
   }
 
-  private async kick(request: Request): Promise<RoomLobby> {
+  private async kick(request: Request): Promise<RoomPresence> {
     await this.launch();
     const playerId = this.playerId(request);
     if (playerId !== (await this.ownerPlayerId()))
@@ -629,12 +640,12 @@ export class GameRoom extends DurableObject<Env> {
         // The peer may have disconnected while the host was removing them.
       }
     }
-    const lobby = await this.lobby();
-    this.broadcast(lobby);
-    return lobby;
+    const presence = await this.presence();
+    this.broadcast(presence);
+    return presence;
   }
 
-  private async transferHost(request: Request): Promise<RoomLobby> {
+  private async transferHost(request: Request): Promise<RoomPresence> {
     await this.launch();
     const playerId = this.playerId(request);
     if (playerId !== (await this.ownerPlayerId()))
@@ -662,9 +673,9 @@ export class GameRoom extends DurableObject<Env> {
     await this.saveOwnership(target[0], members);
     this.updateSocketOwnership(target[0]);
     await this.touch();
-    const lobby = await this.lobby();
-    this.broadcast(lobby);
-    return lobby;
+    const presence = await this.presence();
+    this.broadcast(presence);
+    return presence;
   }
 
   private async dissolve(request: Request): Promise<{ dissolved: true }> {
@@ -673,7 +684,10 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(403, "only the room host can dissolve the room");
     }
     if ((await this.phase()) !== "lobby") {
-      throw new RoomHttpError(409, "the room can only be dissolved from the lobby");
+      throw new RoomHttpError(
+        409,
+        "the room can only be dissolved from the lobby",
+      );
     }
 
     this.broadcast({
@@ -686,7 +700,7 @@ export class GameRoom extends DurableObject<Env> {
     return { dissolved: true };
   }
 
-  private async returnToRoom(request: Request): Promise<RoomLobby> {
+  private async returnToRoom(request: Request): Promise<RoomPresence> {
     await this.launch();
     const playerId = this.playerId(request);
     if (playerId !== (await this.ownerPlayerId())) {
@@ -716,10 +730,7 @@ export class GameRoom extends DurableObject<Env> {
           matchId: room.match.id,
           version: room.version,
           serverTime,
-          actor: this.gameActor(
-            members[playerId]!,
-            playerId === ownerPlayerId,
-          ),
+          actor: this.gameActor(members[playerId]!, playerId === ownerPlayerId),
         });
     if (!allowed) {
       throw new RoomHttpError(
@@ -736,15 +747,16 @@ export class GameRoom extends DurableObject<Env> {
     meta.phase = "lobby";
     meta.members = members;
     delete meta.fault;
+    this.bumpPresenceRevision(meta);
     await this.saveMeta(meta);
     await this.clearRoomState(config);
     await this.touch();
-    const lobby = await this.lobby();
-    this.broadcast(lobby);
-    return lobby;
+    const presence = await this.presence();
+    this.broadcast(presence);
+    return presence;
   }
 
-  private async leave(request: Request): Promise<RoomLobby | RoomSnapshot> {
+  private async leave(request: Request): Promise<RoomPresence | RoomSnapshot> {
     await this.launch();
     const playerId = this.playerId(request);
     const [phase, members, ownerPlayerId] = await Promise.all([
@@ -760,9 +772,9 @@ export class GameRoom extends DurableObject<Env> {
       await this.saveMembers(members);
       await this.touch();
       this.closePlayerSockets(playerId);
-      const lobby = await this.lobby();
-      this.broadcast(lobby);
-      return lobby;
+      const presence = await this.presence();
+      this.broadcast(presence);
+      return presence;
     }
 
     await this.runDueTimers(Date.now());
@@ -809,12 +821,13 @@ export class GameRoom extends DurableObject<Env> {
     });
     await this.saveMembers(members);
     await this.touch();
+    this.broadcast(await this.presence());
     this.sendPreparedBroadcast(messages);
     this.closePlayerSockets(playerId);
     return visibleSnapshot;
   }
 
-  private async setSeat(request: Request): Promise<RoomLobby> {
+  private async setSeat(request: Request): Promise<RoomPresence> {
     await this.launch();
     if ((await this.phase()) !== "lobby")
       throw new RoomHttpError(
@@ -856,12 +869,12 @@ export class GameRoom extends DurableObject<Env> {
     member.ready = false;
     await this.saveMembers(members);
     await this.touch();
-    const lobby = await this.lobby();
-    this.broadcast(lobby);
-    return lobby;
+    const presence = await this.presence();
+    this.broadcast(presence);
+    return presence;
   }
 
-  private async setReady(request: Request): Promise<RoomLobby> {
+  private async setReady(request: Request): Promise<RoomPresence> {
     await this.launch();
     if ((await this.phase()) !== "lobby")
       throw new RoomHttpError(
@@ -884,12 +897,12 @@ export class GameRoom extends DurableObject<Env> {
     member.ready = input.ready;
     await this.saveMembers(members);
     await this.touch();
-    const lobby = await this.lobby();
-    this.broadcast(lobby);
-    return lobby;
+    const presence = await this.presence();
+    this.broadcast(presence);
+    return presence;
   }
 
-  private async setProfileAvatar(request: Request): Promise<RoomLobby> {
+  private async setProfileAvatar(request: Request): Promise<RoomPresence> {
     await this.launch();
     const input = await parseRequestJson(request);
     if (!isRecord(input) || typeof input.shared !== "boolean") {
@@ -904,13 +917,11 @@ export class GameRoom extends DurableObject<Env> {
         "join the room before sharing a profile avatar",
       );
     }
-    const avatarUrl = input.shared
-      ? this.playerAvatarUrl(request)
-      : undefined;
+    const avatarUrl = input.shared ? this.playerAvatarUrl(request) : undefined;
     const unchanged = avatarUrl
       ? member.avatarUrl === avatarUrl && Boolean(member.avatarToken)
       : !member.avatarUrl && !member.avatarToken;
-    if (unchanged) return this.lobby();
+    if (unchanged) return this.presence();
 
     if (avatarUrl) {
       member.avatarUrl = avatarUrl;
@@ -921,9 +932,9 @@ export class GameRoom extends DurableObject<Env> {
     }
     await this.saveMembers(members);
     await this.touch();
-    const lobby = await this.lobby();
-    this.broadcast(lobby);
-    return lobby;
+    const presence = await this.presence();
+    this.broadcast(presence);
+    return presence;
   }
 
   private async applyAction(request: Request): Promise<object> {
@@ -1000,10 +1011,7 @@ export class GameRoom extends DurableObject<Env> {
       actionAt: input.receivedAt,
       serverTime,
       version: room.version,
-      actor: this.gameActor(
-        member,
-        input.playerId === meta.ownerPlayerId,
-      ),
+      actor: this.gameActor(member, input.playerId === meta.ownerPlayerId),
     });
     if (!result.accepted) {
       const actionResult: RoomActionResult = {
@@ -1060,7 +1068,11 @@ export class GameRoom extends DurableObject<Env> {
       ...room,
       state: result.state,
       version,
-      timers: this.applyTimerOps(room.timers, result.timerOps ?? [], serverTime),
+      timers: this.applyTimerOps(
+        room.timers,
+        result.timerOps ?? [],
+        serverTime,
+      ),
       recentActions: this.rememberAction(room, {
         actorId: input.actorId,
         requestId: input.requestId,
@@ -1258,7 +1270,9 @@ export class GameRoom extends DurableObject<Env> {
     if ((await this.phase()) !== "playing") return Number.POSITIVE_INFINITY;
     const config = await this.config();
     if (config.liveRoom) return Number.POSITIVE_INFINITY;
-    return (await this.roomState()).timers[0]?.dueAt ?? Number.POSITIVE_INFINITY;
+    return (
+      (await this.roomState()).timers[0]?.dueAt ?? Number.POSITIVE_INFINITY
+    );
   }
 
   private async snapshot(actorId: string): Promise<RoomSnapshot> {
@@ -1305,8 +1319,7 @@ export class GameRoom extends DurableObject<Env> {
         lastSeenAt: now,
         isOwner: playerId === (await this.ownerPlayerId()),
       } satisfies SocketAttachment;
-      if (attachment.isOwner)
-        await this.scheduleAlarm(undefined, now, true);
+      if (attachment.isOwner) await this.scheduleAlarm(undefined, now, true);
       return { attachment, liveRoom: config.liveRoom };
     });
 
@@ -1348,20 +1361,15 @@ export class GameRoom extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
   }
 
-  private sendInitialSocketMessage(
-    server: WebSocket,
-    actorId: string,
-  ): void {
+  private sendInitialSocketMessage(server: WebSocket, actorId: string): void {
     this.ctx.waitUntil(
       this.enqueue(async () => {
         try {
-          server.send(
-            JSON.stringify(
-              (await this.phase()) === "playing"
-                ? await this.snapshot(actorId)
-                : await this.lobby(),
-            ),
-          );
+          const presence = await this.presence();
+          server.send(JSON.stringify(presence));
+          if (presence.phase === "playing") {
+            server.send(JSON.stringify(await this.snapshot(actorId)));
+          }
         } catch (error) {
           server.send(
             JSON.stringify({ type: "error", error: errorMessage(error) }),
@@ -1435,9 +1443,12 @@ export class GameRoom extends DurableObject<Env> {
     await this.ctx.storage.put("roomMeta", meta);
   }
 
-  private async saveMembers(members: Record<string, RoomMember>): Promise<void> {
+  private async saveMembers(
+    members: Record<string, RoomMember>,
+  ): Promise<void> {
     const meta = await this.meta();
     meta.members = members;
+    this.bumpPresenceRevision(meta);
     await this.saveMeta(meta);
   }
 
@@ -1448,7 +1459,12 @@ export class GameRoom extends DurableObject<Env> {
     const meta = await this.meta();
     meta.ownerPlayerId = ownerPlayerId;
     meta.members = members;
+    this.bumpPresenceRevision(meta);
     await this.saveMeta(meta);
+  }
+
+  private bumpPresenceRevision(meta: RoomMeta): void {
+    meta.presenceRevision = (meta.presenceRevision ?? 0) + 1;
   }
 
   private async engine(config: RoomConfig): Promise<GameRuntime> {
@@ -1506,9 +1522,10 @@ export class GameRoom extends DurableObject<Env> {
       return;
 
     const nextOwner = Object.entries(members)
-      .filter(([playerId, member]) =>
-        member.seat !== undefined &&
-        isRecent(lastSeenByPlayer.get(playerId), HOST_OFFLINE_TIMEOUT_MS),
+      .filter(
+        ([playerId, member]) =>
+          member.seat !== undefined &&
+          isRecent(lastSeenByPlayer.get(playerId), HOST_OFFLINE_TIMEOUT_MS),
       )
       .sort(([, left], [, right]) => left.joinedAt - right.joinedAt)[0];
     if (!nextOwner || nextOwner[0] === ownerPlayerId) return;
@@ -1519,7 +1536,7 @@ export class GameRoom extends DurableObject<Env> {
     this.updateSocketOwnership(nextOwner[0]);
     if (nextOwnerLastSeenAt !== undefined)
       await this.scheduleAlarm(undefined, nextOwnerLastSeenAt);
-    this.broadcast(await this.lobby());
+    this.broadcast(await this.presence());
   }
 
   private async scheduleAlarm(
@@ -1587,17 +1604,13 @@ export class GameRoom extends DurableObject<Env> {
     viewer: GameActor,
     engine: GameRuntime,
   ): RoomSnapshot {
-    const visible = engine.view(
-      snapshot.state,
-      snapshot.events ?? [],
-      {
-        protocolVersion: GAME_PROTOCOL_VERSION,
-        matchId: snapshot.matchId,
-        version: snapshot.version,
-        serverTime: snapshot.serverTime,
-        viewer,
-      },
-    );
+    const visible = engine.view(snapshot.state, snapshot.events ?? [], {
+      protocolVersion: GAME_PROTOCOL_VERSION,
+      matchId: snapshot.matchId,
+      version: snapshot.version,
+      serverTime: snapshot.serverTime,
+      viewer,
+    });
     return {
       ...snapshot,
       state: visible.state,
@@ -1623,10 +1636,7 @@ export class GameRoom extends DurableObject<Env> {
         serialized = JSON.stringify(
           this.snapshotForViewer(
             snapshot,
-            this.gameActor(
-              member,
-              attachment.playerId === ownerPlayerId,
-            ),
+            this.gameActor(member, attachment.playerId === ownerPlayerId),
             engine,
           ),
         );
@@ -1771,8 +1781,7 @@ export class GameRoom extends DurableObject<Env> {
     try {
       const url = new URL(decodeURIComponent(encoded));
       return url.protocol === "https:" &&
-        (url.hostname === "pbs.twimg.com" ||
-          url.hostname === "abs.twimg.com")
+        (url.hostname === "pbs.twimg.com" || url.hostname === "abs.twimg.com")
         ? url.toString()
         : undefined;
     } catch {
@@ -1829,8 +1838,9 @@ export class GameRoom extends DurableObject<Env> {
     return (await this.meta()).phase;
   }
 
-  private async lobby(): Promise<RoomLobby> {
-    const { config, phase, members, ownerPlayerId, roomId } = await this.meta();
+  private async presence(): Promise<RoomPresence> {
+    const { config, phase, members, ownerPlayerId, presenceRevision, roomId } =
+      await this.meta();
     if (!config) {
       throw new RoomHttpError(
         409,
@@ -1860,7 +1870,8 @@ export class GameRoom extends DurableObject<Env> {
           : {}),
       }));
     return {
-      type: "lobby",
+      type: "room.presence",
+      revision: presenceRevision ?? 0,
       phase,
       players,
       spectators,
@@ -1871,10 +1882,7 @@ export class GameRoom extends DurableObject<Env> {
   }
 }
 
-function isRecent(
-  lastSeenAt: number | undefined,
-  timeoutMs: number,
-): boolean {
+function isRecent(lastSeenAt: number | undefined, timeoutMs: number): boolean {
   return lastSeenAt !== undefined && Date.now() - lastSeenAt < timeoutMs;
 }
 
@@ -1953,10 +1961,7 @@ async function fetchServerSource(
   assets: Fetcher,
 ): Promise<string> {
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    SERVER_FETCH_TIMEOUT_MS,
-  );
+  const timeout = setTimeout(() => controller.abort(), SERVER_FETCH_TIMEOUT_MS);
   try {
     const request = new Request(serverUrl, {
       headers: { Accept: "text/plain" },
@@ -2081,15 +2086,8 @@ function isPlayerLimit(value: unknown): value is number {
 }
 
 function validateActionId(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > 128
-  ) {
-    throw new RoomHttpError(
-      400,
-      "requestId must be a 1-128 character string",
-    );
+  if (typeof value !== "string" || value.length === 0 || value.length > 128) {
+    throw new RoomHttpError(400, "requestId must be a 1-128 character string");
   }
   return value;
 }
@@ -2109,7 +2107,10 @@ function roomAvatarPath(roomId: string, token: string): string {
   return `/api/rooms/${encodeURIComponent(roomId)}/avatars/${token}`;
 }
 
-async function proxyAvatar(source: string, request: Request): Promise<Response> {
+async function proxyAvatar(
+  source: string,
+  request: Request,
+): Promise<Response> {
   const destination = request.headers.get("Sec-Fetch-Dest");
   if (destination && destination !== "image") {
     throw new RoomHttpError(403, "room avatars may only be loaded as images");
@@ -2127,7 +2128,9 @@ async function proxyAvatar(source: string, request: Request): Promise<Response> 
   const timeout = setTimeout(() => controller.abort(), 5_000);
   try {
     const response = await fetch(sourceUrl, {
-      headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,image/gif" },
+      headers: {
+        Accept: "image/avif,image/webp,image/png,image/jpeg,image/gif",
+      },
       redirect: "manual",
       signal: controller.signal,
     });
@@ -2152,10 +2155,7 @@ async function proxyAvatar(source: string, request: Request): Promise<Response> 
       throw new RoomHttpError(502, "room avatar has an unsupported type");
     }
     const declaredLength = Number(response.headers.get("content-length"));
-    if (
-      Number.isFinite(declaredLength) &&
-      declaredLength > MAX_AVATAR_BYTES
-    ) {
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_AVATAR_BYTES) {
       throw new RoomHttpError(502, "room avatar exceeds the size limit");
     }
     const bytes = await response.arrayBuffer();
@@ -2185,9 +2185,9 @@ async function proxyAvatar(source: string, request: Request): Promise<Response> 
 function secureRandomSeed(): string {
   const values = new Uint8Array(16);
   crypto.getRandomValues(values);
-  return Array.from(values, (value) => value.toString(16).padStart(2, "0")).join(
-    "",
-  );
+  return Array.from(values, (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 async function parseRequestJson(request: Request): Promise<unknown> {
@@ -2231,7 +2231,8 @@ function consumeTimerBudget(
   const firedToday = stored.dayStart === dayStart ? stored.firedToday : 0;
   const tokens = Math.min(
     TIMER_BUDGET_CAPACITY,
-    stored.tokens + Math.max(0, now - stored.updatedAt) / TIMER_BUDGET_REFILL_MS,
+    stored.tokens +
+      Math.max(0, now - stored.updatedAt) / TIMER_BUDGET_REFILL_MS,
   );
   if (firedToday >= MAX_TIMER_FIRES_PER_DAY) {
     return {
@@ -2249,7 +2250,12 @@ function consumeTimerBudget(
   }
   return {
     allowed: true,
-    budget: { tokens: tokens - 1, updatedAt: now, dayStart, firedToday: firedToday + 1 },
+    budget: {
+      tokens: tokens - 1,
+      updatedAt: now,
+      dayStart,
+      firedToday: firedToday + 1,
+    },
   };
 }
 
@@ -2276,10 +2282,7 @@ function canonicalJson(value: JsonValue): string {
   if (value !== null && typeof value === "object") {
     return `{${Object.keys(value)
       .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`,
-      )
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`)
       .join(",")}}`;
   }
   return JSON.stringify(value);

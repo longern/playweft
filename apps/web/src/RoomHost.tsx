@@ -19,6 +19,7 @@ import {
   changeRoomGame,
   createGuestSession,
   dissolveRoom,
+  getPlatformSession,
   getRoomLaunch,
   initializeRoom,
   joinRoom,
@@ -33,7 +34,7 @@ import {
   returnRoomToLobby,
   type RoomActionResult,
   type RoomJoin,
-  type RoomLobby,
+  type RoomPresence,
   type RoomSnapshot,
 } from "./platform-api";
 import ErrorToast from "./ErrorToast";
@@ -79,7 +80,6 @@ import {
 } from "./use-game-viewport";
 
 const MAX_RECONNECT_ATTEMPTS = 5;
-const ROOM_HANDSHAKE_TIMEOUT_MS = 10_000;
 
 interface RoomHostProps {
   nickname: string;
@@ -117,12 +117,13 @@ export default function RoomHost({
   nicknameRef.current = nickname;
   const [manifestUrl, setManifestUrl] = useState<string>();
   const [gameUrl, setGameUrl] = useState<string>();
-  const [gameFrameActive, setGameFrameActive] = useState(true);
+  const [gameFrameLoaded, setGameFrameLoaded] = useState(false);
   const [loadedGame, setLoadedGame] = useState<LoadedGame>();
   const [gameRevision, setGameRevision] = useState(0);
   const [game, setGame] = useState<DiscoveredGame>();
   const [gameIconHref, setGameIconHref] = useState<string>();
-  const [lobby, setLobby] = useState<RoomLobby>();
+  const [lobby, setLobby] = useState<RoomPresence>();
+  const presenceRevisionRef = useRef(-1);
   const [selfId, setSelfId] = useState<string>();
   const [copied, setCopied] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -164,15 +165,14 @@ export default function RoomHost({
     if (game) setIsFavorite(isFavoriteGame(game));
   }, [game]);
 
-  useEffect(() => {
-    if (gameFrameActive) return;
-    bridgePort.current?.close();
-    bridgePort.current = undefined;
-  }, [gameFrameActive]);
-
   const phase = lobby?.phase ?? "lobby";
   phaseRef.current = phase;
-  const gameViewport = useGameViewport(phase === "playing", loadedGame?.game);
+  // The manifest opts this room into Playweft's lobby UI. The embedded game
+  // itself remains independent: it may later opt into bridge capabilities,
+  // but does not need to do so for the room to exist.
+  const showPlatformRoom = phase === "lobby";
+  const showGameFrame = phase === "playing";
+  const gameViewport = useGameViewport(showGameFrame, loadedGame?.game);
   const isOwner = Boolean(selfId && lobby?.ownerId === selfId);
   const selfPlayer = lobby?.players.find((player) => player.id === selfId);
   const isSpectating = Boolean(selfId && lobby && !selfPlayer);
@@ -187,6 +187,26 @@ export default function RoomHost({
     `player-grid-mobile-cols-${mobilePlayerGridColumns}`,
     `player-grid-${playerGridDensity}`,
   ].join(" ");
+
+  const applyPresence = (next: RoomPresence): void => {
+    if (next.revision < presenceRevisionRef.current) return;
+    presenceRevisionRef.current = next.revision;
+    setLobby(next);
+  };
+
+  // The room phase is the single source of truth for the iframe lifecycle.
+  // This handles both the local host transition and presence updates caused
+  // by another client: playing mounts a fresh frame, lobby removes it.
+  useEffect(() => {
+    if (phase === "playing") {
+      setGameFrameLoaded(false);
+      return;
+    }
+    latestSnapshotRef.current = undefined;
+    bridgePort.current?.close();
+    bridgePort.current = undefined;
+    setGameFrameLoaded(false);
+  }, [phase]);
 
   useEffect(() => {
     if (!lobby) {
@@ -302,7 +322,7 @@ export default function RoomHost({
         const membership = await joinRoom(roomId);
         if (cancelled) return;
         syncedNickname.current = nickname;
-        applyMembership(membership, setLobby, setSelfId);
+        applyMembership(membership, applyPresence, setSelfId);
       } catch (reason) {
         if (!cancelled) {
           setError(message(reason, tRef.current("unexpectedError")));
@@ -318,6 +338,7 @@ export default function RoomHost({
     if (!manifestUrl) return;
     let cancelled = false;
     setGameUrl(undefined);
+    setGameFrameLoaded(false);
     setLoadedGame(undefined);
     void loadGameManifest(manifestUrl)
       .then((loaded) => {
@@ -330,7 +351,6 @@ export default function RoomHost({
         setGameHelpHref(loaded.game.helpUrl);
         onGameDiscovered(loaded.game);
         setLoadedGame(loaded);
-        setGameFrameActive(true);
         setGameUrl(loaded.game.url);
       })
       .catch((reason) => {
@@ -354,12 +374,8 @@ export default function RoomHost({
     let reconnectAttempts = 0;
     let suppressConnectionError = false;
     let closed = false;
-    let roomInitializing = false;
     let joined = false;
     let liveRoom = false;
-    let bridgeConnected = false;
-    let membershipReady = false;
-    let entryComplete = false;
     let joinedPlayerId: string | undefined;
     const capabilities = [
       ...new Set([
@@ -379,11 +395,6 @@ export default function RoomHost({
       }
     >();
     const currentGameOrigin = new URL(gameUrl).origin;
-    const finishEntryIfReady = () => {
-      if (entryComplete || !membershipReady) return;
-      entryComplete = true;
-      onEntryReady();
-    };
     const sendSnapshot = (snapshot: RoomSnapshot) => {
       postRpcNotification(bridgePort.current, "game.state", {
         phase: "playing",
@@ -419,16 +430,6 @@ export default function RoomHost({
       liveActionRequests.clear();
     };
 
-    const handshakeTimeout = window.setTimeout(() => {
-      if (closed || joined) return;
-      const error = bridgeConnected
-        ? tRef.current("gameInitializationMissing")
-        : tRef.current("gameBridgeUnavailable");
-      setError(error);
-      onEntryFailed();
-      reportBridgeError("GAME_BRIDGE_TIMEOUT", error);
-    }, ROOM_HANDSHAKE_TIMEOUT_MS);
-
     const suppressNextConnectionError = () => {
       suppressConnectionError = true;
       window.clearTimeout(connectionErrorSuppressTimer);
@@ -459,7 +460,7 @@ export default function RoomHost({
       nextSocket.onmessage = (event) => {
         const payload = JSON.parse(event.data as string) as
           | RoomSnapshot
-          | RoomLobby
+          | RoomPresence
           | RoomActionResult
           | { type: "game_changed"; manifestUrl: string }
           | { type: "room_dissolved"; error: string }
@@ -503,17 +504,12 @@ export default function RoomHost({
           setGameHelpOpen(false);
           setManifestUrl(payload.manifestUrl);
           setGameRevision((revision) => revision + 1);
-        } else if (payload.type === "lobby") {
-          if (phaseRef.current === "playing") {
+        } else if (payload.type === "room.presence") {
+          if (payload.phase === "lobby" && phaseRef.current === "playing")
             latestSnapshotRef.current = undefined;
-            setGameFrameActive(false);
-          }
-          setLobby(payload);
+          applyPresence(payload);
         } else {
           publish(payload);
-          setLobby((current) =>
-            current ? { ...current, phase: "playing" } : current,
-          );
         }
       };
       nextSocket.onerror = () => {
@@ -523,7 +519,6 @@ export default function RoomHost({
           return;
         }
         setError(tRef.current("liveConnectionFailed"));
-        if (!entryComplete) onEntryFailed();
         reportBridgeError(
           "REALTIME_CONNECTION_FAILED",
           tRef.current("liveConnectionFailed"),
@@ -563,6 +558,51 @@ export default function RoomHost({
       connect();
     };
 
+    // A room manifest is sufficient to run the platform room. Bridge support
+    // is deliberately optional: a game may use its own networking, or ask for
+    // this context later through `game.initialize`.
+    const roomReady = (async () => {
+      const roomInitialization = roomConfiguration;
+      liveRoom = roomInitialization.liveRoom === true;
+      await initializeRoom(roomId, roomInitialization);
+      const membership = await joinRoom(roomId);
+      if (closed) {
+        throw rpcPlatformFault(
+          "ROOM_CLOSED",
+          "The room host was closed before initialization completed",
+          true,
+        );
+      }
+      applyMembership(membership, applyPresence, setSelfId);
+      syncedNickname.current = nicknameRef.current;
+      joined = true;
+      joinedPlayerId = membership.selfId;
+      // A lobby is ready before its game iframe exists. Clear the route-entry
+      // overlay here so the host can press Start; an already-playing room
+      // remains gated until its iframe fires onLoad below.
+      if (membership.phase === "lobby") onEntryReady();
+      // Room membership owns the avatar shown in the outer player list. Keep
+      // that sync independent from the game iframe, which is intentionally
+      // not mounted while the room is waiting to start.
+      void getPlatformSession()
+        .then((session) =>
+          setRoomProfileAvatarSharing(
+            roomId,
+            session.provider === "x" && Boolean(session.avatarUrl),
+          ),
+        )
+        .then(applyPresence)
+        .catch(() => undefined);
+      connect();
+      return membership;
+    })();
+    void roomReady.catch((reason) => {
+      if (closed) return;
+      const error = message(reason, tRef.current("unexpectedError"));
+      setError(error);
+      onEntryFailed();
+    });
+
     const detachBridge = attachGameBridge({
       frame: iframe,
       origin: currentGameOrigin,
@@ -571,7 +611,6 @@ export default function RoomHost({
         userProfile.cancelPending();
         windowDialogs.cancelPending();
         rejectLiveActions("BRIDGE_REPLACED", "The game bridge was replaced");
-        bridgeConnected = true;
       },
       onPortChange(port) {
         bridgePort.current = port;
@@ -579,7 +618,15 @@ export default function RoomHost({
       handlers: {
         "game.initialize": {
           async handle() {
-            if (joined && joinedPlayerId) {
+            try {
+              await roomReady;
+              if (closed || !joinedPlayerId) {
+                throw rpcPlatformFault(
+                  "BRIDGE_CLOSED",
+                  "The game bridge was closed",
+                  true,
+                );
+              }
               const snapshot = latestSnapshotRef.current;
               if (snapshot) {
                 window.setTimeout(() => {
@@ -591,64 +638,17 @@ export default function RoomHost({
                 mode: "room",
                 protocolVersion: PLAYWEFT_BRIDGE_VERSION,
                 capabilities,
-                phase: phaseRef.current,
                 playerId: joinedPlayerId,
                 player: {
                   id: joinedPlayerId,
                   ...(nicknameRef.current ? { name: nicknameRef.current } : {}),
                 },
               };
-            }
-            if (roomInitializing) {
-              throw rpcPlatformFault(
-                "INITIALIZATION_IN_PROGRESS",
-                "Room initialization is already in progress",
-                true,
-              );
-            }
-            roomInitializing = true;
-            try {
-              onEntryStatus(tRef.current("joiningRoom"));
-              setError(undefined);
-              const roomInitialization = roomConfiguration;
-              liveRoom = roomInitialization.liveRoom === true;
-              await initializeRoom(roomId, roomInitialization);
-              const membership = await joinRoom(roomId);
-              if (closed) {
-                throw rpcPlatformFault(
-                  "BRIDGE_CLOSED",
-                  "The game bridge was closed",
-                  true,
-                );
-              }
-              applyMembership(membership, setLobby, setSelfId);
-              syncedNickname.current = nicknameRef.current;
-              joined = true;
-              joinedPlayerId = membership.selfId;
-              window.clearTimeout(handshakeTimeout);
-              membershipReady = true;
-              connect();
-              finishEntryIfReady();
-              return {
-                mode: "room",
-                protocolVersion: PLAYWEFT_BRIDGE_VERSION,
-                capabilities,
-                phase: membership.phase,
-                playerId: membership.selfId,
-                player: {
-                  id: membership.selfId,
-                  ...(nicknameRef.current ? { name: nicknameRef.current } : {}),
-                },
-              };
             } catch (reason) {
-              window.clearTimeout(handshakeTimeout);
               const error = message(reason, tRef.current("unexpectedError"));
-              setError(error);
-              onEntryFailed();
+              reportBridgeError("INITIALIZATION_REJECTED", error);
               if (reason instanceof RpcFault) throw reason;
               throw rpcPlatformFault("INITIALIZATION_REJECTED", error);
-            } finally {
-              roomInitializing = false;
             }
           },
         },
@@ -726,9 +726,9 @@ export default function RoomHost({
               const ownProfile = await userProfile.requestProfile(
                 request.fields,
               );
-              let nextLobby: RoomLobby;
+              let nextPresence: RoomPresence;
               try {
-                nextLobby = await setRoomProfileAvatarSharing(
+                nextPresence = await setRoomProfileAvatarSharing(
                   roomId,
                   ownProfile.avatar !== undefined,
                 );
@@ -738,11 +738,11 @@ export default function RoomHost({
                   message(reason, tRef.current("unexpectedError")),
                 );
               }
-              setLobby(nextLobby);
+              applyPresence(nextPresence);
               return roomPlayerProfiles.requestProfile(
                 request.playerId,
                 request.fields,
-                nextLobby,
+                nextPresence,
               );
             }
             return roomPlayerProfiles.requestProfile(
@@ -767,7 +767,7 @@ export default function RoomHost({
                   roomId,
                   profile.avatar !== undefined,
                 );
-                setLobby(nextLobby);
+                applyPresence(nextLobby);
               } catch (reason) {
                 throw rpcPlatformFault(
                   "PROFILE_SHARE_FAILED",
@@ -792,7 +792,6 @@ export default function RoomHost({
       closed = true;
       window.clearTimeout(reconnectTimer);
       window.clearTimeout(connectionErrorSuppressTimer);
-      window.clearTimeout(handshakeTimeout);
       window.clearInterval(heartbeatTimer);
       socket?.close();
       rejectLiveActions("BRIDGE_CLOSED", "The game bridge was closed");
@@ -803,7 +802,6 @@ export default function RoomHost({
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [
-    gameRevision,
     gameUrl,
     loadedGame,
     onEntryFailed,
@@ -836,13 +834,14 @@ export default function RoomHost({
       loadedGame?.game.orientation,
     );
     let started = false;
-    const frameWasActive = gameFrameActive;
     setStarting(true);
     try {
       setError(undefined);
-      const snapshot = await startRoom(roomId);
+      setGameFrameLoaded(false);
+      const startedRoom = await startRoom(roomId);
+      const snapshot = startedRoom.snapshot;
       latestSnapshotRef.current = snapshot;
-      setGameFrameActive(true);
+      applyPresence(startedRoom.presence);
       postRpcNotification(bridgePort.current, "game.state", {
         phase: "playing",
         state: snapshot.state,
@@ -851,16 +850,12 @@ export default function RoomHost({
         version: snapshot.version,
         serverTime: snapshot.serverTime,
       });
-      setLobby((current) =>
-        current ? { ...current, phase: "playing" } : current,
-      );
       started = true;
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
     } finally {
       setStarting(false);
       if (!started) {
-        setGameFrameActive(frameWasActive);
         void orientationAttempt.then(() => releaseGameFullscreen());
       }
     }
@@ -869,7 +864,7 @@ export default function RoomHost({
   const kick = async (playerId: string) => {
     try {
       const nextLobby = await kickPlayer(roomId, playerId);
-      setLobby(nextLobby);
+      applyPresence(nextLobby);
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
     }
@@ -878,7 +873,7 @@ export default function RoomHost({
   const transferHost = async (playerId: string) => {
     try {
       setError(undefined);
-      setLobby(await transferRoomHost(roomId, playerId));
+      applyPresence(await transferRoomHost(roomId, playerId));
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
     }
@@ -889,8 +884,7 @@ export default function RoomHost({
       setError(undefined);
       const nextLobby = await returnRoomToLobby(roomId);
       latestSnapshotRef.current = undefined;
-      setGameFrameActive(false);
-      setLobby(nextLobby);
+      applyPresence(nextLobby);
       setGameInfoOpen(false);
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
@@ -924,7 +918,7 @@ export default function RoomHost({
   const chooseSeat = async (seat: number | null) => {
     try {
       setError(undefined);
-      setLobby(await setRoomSeat(roomId, seat));
+      applyPresence(await setRoomSeat(roomId, seat));
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
     }
@@ -934,7 +928,7 @@ export default function RoomHost({
     if (!selfPlayer) return;
     try {
       setError(undefined);
-      setLobby(await setPlayerReady(roomId, !selfPlayer.ready));
+      applyPresence(await setPlayerReady(roomId, !selfPlayer.ready));
     } catch (reason) {
       setError(message(reason, t("unexpectedError")));
     }
@@ -992,8 +986,8 @@ export default function RoomHost({
   };
 
   return (
-    <div className={`room-shell ${phase === "playing" ? "room-playing" : ""}`}>
-      {phase === "lobby" && (
+    <div className={`room-shell ${showGameFrame ? "room-playing" : ""}`}>
+      {showPlatformRoom && (
         <header className="topbar room-topbar">
           <button
             className="brand room-brand"
@@ -1013,7 +1007,7 @@ export default function RoomHost({
         </header>
       )}
       <main className="room-host">
-        {phase === "lobby" && (
+        {showPlatformRoom && (
           <>
             <div className="room-id">
               <RoomIdCopy
@@ -1286,12 +1280,17 @@ export default function RoomHost({
           }
           showOptions={phase === "playing"}
         >
-          {gameUrl && gameFrameActive && (
+          {phase === "playing" && gameUrl && (
             <GameFrame
               key={gameRevision}
               ref={iframe}
               title={gameName}
               src={gameUrl}
+              loaded={gameFrameLoaded}
+              onLoad={() => {
+                setGameFrameLoaded(true);
+                onEntryReady();
+              }}
             />
           )}
         </GameViewport>
@@ -1519,7 +1518,12 @@ export default function RoomHost({
           onShowHelp={gameHelpHref ? () => setGameHelpOpen(true) : undefined}
           onRefresh={
             phase === "playing"
-              ? () => setGameRevision((revision) => revision + 1)
+              ? () => {
+                  bridgePort.current?.close();
+                  bridgePort.current = undefined;
+                  setGameFrameLoaded(false);
+                  setGameRevision((revision) => revision + 1);
+                }
               : undefined
           }
           onToggleFavorite={() => setIsFavorite(toggleFavoriteGame(game))}
@@ -1531,12 +1535,12 @@ export default function RoomHost({
 
 function applyMembership(
   membership: RoomJoin,
-  setLobby: (lobby: RoomLobby) => void,
+  setPresence: (presence: RoomPresence) => void,
   setSelfId: (id: string) => void,
 ): void {
-  const { selfId, ...lobby } = membership;
+  const { selfId, ...presence } = membership;
   setSelfId(selfId);
-  setLobby(lobby);
+  setPresence(presence);
 }
 
 function message(reason: unknown, fallback: string): string {

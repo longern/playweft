@@ -916,6 +916,7 @@ function SoloHost({
               ref={iframe}
               title={gameName}
               src={loaded.game.url}
+              loaded={frameReady}
               onLoad={() => setFrameReady(true)}
             />
           </div>

@@ -601,6 +601,29 @@ export interface RoomSnapshot {
   events?: JsonValue[];
 }
 
+/**
+ * Platform-owned room membership and lifecycle state. This is independent of
+ * the game's authoritative snapshot and is safe to broadcast while playing.
+ */
+export interface RoomPresence {
+  /** Room membership/lifecycle message used on HTTP and WebSocket surfaces. */
+  type: "room.presence";
+  /** Monotonically increases whenever room membership or lifecycle changes. */
+  revision: number;
+  phase: "lobby" | "playing";
+  players: RoomPlayer[];
+  spectators: RoomSpectator[];
+  ownerId: string;
+  minPlayers: number;
+  maxPlayers: number;
+}
+
+/** The successful start transition always carries both independent states. */
+export interface RoomStart {
+  presence: RoomPresence;
+  snapshot: RoomSnapshot;
+}
+
 export interface ActionError {
   code: string;
   message: string;
@@ -648,18 +671,7 @@ export interface RoomSpectator {
   avatarUrl?: string;
 }
 
-/** Platform-owned room membership. Game iframes never receive this message. */
-export interface RoomLobby {
-  type: "lobby";
-  phase: "lobby" | "playing";
-  players: RoomPlayer[];
-  spectators: RoomSpectator[];
-  ownerId: string;
-  minPlayers: number;
-  maxPlayers: number;
-}
-
-export interface RoomJoin extends RoomLobby {
+export interface RoomJoin extends RoomPresence {
   selfId: string;
 }
 

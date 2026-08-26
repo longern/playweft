@@ -164,7 +164,7 @@ window.addEventListener("message", (event) => {
 
   rpcCall("game.initialize").then((context) => {
     // context.mode is "solo" or "room".
-    // room mode also returns phase and this room-scoped playerId.
+    // Room mode also returns this room-scoped playerId.
     ownPlayerId = context.playerId;
     showWaitingForState();
   }).catch(showRpcError);
@@ -203,13 +203,12 @@ the platform has already loaded the package contract. Its result is:
     "user.getProfile",
   ],
   // room only:
-  phase: "lobby" | "playing",
   playerId: "actor_..."
 }
 ```
 
-The game is in the platform-owned lobby after this request resolves. Do not
-enable gameplay until the first `game.state` notification.
+Room iframes are mounted only after the platform locks the roster. Do not
+enable gameplay until the first `game.state` notification arrives.
 
 ## 4. Receive state and submit actions
 
