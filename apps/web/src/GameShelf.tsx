@@ -1,0 +1,320 @@
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import type { FeaturedGame } from "./featured-games";
+import type { DiscoveredGame as RecentGame } from "./game-manifest";
+import { localizeGameName, useI18n } from "./i18n";
+import type { MenuPosition } from "./Menu";
+
+export type ShelfGame = RecentGame | FeaturedGame;
+export type GameShelfKind = "favorite" | "recent" | "recommended";
+export type ShelfGamePhase = "entering" | "exiting";
+
+interface GameShelfProps {
+  title: string;
+  kind: GameShelfKind;
+  games: ShelfGame[];
+  activeGameId?: string;
+  getItemClassName?(game: ShelfGame): string;
+  onItemAnimationEnd?(game: ShelfGame): void;
+  onSelect(game: ShelfGame): void;
+  onOpenMenu(
+    game: ShelfGame,
+    kind: GameShelfKind,
+    position: MenuPosition,
+  ): void;
+  onReorder?(games: ShelfGame[]): void;
+  onDismissMenu?(): void;
+}
+
+interface FavoriteDragState {
+  game: ShelfGame;
+  games: ShelfGame[];
+  pointerId: number;
+  x: number;
+  y: number;
+}
+
+interface FavoritePress {
+  game: ShelfGame;
+  games: ShelfGame[];
+  pointerId: number;
+  pointerType: string;
+  startX: number;
+  startY: number;
+  phase: "pending" | "menu" | "moved" | "dragging";
+  timer?: number;
+}
+
+const LONG_PRESS_DELAY_MS = 450;
+const DRAG_START_DISTANCE_PX = 8;
+
+export default function GameShelf({
+  title,
+  kind,
+  games,
+  activeGameId,
+  getItemClassName,
+  onItemAnimationEnd,
+  onSelect,
+  onOpenMenu,
+  onReorder,
+  onDismissMenu,
+}: GameShelfProps) {
+  const { locale } = useI18n();
+  const [drag, setDrag] = useState<FavoriteDragState>();
+  const shelf = useRef<HTMLElement>(null);
+  const press = useRef<FavoritePress | undefined>(undefined);
+  const suppressClick = useRef<string | undefined>(undefined);
+  const displayGames = drag?.games ?? games;
+
+  const clearPress = () => {
+    const current = press.current;
+    if (current?.timer !== undefined) window.clearTimeout(current.timer);
+    press.current = undefined;
+  };
+
+  const preventFollowingClick = (gameId: string) => {
+    suppressClick.current = gameId;
+    window.setTimeout(() => {
+      if (suppressClick.current === gameId) suppressClick.current = undefined;
+    }, 0);
+  };
+
+  const openMenu = (
+    game: ShelfGame,
+    target: HTMLButtonElement,
+    position: MenuPosition,
+  ) => {
+    target.focus();
+    onOpenMenu(game, kind, position);
+  };
+
+  const startFavoritePress = (
+    game: ShelfGame,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (
+      !onReorder ||
+      games.length < 2 ||
+      event.button !== 0
+    ) {
+      return;
+    }
+    const target = event.currentTarget;
+    const nextPress: FavoritePress = {
+      game,
+      games,
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      startX: event.clientX,
+      startY: event.clientY,
+      phase: "pending",
+    };
+    target.setPointerCapture(event.pointerId);
+    if (event.pointerType !== "mouse") {
+      nextPress.timer = window.setTimeout(() => {
+        if (press.current !== nextPress || nextPress.phase !== "pending") return;
+        nextPress.phase = "menu";
+        preventFollowingClick(game.manifestId);
+        openMenu(game, target, {
+          left: nextPress.startX,
+          top: nextPress.startY,
+        });
+      }, LONG_PRESS_DELAY_MS);
+    }
+    press.current = nextPress;
+  };
+
+  const moveFavoritePress = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const current = press.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    const distance = Math.hypot(
+      event.clientX - current.startX,
+      event.clientY - current.startY,
+    );
+    const shouldStartDragging =
+      distance >= DRAG_START_DISTANCE_PX &&
+      ((current.phase === "pending" && current.pointerType === "mouse") ||
+        current.phase === "menu");
+    if (shouldStartDragging) {
+      const wasMenu = current.phase === "menu";
+      if (current.timer !== undefined) window.clearTimeout(current.timer);
+      current.phase = "dragging";
+      event.preventDefault();
+      if (wasMenu) onDismissMenu?.();
+    } else if (
+      current.phase === "pending" &&
+      distance >= DRAG_START_DISTANCE_PX
+    ) {
+      if (current.timer !== undefined) window.clearTimeout(current.timer);
+      current.phase = "moved";
+      return;
+    }
+    if (current.phase !== "dragging") return;
+
+    event.preventDefault();
+    const targetId = favoriteAtPoint(event.clientX, event.clientY, shelf.current);
+    const fromIndex = current.games.findIndex(
+      (game) => game.manifestId === current.game.manifestId,
+    );
+    const targetIndex = current.games.findIndex(
+      (game) => game.manifestId === targetId,
+    );
+    const reordered =
+      fromIndex >= 0 && targetIndex >= 0 && fromIndex !== targetIndex
+        ? moveItem(current.games, fromIndex, targetIndex)
+        : current.games;
+    current.games = reordered;
+    setDrag({
+      game: current.game,
+      games: reordered,
+      pointerId: current.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const endFavoritePress = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    cancelled = false,
+  ) => {
+    const current = press.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    clearPress();
+    if (current.phase === "dragging" && !cancelled) {
+      onReorder?.(current.games);
+      preventFollowingClick(current.game.manifestId);
+    } else if (current.phase !== "pending") {
+      preventFollowingClick(current.game.manifestId);
+    }
+    setDrag(undefined);
+  };
+
+  useEffect(
+    () => () => {
+      if (press.current?.timer !== undefined)
+        window.clearTimeout(press.current.timer);
+    },
+    [],
+  );
+
+  return (
+    <section
+      ref={shelf}
+      className="game-shelf"
+      aria-labelledby={`${title.toLowerCase().replaceAll(" ", "-")}-title`}
+    >
+      <div className="shelf-heading">
+        <h2 id={`${title.toLowerCase().replaceAll(" ", "-")}-title`}>
+          {title}
+        </h2>
+      </div>
+      <div className="shelf-row">
+        {displayGames.map((game) => (
+          <div
+            className={`shelf-game-slot ${activeGameId === game.manifestId ? "shelf-game-menu-target" : ""} ${drag?.game.manifestId === game.manifestId ? "shelf-game-dragging" : ""} ${getItemClassName?.(game) ?? ""}`}
+            key={game.manifestId}
+            onAnimationEnd={(event) => {
+              if (event.target === event.currentTarget) {
+                onItemAnimationEnd?.(game);
+              }
+            }}
+          >
+            <button
+              className="shelf-game"
+              data-favorite-game-id={onReorder ? game.manifestId : undefined}
+              onClick={(event) => {
+                if (suppressClick.current === game.manifestId) {
+                  event.preventDefault();
+                  suppressClick.current = undefined;
+                  return;
+                }
+                onSelect(game);
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                const current = press.current;
+                if (current?.game.manifestId === game.manifestId) {
+                  if (current.timer !== undefined)
+                    window.clearTimeout(current.timer);
+                  current.phase = "menu";
+                  preventFollowingClick(game.manifestId);
+                }
+                openMenu(game, event.currentTarget, {
+                  left: event.clientX,
+                  top: event.clientY,
+                });
+              }}
+              onPointerDown={(event) => startFavoritePress(game, event)}
+              onPointerMove={moveFavoritePress}
+              onPointerUp={(event) => endFavoritePress(event)}
+              onPointerCancel={(event) => endFavoritePress(event, true)}
+            >
+              <span className="shelf-art">
+                {game.icon ? (
+                  <img src={game.icon} alt="" referrerPolicy="no-referrer" />
+                ) : (
+                  <span>
+                    {localizeGameName(game, locale).slice(0, 2).toUpperCase()}
+                  </span>
+                )}
+              </span>
+              <span className="shelf-game-name">
+                {localizeGameName(game, locale)}
+              </span>
+            </button>
+          </div>
+        ))}
+      </div>
+      {drag && (
+        <div
+          className="favorite-drag-overlay"
+          style={{ left: drag.x, top: drag.y }}
+          aria-hidden="true"
+        >
+          <span className="shelf-art">
+            {drag.game.icon ? (
+              <img src={drag.game.icon} alt="" referrerPolicy="no-referrer" />
+            ) : (
+              <span>
+                {localizeGameName(drag.game, locale).slice(0, 2).toUpperCase()}
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function favoriteAtPoint(
+  x: number,
+  y: number,
+  shelf: HTMLElement | null,
+): string | undefined {
+  const buttons = shelf?.querySelectorAll<HTMLButtonElement>(
+    "[data-favorite-game-id]",
+  );
+  if (!buttons) return undefined;
+  for (const button of buttons) {
+    const rect = button.getBoundingClientRect();
+    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+      return button.dataset.favoriteGameId;
+    }
+  }
+  return undefined;
+}
+
+function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
+  const next = [...items];
+  const [item] = next.splice(fromIndex, 1);
+  if (item === undefined) return items;
+  next.splice(toIndex, 0, item);
+  return next;
+}

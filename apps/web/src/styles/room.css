@@ -3,6 +3,63 @@
   min-height: 100svh;
 }
 
+.room-entry-state {
+  display: grid;
+  min-height: 100svh;
+  padding: 24px;
+  place-items: center;
+}
+
+.room-entry-state-content {
+  display: grid;
+  width: min(100%, 320px);
+  justify-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.room-entry-state-icon {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  border-radius: 50%;
+  background: #f1f4f3;
+  color: #6d7774;
+}
+
+.room-entry-state-icon svg {
+  width: 32px;
+  height: 32px;
+  stroke-width: 1.6;
+}
+
+.room-entry-state h1 {
+  margin: 0;
+  color: #202124;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+}
+
+.room-entry-state button {
+  min-width: 152px;
+  min-height: 48px;
+  border-radius: 999px;
+  font-weight: 750;
+}
+
+.room-entry-state button.primary {
+  border-color: transparent;
+  background: var(--color-primary);
+  color: #fff;
+}
+
+@media (hover: hover) {
+  .room-entry-state button.primary:hover {
+    background: var(--color-primary-hover);
+  }
+}
+
 .room-playing {
   height: 100dvh;
   overflow: hidden;
@@ -748,7 +805,7 @@ main.room-host {
   pointer-events: none;
 }
 
-.room-playing .game-frame.is-loaded {
+.game-frame.is-loaded {
   visibility: visible;
   pointer-events: auto;
 }

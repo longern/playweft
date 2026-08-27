@@ -6,6 +6,7 @@ import {
   type RoomActionResponse,
   type RoomActionResult,
   type JsonValue,
+  type RoomLeave,
   type RoomPresence,
   type RoomPlayer,
   type RoomSnapshot,
@@ -110,6 +111,8 @@ interface RoomMeta {
   phase: "lobby" | "playing";
   /** Monotonic version of membership and outer room lifecycle state. */
   presenceRevision: number;
+  /** Persisted separately from live WebSocket attachments for reconnect grace. */
+  ownerLastSeenAt?: number;
   fault?: {
     message: string;
     at: number;
@@ -334,6 +337,7 @@ export class GameRoom extends DurableObject<Env> {
       ownerPlayerId: this.playerId(request),
       phase: "lobby",
       presenceRevision: 0,
+      ownerLastSeenAt: Date.now(),
       members: {},
     });
     await this.touch();
@@ -500,7 +504,14 @@ export class GameRoom extends DurableObject<Env> {
       }
     }
     if (membershipChanged) {
-      await this.saveMembers(members);
+      const ownerPlayerId = await this.ownerPlayerId();
+      if (members[ownerPlayerId]) {
+        await this.saveMembers(members);
+      } else {
+        const nextOwnerPlayerId = this.nextOwnerPlayerId(members);
+        this.ensureOwnerSeat(nextOwnerPlayerId, members, config.maxPlayers);
+        await this.saveMembershipAndOwnership(members, nextOwnerPlayerId);
+      }
       await this.touch();
       this.broadcast(await this.presence());
     }
@@ -742,6 +753,7 @@ export class GameRoom extends DurableObject<Env> {
     for (const [memberId, member] of Object.entries(members)) {
       if (memberId !== playerId) member.ready = false;
     }
+    this.ensureOwnerSeat(ownerPlayerId, members, config.maxPlayers);
     this.disposeRuntime();
     const meta = await this.meta();
     meta.phase = "lobby";
@@ -756,7 +768,7 @@ export class GameRoom extends DurableObject<Env> {
     return presence;
   }
 
-  private async leave(request: Request): Promise<RoomPresence | RoomSnapshot> {
+  private async leave(request: Request): Promise<RoomLeave> {
     await this.launch();
     const playerId = this.playerId(request);
     const [phase, members, ownerPlayerId] = await Promise.all([
@@ -766,15 +778,31 @@ export class GameRoom extends DurableObject<Env> {
     ]);
     const member = members[playerId];
     if (!member) throw new RoomHttpError(404, "player is not in this room");
+    const ownerLeft = playerId === ownerPlayerId;
+    if (Object.keys(members).length === 1) {
+      this.closePlayerSockets(playerId);
+      await this.deleteEmptyRoom();
+      return { left: true, roomClosed: true };
+    }
 
     if (phase === "lobby") {
       delete members[playerId];
-      await this.saveMembers(members);
-      await this.touch();
       this.closePlayerSockets(playerId);
+      const nextOwnerPlayerId = ownerLeft
+        ? this.nextOwnerPlayerId(members)
+        : ownerPlayerId;
+      if (ownerLeft) {
+        this.ensureOwnerSeat(
+          nextOwnerPlayerId,
+          members,
+          (await this.config()).maxPlayers,
+        );
+      }
+      await this.saveMembershipAndOwnership(members, nextOwnerPlayerId);
+      await this.touch();
       const presence = await this.presence();
       this.broadcast(presence);
-      return presence;
+      return { left: true, roomClosed: false };
     }
 
     await this.runDueTimers(Date.now());
@@ -800,18 +828,18 @@ export class GameRoom extends DurableObject<Env> {
       serverTime: leftAt,
       scriptHash: config.scriptHash,
     };
-    const visibleSnapshot = this.snapshotForViewer(
-      snapshot,
-      this.gameActor(member, playerId === ownerPlayerId),
-      engine,
-    );
+    delete members[playerId];
+    this.closePlayerSockets(playerId);
+    const nextOwnerPlayerId = ownerLeft
+      ? this.nextOwnerPlayerId(members)
+      : ownerPlayerId;
+    if (ownerLeft) members[nextOwnerPlayerId]!.ready = false;
     const messages = this.prepareStateBroadcast(
       snapshot,
       engine,
       members,
-      ownerPlayerId,
+      nextOwnerPlayerId,
     );
-    delete members[playerId];
     this.assertTimerSupport(config, result.timerOps ?? []);
     await this.saveRoomState({
       ...room,
@@ -819,12 +847,11 @@ export class GameRoom extends DurableObject<Env> {
       version,
       timers: this.applyTimerOps(room.timers, result.timerOps ?? [], leftAt),
     });
-    await this.saveMembers(members);
+    await this.saveMembershipAndOwnership(members, nextOwnerPlayerId);
     await this.touch();
     this.broadcast(await this.presence());
     this.sendPreparedBroadcast(messages);
-    this.closePlayerSockets(playerId);
-    return visibleSnapshot;
+    return { left: true, roomClosed: false };
   }
 
   private async setSeat(request: Request): Promise<RoomPresence> {
@@ -1319,7 +1346,10 @@ export class GameRoom extends DurableObject<Env> {
         lastSeenAt: now,
         isOwner: playerId === (await this.ownerPlayerId()),
       } satisfies SocketAttachment;
-      if (attachment.isOwner) await this.scheduleAlarm(undefined, now, true);
+      if (attachment.isOwner) {
+        await this.recordOwnerSeen(now);
+        await this.scheduleAlarm(undefined, now, true);
+      }
       return { attachment, liveRoom: config.liveRoom };
     });
 
@@ -1459,8 +1489,67 @@ export class GameRoom extends DurableObject<Env> {
     const meta = await this.meta();
     meta.ownerPlayerId = ownerPlayerId;
     meta.members = members;
+    meta.ownerLastSeenAt =
+      this.socketLastSeenByPlayer().get(ownerPlayerId) ?? Date.now();
     this.bumpPresenceRevision(meta);
     await this.saveMeta(meta);
+  }
+
+  private async saveMembershipAndOwnership(
+    members: Record<string, RoomMember>,
+    ownerPlayerId: string,
+  ): Promise<void> {
+    const meta = await this.meta();
+    meta.members = members;
+    meta.ownerPlayerId = ownerPlayerId;
+    meta.ownerLastSeenAt =
+      this.socketLastSeenByPlayer().get(ownerPlayerId) ?? Date.now();
+    this.bumpPresenceRevision(meta);
+    await this.saveMeta(meta);
+    this.updateSocketOwnership(ownerPlayerId);
+  }
+
+  private nextOwnerPlayerId(members: Record<string, RoomMember>): string {
+    const joined = Object.entries(members).sort(
+      ([, left], [, right]) => left.joinedAt - right.joinedAt,
+    );
+    const nextOwner =
+      joined.find(([, member]) => member.seat !== undefined) ?? joined[0];
+    if (!nextOwner) {
+      throw new RoomHttpError(409, "the room has no remaining owner");
+    }
+    return nextOwner[0];
+  }
+
+  private ensureOwnerSeat(
+    ownerPlayerId: string,
+    members: Record<string, RoomMember>,
+    maxPlayers: number,
+  ): void {
+    const owner = members[ownerPlayerId];
+    if (!owner || owner.seat !== undefined) return;
+    const occupiedSeats = new Set(
+      Object.values(members)
+        .map((member) => member.seat)
+        .filter((seat): seat is number => seat !== undefined),
+    );
+    const seat = Array.from(
+      { length: maxPlayers },
+      (_, index) => index + 1,
+    ).find((candidate) => !occupiedSeats.has(candidate));
+    if (seat === undefined) {
+      throw new RoomHttpError(409, "the room host has no available seat");
+    }
+    owner.seat = seat;
+    owner.ready = false;
+  }
+
+  private async deleteEmptyRoom(): Promise<void> {
+    this.closeRoomSockets(4004, "room empty");
+    this.disposeRuntime();
+    this.liveRoomState = undefined;
+    await this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAll();
   }
 
   private bumpPresenceRevision(meta: RoomMeta): void {
@@ -1497,24 +1586,45 @@ export class GameRoom extends DurableObject<Env> {
     await this.scheduleAlarm(now + ROOM_IDLE_TTL_MS);
   }
 
+  private async recordOwnerSeen(seenAt: number): Promise<void> {
+    const meta = await this.meta();
+    if (seenAt <= (meta.ownerLastSeenAt ?? 0)) return;
+    meta.ownerLastSeenAt = seenAt;
+    await this.saveMeta(meta);
+  }
+
   private async noteSocketSeen(
     webSocket: WebSocket,
     attachment: SocketAttachment,
   ): Promise<void> {
     const now = Date.now();
     this.saveSocketAttachment(webSocket, { ...attachment, lastSeenAt: now });
-    if (attachment.isOwner) await this.scheduleAlarm(undefined, now, true);
+    if (attachment.isOwner) {
+      await this.recordOwnerSeen(now);
+      await this.scheduleAlarm(undefined, now, true);
+    }
   }
 
   private async transferOfflineHost(
     knownMembers?: Record<string, RoomMember>,
   ): Promise<void> {
-    const [ownerPlayerId, members] = await Promise.all([
-      this.ownerPlayerId(),
-      knownMembers ?? this.members(),
-    ]);
+    const meta = await this.meta();
+    const ownerPlayerId = meta.ownerPlayerId;
+    const members = knownMembers ?? meta.members;
     const lastSeenByPlayer = this.socketLastSeenByPlayer();
-    const ownerLastSeenAt = lastSeenByPlayer.get(ownerPlayerId);
+    const ownerLastSeenAt = Math.max(
+      lastSeenByPlayer.get(ownerPlayerId) ?? 0,
+      meta.ownerLastSeenAt ?? 0,
+    );
+    if (ownerLastSeenAt === 0) {
+      // Rooms created before ownerLastSeenAt was introduced get one full grace
+      // period rather than being treated as immediately abandoned on upgrade.
+      const seenAt = Date.now();
+      meta.ownerLastSeenAt = seenAt;
+      await this.saveMeta(meta);
+      await this.scheduleAlarm(undefined, seenAt);
+      return;
+    }
     if (
       ownerLastSeenAt !== undefined &&
       Date.now() - ownerLastSeenAt < HOST_OFFLINE_TIMEOUT_MS
@@ -1544,10 +1654,17 @@ export class GameRoom extends DurableObject<Env> {
     ownerLastSeenAtOverride?: number,
     onlyAdvance = false,
   ): Promise<void> {
-    const { ownerPlayerId, lastActivity } = await this.meta();
+    const {
+      ownerPlayerId,
+      ownerLastSeenAt: storedOwnerLastSeenAt,
+      lastActivity,
+    } = await this.meta();
     const ownerLastSeenAt =
       ownerLastSeenAtOverride ??
-      this.socketLastSeenByPlayer().get(ownerPlayerId);
+      Math.max(
+        this.socketLastSeenByPlayer().get(ownerPlayerId) ?? 0,
+        storedOwnerLastSeenAt ?? 0,
+      );
     const presenceCheckAt =
       ownerLastSeenAt && Date.now() - ownerLastSeenAt < HOST_OFFLINE_TIMEOUT_MS
         ? ownerLastSeenAt + HOST_OFFLINE_TIMEOUT_MS

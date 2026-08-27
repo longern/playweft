@@ -78,6 +78,7 @@ omit `Origin` for a same-origin GET.
 | `POST /api/rooms/:roomId/join` | Join the platform-owned lobby. The room creator is the host; when every seat is taken, new arrivals join as spectators. |
 | `POST /api/rooms/:roomId/seat` | Choose an empty numbered seat with `{ seat }`, or leave a seat to spectate with `{ seat: null }`. The host keeps their seat. |
 | `POST /api/rooms/:roomId/ready` | Set a seated non-host player's readiness with `{ ready }`. |
+| `POST /api/rooms/:roomId/leave` | Explicitly leave the room; ownership transfers immediately, and the room is deleted when its final member leaves. |
 | `POST /api/rooms/:roomId/kick` | Room-host-only lobby action with `{ playerId }`. |
 | `POST /api/rooms/:roomId/dissolve` | Room-host-only lobby action that closes the room for everyone and invalidates its invite link. |
 | `POST /api/rooms/:roomId/start` | Room-host-only action; locks the seated roster and calls Lua `setup({ protocolVersion, match, players })`. |

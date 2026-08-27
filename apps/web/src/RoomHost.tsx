@@ -3,6 +3,7 @@ import {
   Armchair,
   Check,
   Crown,
+  DoorClosed,
   Eye,
   MoreHorizontal,
   Share2,
@@ -32,6 +33,7 @@ import {
   startRoom,
   transferRoomHost,
   returnRoomToLobby,
+  PlatformApiError,
   type RoomActionResult,
   type RoomJoin,
   type RoomPresence,
@@ -86,20 +88,16 @@ interface RoomHostProps {
   roomId: string;
   onBack(): void;
   onGameDiscovered(game: DiscoveredGame): void;
-  onEntryStatus(status: string): void;
-  onEntryReady(): void;
-  onEntryFailed(): void;
   onNicknameChange(value: string): void;
 }
+
+type RoomEntryFailure = "not-found" | "unavailable";
 
 export default function RoomHost({
   nickname,
   roomId,
   onBack,
   onGameDiscovered,
-  onEntryStatus,
-  onEntryReady,
-  onEntryFailed,
   onNicknameChange,
 }: RoomHostProps) {
   const { locale, t } = useI18n();
@@ -117,7 +115,6 @@ export default function RoomHost({
   nicknameRef.current = nickname;
   const [manifestUrl, setManifestUrl] = useState<string>();
   const [gameUrl, setGameUrl] = useState<string>();
-  const [gameFrameLoaded, setGameFrameLoaded] = useState(false);
   const [loadedGame, setLoadedGame] = useState<LoadedGame>();
   const [gameRevision, setGameRevision] = useState(0);
   const [game, setGame] = useState<DiscoveredGame>();
@@ -132,6 +129,7 @@ export default function RoomHost({
     useState(false);
   const startUnavailableHintTimer = useRef<number | undefined>(undefined);
   const [error, setError] = useState<string>();
+  const [entryFailure, setEntryFailure] = useState<RoomEntryFailure>();
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [gameInfoOpen, setGameInfoOpen] = useState(false);
@@ -199,13 +197,11 @@ export default function RoomHost({
   // by another client: playing mounts a fresh frame, lobby removes it.
   useEffect(() => {
     if (phase === "playing") {
-      setGameFrameLoaded(false);
       return;
     }
     latestSnapshotRef.current = undefined;
     bridgePort.current?.close();
     bridgePort.current = undefined;
-    setGameFrameLoaded(false);
   }, [phase]);
 
   useEffect(() => {
@@ -290,7 +286,6 @@ export default function RoomHost({
     let cancelled = false;
     void (async () => {
       try {
-        onEntryStatus(tRef.current("loadingGame"));
         setError(undefined);
         await createGuestSession(nicknameRef.current);
         const launch = await getRoomLaunch(roomId);
@@ -298,15 +293,14 @@ export default function RoomHost({
         setManifestUrl(launch.manifestUrl);
       } catch (reason) {
         if (!cancelled) {
-          setError(message(reason, tRef.current("unexpectedError")));
-          onEntryFailed();
+          setEntryFailure(entryFailureFrom(reason));
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [onEntryFailed, onEntryStatus, roomId]);
+  }, [roomId]);
 
   useEffect(() => {
     if (
@@ -338,7 +332,6 @@ export default function RoomHost({
     if (!manifestUrl) return;
     let cancelled = false;
     setGameUrl(undefined);
-    setGameFrameLoaded(false);
     setLoadedGame(undefined);
     void loadGameManifest(manifestUrl)
       .then((loaded) => {
@@ -355,14 +348,13 @@ export default function RoomHost({
       })
       .catch((reason) => {
         if (!cancelled) {
-          setError(message(reason, tRef.current("unexpectedError")));
-          onEntryFailed();
+          setEntryFailure(entryFailureFrom(reason));
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [manifestUrl, onEntryFailed, onGameDiscovered]);
+  }, [manifestUrl, onGameDiscovered]);
 
   useEffect(() => {
     if (!gameUrl || !loadedGame?.room) return;
@@ -577,10 +569,6 @@ export default function RoomHost({
       syncedNickname.current = nicknameRef.current;
       joined = true;
       joinedPlayerId = membership.selfId;
-      // A lobby is ready before its game iframe exists. Clear the route-entry
-      // overlay here so the host can press Start; an already-playing room
-      // remains gated until its iframe fires onLoad below.
-      if (membership.phase === "lobby") onEntryReady();
       // Room membership owns the avatar shown in the outer player list. Keep
       // that sync independent from the game iframe, which is intentionally
       // not mounted while the room is waiting to start.
@@ -598,14 +586,13 @@ export default function RoomHost({
     })();
     void roomReady.catch((reason) => {
       if (closed) return;
-      const error = message(reason, tRef.current("unexpectedError"));
-      setError(error);
-      onEntryFailed();
+      setEntryFailure(entryFailureFrom(reason));
     });
 
     const detachBridge = attachGameBridge({
       frame: iframe,
       origin: currentGameOrigin,
+      canConnect: () => phaseRef.current === "playing",
       onBeforeConnect() {
         clipboard.cancelPending();
         userProfile.cancelPending();
@@ -804,9 +791,6 @@ export default function RoomHost({
   }, [
     gameUrl,
     loadedGame,
-    onEntryFailed,
-    onEntryReady,
-    onEntryStatus,
     onGameDiscovered,
     roomId,
     clipboard.cancelPending,
@@ -837,7 +821,6 @@ export default function RoomHost({
     setStarting(true);
     try {
       setError(undefined);
-      setGameFrameLoaded(false);
       const startedRoom = await startRoom(roomId);
       const snapshot = startedRoom.snapshot;
       latestSnapshotRef.current = snapshot;
@@ -984,6 +967,14 @@ export default function RoomHost({
     setPlayerMenuClosing(false);
     setPlayerMenuId(playerId);
   };
+
+  if (entryFailure) {
+    return <RoomEntryFailureState failure={entryFailure} onBack={onBack} />;
+  }
+
+  if (!lobby || !selfId) {
+    return <RoomEntryLoadingState />;
+  }
 
   return (
     <div className={`room-shell ${showGameFrame ? "room-playing" : ""}`}>
@@ -1286,11 +1277,6 @@ export default function RoomHost({
               ref={iframe}
               title={gameName}
               src={gameUrl}
-              loaded={gameFrameLoaded}
-              onLoad={() => {
-                setGameFrameLoaded(true);
-                onEntryReady();
-              }}
             />
           )}
         </GameViewport>
@@ -1521,7 +1507,6 @@ export default function RoomHost({
               ? () => {
                   bridgePort.current?.close();
                   bridgePort.current = undefined;
-                  setGameFrameLoaded(false);
                   setGameRevision((revision) => revision + 1);
                 }
               : undefined
@@ -1545,6 +1530,50 @@ function applyMembership(
 
 function message(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback;
+}
+
+function entryFailureFrom(reason: unknown): RoomEntryFailure {
+  return reason instanceof PlatformApiError && reason.status === 404
+    ? "not-found"
+    : "unavailable";
+}
+
+function RoomEntryLoadingState() {
+  const { t } = useI18n();
+  return (
+    <main className="room-entry-state">
+      <div
+        className="room-entry-state-content"
+        role="status"
+        aria-label={t("loadingGame")}
+      >
+        <span className="loading-spinner" aria-hidden="true" />
+      </div>
+    </main>
+  );
+}
+
+function RoomEntryFailureState({
+  failure,
+  onBack,
+}: {
+  failure: RoomEntryFailure;
+  onBack(): void;
+}) {
+  const { t } = useI18n();
+  return (
+    <main className="room-entry-state">
+      <div className="room-entry-state-content">
+        <span className="room-entry-state-icon" aria-hidden="true">
+          <DoorClosed />
+        </span>
+        <h1>{t(failure === "not-found" ? "roomNotFound" : "roomUnavailable")}</h1>
+        <button className="primary" type="button" onClick={onBack}>
+          {t("backHome")}
+        </button>
+      </div>
+    </main>
+  );
 }
 
 function desktopPlayerGridColumns(capacity: number): 2 | 3 | 4 {

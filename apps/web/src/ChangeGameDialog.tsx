@@ -47,6 +47,7 @@ export default function ChangeGameDialog({
             type="url"
             required
             autoFocus
+            autoComplete="off"
             placeholder={t("pasteStaticGameUrl")}
             value={url}
             onChange={(event) => setUrl(event.target.value)}

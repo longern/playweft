@@ -624,6 +624,13 @@ export interface RoomStart {
   snapshot: RoomSnapshot;
 }
 
+/** Result of explicitly leaving a room. */
+export interface RoomLeave {
+  left: true;
+  /** True when this departure removed the final room member. */
+  roomClosed: boolean;
+}
+
 export interface ActionError {
   code: string;
   message: string;

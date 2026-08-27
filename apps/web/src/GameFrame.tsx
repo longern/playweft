@@ -1,4 +1,10 @@
-import { forwardRef, type RefObject, type SyntheticEvent } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useState,
+  type RefObject,
+  type SyntheticEvent,
+} from "react";
 import {
   PLAYWEFT_BRIDGE_VERSION,
   dispatchRpcMessage,
@@ -11,12 +17,23 @@ const GAME_FRAME_ALLOW = "clipboard-read 'none'; clipboard-write 'none'";
 interface GameFrameProps {
   src: string;
   title: string;
-  loaded: boolean;
   onLoad?(event: SyntheticEvent<HTMLIFrameElement>): void;
 }
 
 const GameFrame = forwardRef<HTMLIFrameElement, GameFrameProps>(
-  function GameFrame({ src, title, loaded, onLoad }, ref) {
+  function GameFrame({ src, title, onLoad }, ref) {
+    // Loading belongs to this iframe mount. Room presence can change before a
+    // parent effect runs, so keeping it in the parent can hide an already
+    // loaded frame when that effect resets stale state.
+    const [loaded, setLoaded] = useState(false);
+    const handleLoad = useCallback(
+      (event: SyntheticEvent<HTMLIFrameElement>) => {
+        setLoaded(true);
+        onLoad?.(event);
+      },
+      [onLoad],
+    );
+
     return (
       <iframe
         ref={ref}
@@ -25,7 +42,7 @@ const GameFrame = forwardRef<HTMLIFrameElement, GameFrameProps>(
         src={src}
         sandbox={GAME_FRAME_SANDBOX}
         allow={GAME_FRAME_ALLOW}
-        onLoad={onLoad}
+        onLoad={handleLoad}
       />
     );
   },
@@ -37,12 +54,14 @@ export function attachGameBridge({
   frame,
   origin,
   handlers,
+  canConnect,
   onBeforeConnect,
   onPortChange,
 }: {
   frame: RefObject<HTMLIFrameElement | null>;
   origin: string;
   handlers: RpcHandlers;
+  canConnect?(): boolean;
   onBeforeConnect?(): void;
   onPortChange?(port: MessagePort | undefined): void;
 }): () => void {
@@ -58,6 +77,7 @@ export function attachGameBridge({
     if (
       event.origin !== origin ||
       event.source !== frame.current?.contentWindow ||
+      (canConnect !== undefined && !canConnect()) ||
       event.data?.type !== "playweft:bridge-ready" ||
       event.data?.version !== PLAYWEFT_BRIDGE_VERSION
     )

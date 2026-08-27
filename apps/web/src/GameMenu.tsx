@@ -1,6 +1,7 @@
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { Info, Star, StarOff, Trash2 } from "lucide-react";
 import type { FeaturedGame } from "./featured-games";
-import Menu, { type MenuPosition } from "./Menu";
+import Menu, { type MenuHandle, type MenuPosition } from "./Menu";
 import type { DiscoveredGame as RecentGame } from "./game-manifest";
 import { localizeGameName, useI18n } from "./i18n";
 
@@ -12,31 +13,46 @@ interface GameMenuProps {
   position?: MenuPosition;
   isFavorite: boolean;
   canDelete: boolean;
+  closeRequested?: boolean;
   onClose(): void;
   onShowInfo(): void;
   onToggleFavorite(): void;
   onDelete(): void;
 }
 
-export default function GameMenu({
+export interface GameMenuHandle {
+  close(): void;
+}
+
+const GameMenu = forwardRef<GameMenuHandle, GameMenuProps>(function GameMenu({
   game,
   anchor,
   position,
   isFavorite,
   canDelete,
+  closeRequested = false,
   onClose,
   onShowInfo,
   onToggleFavorite,
   onDelete,
-}: GameMenuProps) {
+}, forwardedRef) {
   const { locale, t } = useI18n();
+  const menu = useRef<MenuHandle>(null);
+  useImperativeHandle(forwardedRef, () => ({
+    close: () => menu.current?.close(),
+  }));
+
+  useEffect(() => {
+    if (closeRequested) menu.current?.close();
+  }, [closeRequested]);
+
   const act = (action: () => void) => {
-    action();
-    onClose();
+    menu.current?.close(action);
   };
 
   return (
     <Menu
+      ref={menu}
       ariaLabel={t("gameActions", {
         name: localizeGameName(game, locale),
       })}
@@ -75,4 +91,6 @@ export default function GameMenu({
       )}
     </Menu>
   );
-}
+});
+
+export default GameMenu;

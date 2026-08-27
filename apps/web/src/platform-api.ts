@@ -3,6 +3,7 @@ import type {
   RoomActionResponse,
   RoomActionResult,
   RoomJoin,
+  RoomLeave,
   RoomPresence,
   RoomSnapshot,
   RoomStart,
@@ -12,12 +13,23 @@ export type {
   RoomActionResponse,
   RoomActionResult,
   RoomJoin,
+  RoomLeave,
   RoomPresence,
   RoomSnapshot,
   RoomStart,
 } from "@playweft/game-protocol";
 
 const apiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
+
+export class PlatformApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "PlatformApiError";
+  }
+}
 
 function endpoint(path: string): URL {
   return new URL(`${apiBase}${path}`, window.location.origin);
@@ -30,8 +42,9 @@ async function responseJson<T>(response: Response): Promise<T> {
       body !== null && typeof body === "object" && "error" in body
         ? body.error
         : undefined;
-    throw new Error(
+    throw new PlatformApiError(
       typeof error === "string" ? error : `request failed (${response.status})`,
+      response.status,
     );
   }
   return body as T;
@@ -100,13 +113,11 @@ export function startRoom(roomId: string): Promise<RoomStart> {
   }).then(responseJson<RoomStart>);
 }
 
-export function leaveRoom(
-  roomId: string,
-): Promise<RoomPresence | RoomSnapshot> {
+export function leaveRoom(roomId: string): Promise<RoomLeave> {
   return fetch(endpoint(`/api/rooms/${encodeURIComponent(roomId)}/leave`), {
     method: "POST",
     credentials: "same-origin",
-  }).then(responseJson<RoomPresence | RoomSnapshot>);
+  }).then(responseJson<RoomLeave>);
 }
 
 export function setRoomSeat(
