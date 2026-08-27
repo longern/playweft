@@ -1,8 +1,29 @@
 import {
+  DndContext,
+  MouseSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  rectSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
+  type ComponentPropsWithRef,
+  type HTMLAttributes,
+  type TouchEvent as ReactTouchEvent,
 } from "react";
 import type { FeaturedGame } from "./featured-games";
 import type { DiscoveredGame as RecentGame } from "./game-manifest";
@@ -30,28 +51,48 @@ interface GameShelfProps {
   onDismissMenu?(): void;
 }
 
-interface FavoriteDragState {
+interface ShelfGameCardProps {
   game: ShelfGame;
-  games: ShelfGame[];
-  pointerId: number;
+  kind: GameShelfKind;
+  activeGameId?: string;
+  className?: string;
+  onAnimationEnd?(): void;
+  onSelect(game: ShelfGame): void;
+  onOpenMenu(
+    game: ShelfGame,
+    kind: GameShelfKind,
+    position: MenuPosition,
+  ): void;
+  onTouchStart?(game: ShelfGame, event: ReactTouchEvent<HTMLButtonElement>): void;
+  onTouchMove?(game: ShelfGame, event: ReactTouchEvent<HTMLButtonElement>): void;
+  onTouchEnd?(game: ShelfGame): void;
+  onTouchCancel?(game: ShelfGame): void;
+  buttonProps?: HTMLAttributes<HTMLButtonElement>;
+  slotProps?: ComponentPropsWithRef<"div">;
+}
+
+interface TouchMenuPress {
+  game: ShelfGame;
   x: number;
   y: number;
-}
-
-interface FavoritePress {
-  game: ShelfGame;
-  games: ShelfGame[];
-  pointerId: number;
-  pointerType: string;
-  startX: number;
-  startY: number;
-  phase: "pending" | "menu" | "moved" | "dragging";
-  target: HTMLButtonElement;
   timer?: number;
+  opened: boolean;
 }
 
-const LONG_PRESS_DELAY_MS = 450;
+interface DropTransition {
+  gameId: string;
+  fromX: number;
+  fromY: number;
+}
+
 const DRAG_START_DISTANCE_PX = 8;
+const TOUCH_MENU_DELAY_MS = 400;
+const TOUCH_LONG_PRESS_DELAY_MS = TOUCH_MENU_DELAY_MS;
+const TOUCH_MOVEMENT_TOLERANCE_PX = 5;
+const SORTABLE_TRANSITION = {
+  duration: 140,
+  easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+};
 
 export default function GameShelf({
   title,
@@ -65,352 +106,305 @@ export default function GameShelf({
   onReorder,
   onDismissMenu,
 }: GameShelfProps) {
-  const { locale } = useI18n();
-  const [drag, setDrag] = useState<FavoriteDragState>();
-  const shelf = useRef<HTMLElement>(null);
-  const slotRefs = useRef(new Map<string, HTMLDivElement>());
-  const press = useRef<FavoritePress | undefined>(undefined);
-  const suppressClick = useRef<string | undefined>(undefined);
-  const moveFavoritePressRef = useRef<((event: PointerEvent) => void) | undefined>(
-    undefined,
+  const [dropTransition, setDropTransition] = useState<DropTransition>();
+  const gameNodes = useRef(new Map<string, HTMLDivElement>());
+  const touchMenuPress = useRef<TouchMenuPress | undefined>(undefined);
+  const sortable = Boolean(onReorder && games.length > 1);
+  const sensors = useSensors(
+    useSensor(MouseSensor, {
+      activationConstraint: { distance: DRAG_START_DISTANCE_PX },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: TOUCH_LONG_PRESS_DELAY_MS,
+        tolerance: TOUCH_MOVEMENT_TOLERANCE_PX,
+      },
+    }),
   );
-  const endFavoritePressRef = useRef<
-    ((event: PointerEvent, cancelled?: boolean) => void) | undefined
-  >(undefined);
-  const flipFrame = useRef<number | undefined>(undefined);
-  const slotAnimations = useRef(new Map<string, Animation>());
-  const displayGames = drag?.games ?? games;
-
-  const clearPress = () => {
-    const current = press.current;
-    if (current?.timer !== undefined) window.clearTimeout(current.timer);
-    press.current = undefined;
+  const titleId = `${title.toLowerCase().replaceAll(" ", "-")}-title`;
+  const clearTouchMenuPress = () => {
+    const press = touchMenuPress.current;
+    if (press?.timer !== undefined) window.clearTimeout(press.timer);
+    touchMenuPress.current = undefined;
   };
-
-  const preventFollowingClick = (gameId: string) => {
-    suppressClick.current = gameId;
-    window.setTimeout(() => {
-      if (suppressClick.current === gameId) suppressClick.current = undefined;
-    }, 0);
-  };
-
-  const openMenu = (
-    game: ShelfGame,
-    target: HTMLButtonElement,
-    position: MenuPosition,
-  ) => {
-    target.focus();
-    onOpenMenu(game, kind, position);
-  };
-
-  const startFavoritePress = (
-    game: ShelfGame,
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    if (
-      !onReorder ||
-      games.length < 2 ||
-      event.button !== 0
-    ) {
-      return;
-    }
-    const target = event.currentTarget;
-    const nextPress: FavoritePress = {
-      game,
-      games,
-      pointerId: event.pointerId,
-      pointerType: event.pointerType,
-      startX: event.clientX,
-      startY: event.clientY,
-      phase: "pending",
-      target,
-    };
-    target.setPointerCapture(event.pointerId);
-    if (usesLongPressMenu(event.pointerType)) {
-      nextPress.timer = window.setTimeout(() => {
-        if (press.current !== nextPress || nextPress.phase !== "pending") return;
-        nextPress.phase = "menu";
-        preventFollowingClick(game.manifestId);
-        openMenu(game, target, {
-          left: nextPress.startX,
-          top: nextPress.startY,
-        });
-      }, LONG_PRESS_DELAY_MS);
-    }
-    press.current = nextPress;
-  };
-
-  const moveFavoritePress = (event: PointerEvent) => {
-    const current = press.current;
-    if (!current || current.pointerId !== event.pointerId) return;
-    const distance = Math.hypot(
-      event.clientX - current.startX,
-      event.clientY - current.startY,
-    );
-    const shouldStartDragging =
-      distance >= DRAG_START_DISTANCE_PX &&
-      ((current.phase === "pending" && !usesLongPressMenu(current.pointerType)) ||
-        current.phase === "menu");
-    if (shouldStartDragging) {
-      const wasMenu = current.phase === "menu";
-      if (current.timer !== undefined) window.clearTimeout(current.timer);
-      current.phase = "dragging";
-      event.preventDefault();
-      if (wasMenu) onDismissMenu?.();
-    } else if (
-      current.phase === "pending" &&
-      distance >= DRAG_START_DISTANCE_PX
-    ) {
-      if (current.timer !== undefined) window.clearTimeout(current.timer);
-      current.phase = "moved";
-      return;
-    }
-    if (current.phase !== "dragging") return;
-
-    event.preventDefault();
-    const targetId = favoriteAtPoint(event.clientX, event.clientY, shelf.current);
-    const fromIndex = current.games.findIndex(
-      (game) => game.manifestId === current.game.manifestId,
-    );
-    const targetIndex = current.games.findIndex(
-      (game) => game.manifestId === targetId,
-    );
-    const reordered =
-      fromIndex >= 0 && targetIndex >= 0 && fromIndex !== targetIndex
-        ? moveItem(current.games, fromIndex, targetIndex)
-        : current.games;
-    if (reordered !== current.games) {
-      const before = readSlotRects(slotRefs.current);
-      cancelSlotAnimations();
-      current.games = reordered;
-      scheduleSlotFlip(before, current.game.manifestId);
-    }
-    setDrag({
-      game: current.game,
-      games: reordered,
-      pointerId: current.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-    });
-  };
-
-  const endFavoritePress = (event: PointerEvent, cancelled = false) => {
-    const current = press.current;
-    if (!current || current.pointerId !== event.pointerId) return;
-    clearPress();
-    try {
-      if (current.target.hasPointerCapture(event.pointerId))
-        current.target.releasePointerCapture(event.pointerId);
-    } catch {
-      // The browser may release capture before pointerup reaches the window.
-    }
-    if (current.phase === "dragging" && !cancelled) {
-      onReorder?.(current.games);
-      preventFollowingClick(current.game.manifestId);
-    } else if (current.phase !== "pending") {
-      preventFollowingClick(current.game.manifestId);
-    }
-    setDrag(undefined);
-  };
-
-  moveFavoritePressRef.current = moveFavoritePress;
-  endFavoritePressRef.current = endFavoritePress;
-
-  useEffect(() => {
-    const move = (event: PointerEvent) =>
-      moveFavoritePressRef.current?.(event);
-    const end = (event: PointerEvent) => endFavoritePressRef.current?.(event);
-    const cancel = (event: PointerEvent) =>
-      endFavoritePressRef.current?.(event, true);
-    // Use capture so a long-press menu backdrop cannot swallow the pointer
-    // stream after the drag has started.
-    window.addEventListener("pointermove", move, { capture: true });
-    window.addEventListener("pointerup", end, { capture: true });
-    window.addEventListener("pointercancel", cancel, { capture: true });
-    return () => {
-      window.removeEventListener("pointermove", move, true);
-      window.removeEventListener("pointerup", end, true);
-      window.removeEventListener("pointercancel", cancel, true);
-    };
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (press.current?.timer !== undefined)
-        window.clearTimeout(press.current.timer);
-      window.cancelAnimationFrame(flipFrame.current ?? 0);
-      cancelSlotAnimations();
+  const registerGameNode = useCallback(
+    (gameId: string, node: HTMLDivElement | null) => {
+      if (node) gameNodes.current.set(gameId, node);
+      else gameNodes.current.delete(gameId);
     },
     [],
   );
+  const finishDropTransition = useCallback((gameId: string) => {
+    setDropTransition((current) =>
+      current?.gameId === gameId ? undefined : current,
+    );
+  }, []);
+  const startTouchMenu = (
+    game: ShelfGame,
+    event: ReactTouchEvent<HTMLButtonElement>,
+  ) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    clearTouchMenuPress();
+    const press: TouchMenuPress = {
+      game,
+      x: touch.clientX,
+      y: touch.clientY,
+      opened: false,
+    };
+    press.timer = window.setTimeout(() => {
+      if (touchMenuPress.current !== press) return;
+      press.opened = true;
+      press.timer = undefined;
+      onOpenMenu(game, kind, { left: press.x, top: press.y });
+    }, TOUCH_MENU_DELAY_MS);
+    touchMenuPress.current = press;
+  };
+  const moveTouchMenu = (
+    game: ShelfGame,
+    event: ReactTouchEvent<HTMLButtonElement>,
+  ) => {
+    const press = touchMenuPress.current;
+    const touch = event.touches[0];
+    if (!press || press.game.manifestId !== game.manifestId || !touch) return;
+    if (
+      !press.opened &&
+      Math.hypot(touch.clientX - press.x, touch.clientY - press.y) >
+        TOUCH_MOVEMENT_TOLERANCE_PX
+    ) {
+      clearTouchMenuPress();
+    }
+  };
+  useEffect(() => clearTouchMenuPress, []);
+  const content = (
+    <section className="game-shelf" aria-labelledby={titleId}>
+      <div className="shelf-heading">
+        <h2 id={titleId}>{title}</h2>
+      </div>
+      <div className="shelf-row">
+        {games.map((game) => {
+          const props: ShelfGameCardProps = {
+            game,
+            kind,
+            activeGameId,
+            className: getItemClassName?.(game),
+            onAnimationEnd: () => onItemAnimationEnd?.(game),
+            onSelect,
+            onOpenMenu,
+            onTouchStart: startTouchMenu,
+            onTouchMove: moveTouchMenu,
+            onTouchEnd: clearTouchMenuPress,
+            onTouchCancel: clearTouchMenuPress,
+          };
+          return sortable ? (
+            <SortableShelfGameCard
+              key={game.manifestId}
+              {...props}
+              dropTransition={dropTransition}
+              onDropTransitionEnd={finishDropTransition}
+              onNodeChange={registerGameNode}
+            />
+          ) : (
+            <ShelfGameCard key={game.manifestId} {...props} />
+          );
+        })}
+      </div>
+    </section>
+  );
 
-  const cancelSlotAnimations = () => {
-    for (const animation of slotAnimations.current.values()) animation.cancel();
-    slotAnimations.current.clear();
+  if (!sortable || !onReorder) return content;
+
+  const onDragStart = ({ activatorEvent }: DragStartEvent) => {
+    if (!("touches" in activatorEvent)) onDismissMenu?.();
   };
 
-  const scheduleSlotFlip = (
-    before: Map<string, DOMRect>,
-    draggedGameId: string,
-  ) => {
-    window.cancelAnimationFrame(flipFrame.current ?? 0);
-    flipFrame.current = window.requestAnimationFrame(() => {
-      for (const [gameId, element] of slotRefs.current) {
-        if (gameId === draggedGameId) continue;
-        const previous = before.get(gameId);
-        if (!previous) continue;
-        const next = element.getBoundingClientRect();
-        const dx = previous.left - next.left;
-        const dy = previous.top - next.top;
-        if (!dx && !dy) continue;
-        const animation = element.animate(
-          [
-            { transform: `translate(${dx}px, ${dy}px)` },
-            { transform: "translate(0, 0)" },
-          ],
-          {
-            duration: window.matchMedia("(prefers-reduced-motion: reduce)")
-              .matches
-              ? 0
-              : 180,
-            easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-          },
-        );
-        slotAnimations.current.set(gameId, animation);
-        const forget = () => {
-          if (slotAnimations.current.get(gameId) === animation)
-            slotAnimations.current.delete(gameId);
-        };
-        animation.onfinish = forget;
-        animation.oncancel = forget;
-      }
-    });
+  const onDragMove = () => {
+    if (!touchMenuPress.current?.opened) return;
+    clearTouchMenuPress();
+    onDismissMenu?.();
+  };
+
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    clearTouchMenuPress();
+    if (!over || active.id === over.id) return;
+    const fromIndex = games.findIndex((game) => game.manifestId === active.id);
+    const toIndex = games.findIndex((game) => game.manifestId === over.id);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const rect = gameNodes.current.get(String(active.id))?.getBoundingClientRect();
+    if (rect) {
+      setDropTransition({
+        gameId: String(active.id),
+        fromX: rect.left,
+        fromY: rect.top,
+      });
+    }
+    onReorder(arrayMove(games, fromIndex, toIndex));
   };
 
   return (
-    <section
-      ref={shelf}
-      className="game-shelf"
-      aria-labelledby={`${title.toLowerCase().replaceAll(" ", "-")}-title`}
+    <DndContext
+      collisionDetection={closestCenter}
+      sensors={sensors}
+      onDragStart={onDragStart}
+      onDragMove={onDragMove}
+      onDragCancel={() => {
+        setDropTransition(undefined);
+        clearTouchMenuPress();
+      }}
+      onDragEnd={onDragEnd}
     >
-      <div className="shelf-heading">
-        <h2 id={`${title.toLowerCase().replaceAll(" ", "-")}-title`}>
-          {title}
-        </h2>
-      </div>
-      <div className="shelf-row">
-        {displayGames.map((game) => (
-          <div
-            className={`shelf-game-slot ${activeGameId === game.manifestId ? "shelf-game-menu-target" : ""} ${drag?.game.manifestId === game.manifestId ? "shelf-game-dragging" : ""} ${getItemClassName?.(game) ?? ""}`}
-            key={game.manifestId}
-            ref={(element) => {
-              if (element) slotRefs.current.set(game.manifestId, element);
-              else slotRefs.current.delete(game.manifestId);
-            }}
-            onAnimationEnd={(event) => {
-              if (event.target === event.currentTarget) {
-                onItemAnimationEnd?.(game);
-              }
-            }}
-          >
-            <button
-              className="shelf-game"
-              data-favorite-game-id={onReorder ? game.manifestId : undefined}
-              onClick={(event) => {
-                if (suppressClick.current === game.manifestId) {
-                  event.preventDefault();
-                  suppressClick.current = undefined;
-                  return;
-                }
-                onSelect(game);
-              }}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                const current = press.current;
-                if (current?.game.manifestId === game.manifestId) {
-                  if (current.timer !== undefined)
-                    window.clearTimeout(current.timer);
-                  current.phase = "menu";
-                  preventFollowingClick(game.manifestId);
-                }
-                openMenu(game, event.currentTarget, {
-                  left: event.clientX,
-                  top: event.clientY,
-                });
-              }}
-              onPointerDown={(event) => startFavoritePress(game, event)}
-            >
-              <span className="shelf-art">
-                {game.icon ? (
-                  <img src={game.icon} alt="" referrerPolicy="no-referrer" />
-                ) : (
-                  <span>
-                    {localizeGameName(game, locale).slice(0, 2).toUpperCase()}
-                  </span>
-                )}
-              </span>
-              <span className="shelf-game-name">
-                {localizeGameName(game, locale)}
-              </span>
-            </button>
-          </div>
-        ))}
-      </div>
-      {drag && (
-        <div
-          className="favorite-drag-overlay"
-          style={{ left: drag.x, top: drag.y }}
-          aria-hidden="true"
-        >
-          <span className="shelf-art">
-            {drag.game.icon ? (
-              <img src={drag.game.icon} alt="" referrerPolicy="no-referrer" />
-            ) : (
-              <span>
-                {localizeGameName(drag.game, locale).slice(0, 2).toUpperCase()}
-              </span>
-            )}
-          </span>
-        </div>
-      )}
-    </section>
+      <SortableContext
+        items={games.map((game) => game.manifestId)}
+        strategy={rectSortingStrategy}
+      >
+        {content}
+      </SortableContext>
+    </DndContext>
   );
 }
 
-function favoriteAtPoint(
-  x: number,
-  y: number,
-  shelf: HTMLElement | null,
-): string | undefined {
-  const buttons = shelf?.querySelectorAll<HTMLButtonElement>(
-    "[data-favorite-game-id]",
-  );
-  if (!buttons) return undefined;
-  for (const button of buttons) {
-    const rect = button.getBoundingClientRect();
-    if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-      return button.dataset.favoriteGameId;
+interface SortableShelfGameCardProps extends ShelfGameCardProps {
+  dropTransition?: DropTransition;
+  onDropTransitionEnd(gameId: string): void;
+  onNodeChange(gameId: string, node: HTMLDivElement | null): void;
+}
+
+function SortableShelfGameCard({
+  dropTransition,
+  onDropTransitionEnd,
+  onNodeChange,
+  ...props
+}: SortableShelfGameCardProps) {
+  const { game } = props;
+  const node = useRef<HTMLDivElement | null>(null);
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: game.manifestId,
+    transition: SORTABLE_TRANSITION,
+  });
+  const isDropping = dropTransition?.gameId === game.manifestId;
+
+  useLayoutEffect(() => {
+    if (!isDropping || !dropTransition || !node.current) return;
+    const target = node.current.getBoundingClientRect();
+    const dx = dropTransition.fromX - target.left;
+    const dy = dropTransition.fromY - target.top;
+    if (!dx && !dy) {
+      onDropTransitionEnd(game.manifestId);
+      return;
     }
-  }
-  return undefined;
-}
+    const animation = node.current.animate(
+      [
+        { transform: `translate(${dx}px, ${dy}px)` },
+        { transform: "translate(0, 0)" },
+      ],
+      {
+        duration: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? 0
+          : SORTABLE_TRANSITION.duration,
+        easing: SORTABLE_TRANSITION.easing,
+      },
+    );
+    animation.onfinish = () => onDropTransitionEnd(game.manifestId);
+    return () => animation.cancel();
+  }, [dropTransition, game.manifestId, isDropping, onDropTransitionEnd]);
 
-function readSlotRects(
-  slots: Map<string, HTMLDivElement>,
-): Map<string, DOMRect> {
-  return new Map(
-    [...slots].map(([gameId, element]) => [gameId, element.getBoundingClientRect()]),
+  return (
+    <ShelfGameCard
+      {...props}
+      className={`${props.className ?? ""} ${isDragging ? "shelf-game-dragging" : ""}`}
+      slotProps={{
+        ref: (element) => {
+          node.current = element;
+          setNodeRef(element);
+          onNodeChange(game.manifestId, element);
+        },
+        style: {
+          transform: isDropping ? undefined : CSS.Transform.toString(transform),
+          transition: isDropping ? "none" : transition,
+        },
+      }}
+      buttonProps={{
+        ...attributes,
+        ...listeners,
+      }}
+    />
   );
 }
 
-function usesLongPressMenu(pointerType: string): boolean {
-  return pointerType === "touch" || pointerType === "pen";
-}
-
-function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
-  const next = [...items];
-  const [item] = next.splice(fromIndex, 1);
-  if (item === undefined) return items;
-  next.splice(toIndex, 0, item);
-  return next;
+function ShelfGameCard({
+  game,
+  kind,
+  activeGameId,
+  className,
+  onAnimationEnd,
+  onSelect,
+  onOpenMenu,
+  onTouchStart,
+  onTouchMove,
+  onTouchEnd,
+  onTouchCancel,
+  buttonProps,
+  slotProps,
+}: ShelfGameCardProps) {
+  const { locale } = useI18n();
+  return (
+    <div
+      {...slotProps}
+      className={`shelf-game-slot ${activeGameId === game.manifestId ? "shelf-game-menu-target" : ""} ${className ?? ""}`}
+      onAnimationEnd={(event) => {
+        if (event.target === event.currentTarget) onAnimationEnd?.();
+      }}
+    >
+      <button
+        {...buttonProps}
+        className="shelf-game"
+        data-favorite-game-id={
+          kind === "favorite" ? game.manifestId : undefined
+        }
+        onClick={() => onSelect(game)}
+        onTouchStart={(event) => {
+          buttonProps?.onTouchStart?.(event);
+          onTouchStart?.(game, event);
+        }}
+        onTouchMove={(event) => {
+          buttonProps?.onTouchMove?.(event);
+          onTouchMove?.(game, event);
+        }}
+        onTouchEnd={(event) => {
+          buttonProps?.onTouchEnd?.(event);
+          onTouchEnd?.(game);
+        }}
+        onTouchCancel={(event) => {
+          buttonProps?.onTouchCancel?.(event);
+          onTouchCancel?.(game);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.currentTarget.focus();
+          onOpenMenu(game, kind, {
+            left: event.clientX,
+            top: event.clientY,
+          });
+        }}
+      >
+        <span className="shelf-art">
+          {game.icon ? (
+            <img src={game.icon} alt="" referrerPolicy="no-referrer" />
+          ) : (
+            <span>{localizeGameName(game, locale).slice(0, 2).toUpperCase()}</span>
+          )}
+        </span>
+        <span className="shelf-game-name">
+          {localizeGameName(game, locale)}
+        </span>
+      </button>
+    </div>
+  );
 }

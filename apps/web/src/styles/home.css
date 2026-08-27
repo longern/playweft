@@ -63,8 +63,9 @@
   border-radius: 999px;
 }
 
-.game-shelf + .game-shelf {
-  margin-top: 54px;
+.game-shelves {
+  display: grid;
+  gap: 54px;
 }
 
 .shelf-heading {
@@ -88,17 +89,17 @@
   --shelf-game-width: 176px;
   flex: 0 0 auto;
   width: var(--shelf-game-width);
-  transition: opacity 0.14s ease;
-}
-
-.shelf-game-dragging {
-  opacity: 0.28;
 }
 
 .shelf-game-menu-target {
   position: relative;
   z-index: 30;
   pointer-events: none;
+}
+
+.shelf-game-dragging {
+  position: relative;
+  z-index: 30;
 }
 
 .shelf-game {
@@ -112,15 +113,6 @@
   user-select: none;
   -webkit-user-select: none;
   transition: background 0.16s ease;
-}
-
-.shelf-game[data-favorite-game-id] {
-  cursor: grab;
-  touch-action: none;
-}
-
-.shelf-game-dragging .shelf-game {
-  cursor: grabbing;
 }
 
 .shelf-game-entering,
@@ -159,8 +151,18 @@
   }
 }
 
-.shelf-game:hover {
-  background: #f3f6f2;
+@media (hover: hover) and (pointer: fine) {
+  .shelf-game-slot.shelf-game-dragging .shelf-game {
+    cursor: grabbing;
+  }
+
+  .shelf-game-slot:not(.shelf-game-dragging) .shelf-game:hover {
+    background: #f3f6f2;
+  }
+
+  .shelf-game-slot:not(.shelf-game-dragging) .shelf-game:active {
+    background: #e9ede8;
+  }
 }
 
 .shelf-art {
@@ -195,18 +197,6 @@
 .shelf-game-name {
   font-size: 0.875rem;
   font-weight: 400;
-}
-
-.favorite-drag-overlay {
-  position: fixed;
-  z-index: 40;
-  pointer-events: none;
-  transform: translate(-50%, -50%) scale(1.04);
-}
-
-.favorite-drag-overlay .shelf-art {
-  margin: 0;
-  box-shadow: 0 12px 28px rgba(35, 42, 48, 0.24);
 }
 
 .launch-choice {
@@ -451,8 +441,8 @@
     padding: 0 16px;
   }
 
-  .game-shelf + .game-shelf {
-    margin-top: 32px;
+  .game-shelves {
+    gap: 32px;
   }
 
   .shelf-row {

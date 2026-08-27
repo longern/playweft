@@ -337,61 +337,65 @@ export default function Home({
           </form>
         </section>
 
-        {!suppressGameShelves && renderedFavoriteGames.length > 0 && (
-          <GameShelf
-            title={t("favorites")}
-            kind="favorite"
-            games={renderedFavoriteGames}
-            activeGameId={
-              gameMenu?.kind === "favorite"
-                ? gameMenu.game.manifestId
-                : undefined
-            }
-            getItemClassName={(game) => {
-              const phase = favoriteGamePhases[game.manifestId];
-              return phase ? `shelf-game-${phase}` : "";
-            }}
-            onItemAnimationEnd={finishFavoriteAnimation}
-            onSelect={launchGame}
-            onOpenMenu={openGameMenu}
-            onReorder={
-              Object.keys(favoriteGamePhases).length === 0
-                ? reorderFavoriteGames
-                : undefined
-            }
-            onDismissMenu={() => setGameMenuClosing(true)}
-          />
-        )}
-        {!suppressGameShelves && renderedRecentGames.length > 0 && (
-          <GameShelf
-            title={t("recentlyPlayed")}
-            kind="recent"
-            games={renderedRecentGames}
-            activeGameId={
-              gameMenu?.kind === "recent" ? gameMenu.game.manifestId : undefined
-            }
-            getItemClassName={(game) => {
-              const phase = recentGamePhases[game.manifestId];
-              return phase ? `shelf-game-${phase}` : "";
-            }}
-            onItemAnimationEnd={finishRecentAnimation}
-            onSelect={launchGame}
-            onOpenMenu={openGameMenu}
-          />
-        )}
         {!suppressGameShelves && (
-          <GameShelf
-            title={t("recommended")}
-            kind="recommended"
-            games={featuredGames}
-            activeGameId={
-              gameMenu?.kind === "recommended"
-                ? gameMenu.game.manifestId
-                : undefined
-            }
-            onSelect={launchGame}
-            onOpenMenu={openGameMenu}
-          />
+          <div className="game-shelves">
+            {renderedFavoriteGames.length > 0 && (
+              <GameShelf
+                title={t("favorites")}
+                kind="favorite"
+                games={renderedFavoriteGames}
+                activeGameId={
+                  gameMenu?.kind === "favorite"
+                    ? gameMenu.game.manifestId
+                    : undefined
+                }
+                getItemClassName={(game) => {
+                  const phase = favoriteGamePhases[game.manifestId];
+                  return phase ? `shelf-game-${phase}` : "";
+                }}
+                onItemAnimationEnd={finishFavoriteAnimation}
+                onSelect={launchGame}
+                onOpenMenu={openGameMenu}
+                onReorder={
+                  Object.keys(favoriteGamePhases).length === 0
+                    ? reorderFavoriteGames
+                    : undefined
+                }
+                onDismissMenu={() => setGameMenuClosing(true)}
+              />
+            )}
+            {renderedRecentGames.length > 0 && (
+              <GameShelf
+                title={t("recentlyPlayed")}
+                kind="recent"
+                games={renderedRecentGames}
+                activeGameId={
+                  gameMenu?.kind === "recent"
+                    ? gameMenu.game.manifestId
+                    : undefined
+                }
+                getItemClassName={(game) => {
+                  const phase = recentGamePhases[game.manifestId];
+                  return phase ? `shelf-game-${phase}` : "";
+                }}
+                onItemAnimationEnd={finishRecentAnimation}
+                onSelect={launchGame}
+                onOpenMenu={openGameMenu}
+              />
+            )}
+            <GameShelf
+              title={t("recommended")}
+              kind="recommended"
+              games={featuredGames}
+              activeGameId={
+                gameMenu?.kind === "recommended"
+                  ? gameMenu.game.manifestId
+                  : undefined
+              }
+              onSelect={launchGame}
+              onOpenMenu={openGameMenu}
+            />
+          </div>
         )}
       </main>
       {error && (
