@@ -27,7 +27,13 @@ export default function App() {
   const [entryStatus, setEntryStatus] = useState<string>();
   const [soloGame, setSoloGame] = useState<RecentGame>();
   const [soloClosing, setSoloClosing] = useState(false);
-  const [nickname, setNickname] = useState<string>();
+  // The local guest nickname is available synchronously for the home UI. It
+  // is not, by itself, permission to join a room: RoomHost waits for the
+  // platform identity bootstrap below before mutating room membership.
+  const [nickname, setNickname] = useState(readGuestPlayerNickname);
+  const [identityReady, setIdentityReady] = useState(false);
+  const identityRef = useRef<{ nickname: string; accountKey?: string }>(undefined);
+  const identityWaiters = useRef<Array<(nickname: string) => void>>([]);
   const accountKeyRef = useRef<string | undefined>(undefined);
   const entryGeneration = useRef(0);
   const handledExternalGameUrl = useRef<string | undefined>(undefined);
@@ -61,30 +67,45 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const resolveIdentity = (nextNickname: string, accountKey?: string) => {
+      identityRef.current = {
+        nickname: nextNickname,
+        ...(accountKey ? { accountKey } : {}),
+      };
+      setNickname(nextNickname);
+      setIdentityReady(true);
+      const waiters = identityWaiters.current.splice(0);
+      for (const resolve of waiters) resolve(nextNickname);
+    };
     void getPlatformSession()
       .then((session) => {
         if (cancelled) return;
         if (session.provider === "x" && session.accountKey) {
-          accountKeyRef.current = session.accountKey;
-          setNickname(
-            readAccountPlayerNickname(
-              session.accountKey,
-              session.name ?? session.accountName,
-            ),
+          const nextNickname = readAccountPlayerNickname(
+            session.accountKey,
+            session.name ?? session.accountName,
           );
+          accountKeyRef.current = session.accountKey;
+          resolveIdentity(nextNickname, session.accountKey);
           return;
         }
         accountKeyRef.current = undefined;
-        setNickname(readGuestPlayerNickname());
+        resolveIdentity(readGuestPlayerNickname());
       })
       .catch(() => {
         if (cancelled) return;
         accountKeyRef.current = undefined;
-        setNickname(readGuestPlayerNickname());
+        resolveIdentity(readGuestPlayerNickname());
       });
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const waitForIdentity = useCallback((): Promise<string> => {
+    if (identityRef.current)
+      return Promise.resolve(identityRef.current.nickname);
+    return new Promise((resolve) => identityWaiters.current.push(resolve));
   }, []);
 
   const navigate = useCallback((nextPath: string) => {
@@ -147,27 +168,11 @@ export default function App() {
     !soloGame &&
     !overlayStatus;
 
-  if (nickname === undefined) {
-    if (roomId) {
-      return (
-        <main className="room-entry-state">
-          <div
-            className="room-entry-state-content"
-            role="status"
-            aria-label={t("loadingProfile")}
-          >
-            <span className="loading-spinner" aria-hidden="true" />
-          </div>
-        </main>
-      );
-    }
-    return <EntryOverlay status={t("loadingProfile")} />;
-  }
-
   if (roomId) {
     return (
       <RoomHost
         key={roomId}
+        identityReady={identityReady}
         nickname={nickname}
         roomId={roomId}
         onBack={() => navigate("/")}
@@ -187,6 +192,7 @@ export default function App() {
           externalGameUrl={soloGame ? undefined : externalGameUrl}
           suppressGameShelves={Boolean(externalGameUrl || soloGame)}
           nickname={nickname}
+          waitForIdentity={waitForIdentity}
           onNavigate={navigate}
           onBeginEntry={beginEntry}
           onEntryStatus={setEntryStatus}

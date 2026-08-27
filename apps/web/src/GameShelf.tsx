@@ -46,6 +46,7 @@ interface FavoritePress {
   startX: number;
   startY: number;
   phase: "pending" | "menu" | "moved" | "dragging";
+  target: HTMLButtonElement;
   timer?: number;
 }
 
@@ -67,8 +68,17 @@ export default function GameShelf({
   const { locale } = useI18n();
   const [drag, setDrag] = useState<FavoriteDragState>();
   const shelf = useRef<HTMLElement>(null);
+  const slotRefs = useRef(new Map<string, HTMLDivElement>());
   const press = useRef<FavoritePress | undefined>(undefined);
   const suppressClick = useRef<string | undefined>(undefined);
+  const moveFavoritePressRef = useRef<((event: PointerEvent) => void) | undefined>(
+    undefined,
+  );
+  const endFavoritePressRef = useRef<
+    ((event: PointerEvent, cancelled?: boolean) => void) | undefined
+  >(undefined);
+  const flipFrame = useRef<number | undefined>(undefined);
+  const slotAnimations = useRef(new Map<string, Animation>());
   const displayGames = drag?.games ?? games;
 
   const clearPress = () => {
@@ -113,9 +123,10 @@ export default function GameShelf({
       startX: event.clientX,
       startY: event.clientY,
       phase: "pending",
+      target,
     };
     target.setPointerCapture(event.pointerId);
-    if (event.pointerType !== "mouse") {
+    if (usesLongPressMenu(event.pointerType)) {
       nextPress.timer = window.setTimeout(() => {
         if (press.current !== nextPress || nextPress.phase !== "pending") return;
         nextPress.phase = "menu";
@@ -129,9 +140,7 @@ export default function GameShelf({
     press.current = nextPress;
   };
 
-  const moveFavoritePress = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
+  const moveFavoritePress = (event: PointerEvent) => {
     const current = press.current;
     if (!current || current.pointerId !== event.pointerId) return;
     const distance = Math.hypot(
@@ -140,7 +149,7 @@ export default function GameShelf({
     );
     const shouldStartDragging =
       distance >= DRAG_START_DISTANCE_PX &&
-      ((current.phase === "pending" && current.pointerType === "mouse") ||
+      ((current.phase === "pending" && !usesLongPressMenu(current.pointerType)) ||
         current.phase === "menu");
     if (shouldStartDragging) {
       const wasMenu = current.phase === "menu";
@@ -170,7 +179,12 @@ export default function GameShelf({
       fromIndex >= 0 && targetIndex >= 0 && fromIndex !== targetIndex
         ? moveItem(current.games, fromIndex, targetIndex)
         : current.games;
-    current.games = reordered;
+    if (reordered !== current.games) {
+      const before = readSlotRects(slotRefs.current);
+      cancelSlotAnimations();
+      current.games = reordered;
+      scheduleSlotFlip(before, current.game.manifestId);
+    }
     setDrag({
       game: current.game,
       games: reordered,
@@ -180,13 +194,16 @@ export default function GameShelf({
     });
   };
 
-  const endFavoritePress = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-    cancelled = false,
-  ) => {
+  const endFavoritePress = (event: PointerEvent, cancelled = false) => {
     const current = press.current;
     if (!current || current.pointerId !== event.pointerId) return;
     clearPress();
+    try {
+      if (current.target.hasPointerCapture(event.pointerId))
+        current.target.releasePointerCapture(event.pointerId);
+    } catch {
+      // The browser may release capture before pointerup reaches the window.
+    }
     if (current.phase === "dragging" && !cancelled) {
       onReorder?.(current.games);
       preventFollowingClick(current.game.manifestId);
@@ -196,13 +213,79 @@ export default function GameShelf({
     setDrag(undefined);
   };
 
+  moveFavoritePressRef.current = moveFavoritePress;
+  endFavoritePressRef.current = endFavoritePress;
+
+  useEffect(() => {
+    const move = (event: PointerEvent) =>
+      moveFavoritePressRef.current?.(event);
+    const end = (event: PointerEvent) => endFavoritePressRef.current?.(event);
+    const cancel = (event: PointerEvent) =>
+      endFavoritePressRef.current?.(event, true);
+    // Use capture so a long-press menu backdrop cannot swallow the pointer
+    // stream after the drag has started.
+    window.addEventListener("pointermove", move, { capture: true });
+    window.addEventListener("pointerup", end, { capture: true });
+    window.addEventListener("pointercancel", cancel, { capture: true });
+    return () => {
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", end, true);
+      window.removeEventListener("pointercancel", cancel, true);
+    };
+  }, []);
+
   useEffect(
     () => () => {
       if (press.current?.timer !== undefined)
         window.clearTimeout(press.current.timer);
+      window.cancelAnimationFrame(flipFrame.current ?? 0);
+      cancelSlotAnimations();
     },
     [],
   );
+
+  const cancelSlotAnimations = () => {
+    for (const animation of slotAnimations.current.values()) animation.cancel();
+    slotAnimations.current.clear();
+  };
+
+  const scheduleSlotFlip = (
+    before: Map<string, DOMRect>,
+    draggedGameId: string,
+  ) => {
+    window.cancelAnimationFrame(flipFrame.current ?? 0);
+    flipFrame.current = window.requestAnimationFrame(() => {
+      for (const [gameId, element] of slotRefs.current) {
+        if (gameId === draggedGameId) continue;
+        const previous = before.get(gameId);
+        if (!previous) continue;
+        const next = element.getBoundingClientRect();
+        const dx = previous.left - next.left;
+        const dy = previous.top - next.top;
+        if (!dx && !dy) continue;
+        const animation = element.animate(
+          [
+            { transform: `translate(${dx}px, ${dy}px)` },
+            { transform: "translate(0, 0)" },
+          ],
+          {
+            duration: window.matchMedia("(prefers-reduced-motion: reduce)")
+              .matches
+              ? 0
+              : 180,
+            easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+          },
+        );
+        slotAnimations.current.set(gameId, animation);
+        const forget = () => {
+          if (slotAnimations.current.get(gameId) === animation)
+            slotAnimations.current.delete(gameId);
+        };
+        animation.onfinish = forget;
+        animation.oncancel = forget;
+      }
+    });
+  };
 
   return (
     <section
@@ -220,6 +303,10 @@ export default function GameShelf({
           <div
             className={`shelf-game-slot ${activeGameId === game.manifestId ? "shelf-game-menu-target" : ""} ${drag?.game.manifestId === game.manifestId ? "shelf-game-dragging" : ""} ${getItemClassName?.(game) ?? ""}`}
             key={game.manifestId}
+            ref={(element) => {
+              if (element) slotRefs.current.set(game.manifestId, element);
+              else slotRefs.current.delete(game.manifestId);
+            }}
             onAnimationEnd={(event) => {
               if (event.target === event.currentTarget) {
                 onItemAnimationEnd?.(game);
@@ -252,9 +339,6 @@ export default function GameShelf({
                 });
               }}
               onPointerDown={(event) => startFavoritePress(game, event)}
-              onPointerMove={moveFavoritePress}
-              onPointerUp={(event) => endFavoritePress(event)}
-              onPointerCancel={(event) => endFavoritePress(event, true)}
             >
               <span className="shelf-art">
                 {game.icon ? (
@@ -309,6 +393,18 @@ function favoriteAtPoint(
     }
   }
   return undefined;
+}
+
+function readSlotRects(
+  slots: Map<string, HTMLDivElement>,
+): Map<string, DOMRect> {
+  return new Map(
+    [...slots].map(([gameId, element]) => [gameId, element.getBoundingClientRect()]),
+  );
+}
+
+function usesLongPressMenu(pointerType: string): boolean {
+  return pointerType === "touch" || pointerType === "pen";
 }
 
 function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {

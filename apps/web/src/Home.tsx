@@ -34,6 +34,7 @@ interface HomeProps {
   externalGameUrl?: string;
   suppressGameShelves: boolean;
   nickname: string;
+  waitForIdentity(): Promise<string>;
   onNavigate(path: string): void;
   onBeginEntry(): () => boolean;
   onClaimExternalGameUrl(url: string): boolean;
@@ -46,6 +47,7 @@ export default function Home({
   externalGameUrl,
   suppressGameShelves,
   nickname,
+  waitForIdentity,
   onNavigate,
   onBeginEntry,
   onClaimExternalGameUrl,
@@ -87,7 +89,6 @@ export default function Home({
     [favoriteGames],
   );
   const roomIdInput = roomIdFromInput(gameUrl);
-
   const rememberGame = (game: RecentGame) => {
     saveRecentGame(game);
     const nextRecentGames = readRecentGames();
@@ -111,7 +112,8 @@ export default function Home({
     setError(undefined);
     setUnsupportedGame(undefined);
     try {
-      await createGuestSession(nickname);
+      const resolvedNickname = await waitForIdentity();
+      await createGuestSession(resolvedNickname);
       if (cancelled()) return;
       onEntryStatus(t("loadingGame"));
       onNavigate(`/r/${roomId}`);
@@ -127,7 +129,8 @@ export default function Home({
     setError(undefined);
     setUnsupportedGame(undefined);
     try {
-      await createGuestSession(nickname);
+      const resolvedNickname = await waitForIdentity();
+      await createGuestSession(resolvedNickname);
       if (cancelled()) return;
       const room = await createRoom(game.manifestUrl);
       if (cancelled()) return;

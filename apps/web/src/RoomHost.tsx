@@ -84,6 +84,7 @@ import {
 const MAX_RECONNECT_ATTEMPTS = 5;
 
 interface RoomHostProps {
+  identityReady: boolean;
   nickname: string;
   roomId: string;
   onBack(): void;
@@ -94,6 +95,7 @@ interface RoomHostProps {
 type RoomEntryFailure = "not-found" | "unavailable";
 
 export default function RoomHost({
+  identityReady,
   nickname,
   roomId,
   onBack,
@@ -283,6 +285,7 @@ export default function RoomHost({
   );
 
   useEffect(() => {
+    if (!identityReady) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -300,7 +303,7 @@ export default function RoomHost({
     return () => {
       cancelled = true;
     };
-  }, [roomId]);
+  }, [identityReady, roomId]);
 
   useEffect(() => {
     if (

@@ -116,6 +116,7 @@
 
 .shelf-game[data-favorite-game-id] {
   cursor: grab;
+  touch-action: none;
 }
 
 .shelf-game-dragging .shelf-game {
