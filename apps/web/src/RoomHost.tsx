@@ -82,6 +82,11 @@ import {
 } from "./use-game-viewport";
 
 const MAX_RECONNECT_ATTEMPTS = 5;
+const HEARTBEAT_IDLE_MS = 20_000;
+const LATENCY_SAMPLE_INTERVAL_MS = 3_000;
+const LATENCY_PROBE_TIMEOUT_MS = 10_000;
+
+type PlatformLatencyAck = { type: "platform.ack"; ackId: string };
 
 interface RoomHostProps {
   identityReady: boolean;
@@ -113,6 +118,10 @@ export default function RoomHost({
   >(undefined);
   const phaseRef = useRef<"lobby" | "playing">("lobby");
   const nicknameRef = useRef(nickname);
+  const selfIdRef = useRef<string | undefined>(undefined);
+  const setHeartbeatRequiredRef = useRef<
+    ((required: boolean) => void) | undefined
+  >(undefined);
   const syncedNickname = useRef<string | undefined>(undefined);
   nicknameRef.current = nickname;
   const [manifestUrl, setManifestUrl] = useState<string>();
@@ -124,6 +133,7 @@ export default function RoomHost({
   const [lobby, setLobby] = useState<RoomPresence>();
   const presenceRevisionRef = useRef(-1);
   const [selfId, setSelfId] = useState<string>();
+  selfIdRef.current = selfId;
   const [copied, setCopied] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startUnavailableHint, setStartUnavailableHint] = useState<string>();
@@ -191,7 +201,17 @@ export default function RoomHost({
   const applyPresence = (next: RoomPresence): void => {
     if (next.revision < presenceRevisionRef.current) return;
     presenceRevisionRef.current = next.revision;
+    const currentSelfId = selfIdRef.current;
+    if (currentSelfId) {
+      setHeartbeatRequiredRef.current?.(
+        next.players.some((player) => player.id === currentSelfId),
+      );
+    }
     setLobby(next);
+  };
+  const applyRoomMembership = (membership: RoomJoin): void => {
+    selfIdRef.current = membership.selfId;
+    applyMembership(membership, applyPresence, setSelfId);
   };
 
   // The room phase is the single source of truth for the iframe lifecycle.
@@ -319,7 +339,7 @@ export default function RoomHost({
         const membership = await joinRoom(roomId);
         if (cancelled) return;
         syncedNickname.current = nickname;
-        applyMembership(membership, applyPresence, setSelfId);
+        applyRoomMembership(membership);
       } catch (reason) {
         if (!cancelled) {
           setError(message(reason, tRef.current("unexpectedError")));
@@ -372,6 +392,7 @@ export default function RoomHost({
     let joined = false;
     let liveRoom = false;
     let joinedPlayerId: string | undefined;
+    let heartbeatRequired = false;
     const capabilities = [
       ...new Set([
         ...PLATFORM_WINDOW_CAPABILITIES,
@@ -382,6 +403,15 @@ export default function RoomHost({
     ];
     let lastPublishedMatchId: string | undefined;
     let lastPublishedVersion = -1;
+    let nextLatencySampleAt = 0;
+    let latestLatencyRttMs: number | undefined;
+    let latencyProbe:
+      | {
+          ackId: string;
+          sentAt: number;
+          timeout: number;
+        }
+      | undefined;
     const liveActionRequests = new Map<
       string,
       {
@@ -390,6 +420,71 @@ export default function RoomHost({
       }
     >();
     const currentGameOrigin = new URL(gameUrl).origin;
+    const clearLatencyProbe = () => {
+      if (!latencyProbe) return;
+      window.clearTimeout(latencyProbe.timeout);
+      latencyProbe = undefined;
+    };
+    const latencyAckForNextMessage = (): string | undefined => {
+      const now = performance.now();
+      if (latencyProbe || now < nextLatencySampleAt) return undefined;
+      const ackId = crypto.randomUUID();
+      const probe = {
+        ackId,
+        sentAt: now,
+        timeout: window.setTimeout(() => {
+          if (latencyProbe?.ackId === ackId) latencyProbe = undefined;
+        }, LATENCY_PROBE_TIMEOUT_MS),
+      };
+      latencyProbe = probe;
+      return ackId;
+    };
+    const sendRealtimeMessage = (
+      target: WebSocket,
+      message: Record<string, JsonValue>,
+    ) => {
+      const ackId = latencyAckForNextMessage();
+      try {
+        target.send(JSON.stringify(ackId ? { ...message, ackId } : message));
+      } catch (error) {
+        if (latencyProbe?.ackId === ackId) clearLatencyProbe();
+        throw error;
+      }
+    };
+    const publishLatency = (rttMs: number) => {
+      latestLatencyRttMs = rttMs;
+      postRpcNotification(bridgePort.current, "platform.latency", { rttMs });
+    };
+    const clearHeartbeat = () => {
+      window.clearTimeout(heartbeatTimer);
+      heartbeatTimer = undefined;
+    };
+    const scheduleHeartbeat = () => {
+      clearHeartbeat();
+      if (!heartbeatRequired || closed) return;
+      heartbeatTimer = window.setTimeout(() => {
+        heartbeatTimer = undefined;
+        if (socket?.readyState === WebSocket.OPEN)
+          sendRealtimeMessage(socket, { type: "heartbeat" });
+        scheduleHeartbeat();
+      }, HEARTBEAT_IDLE_MS);
+    };
+    const noteClientActivity = () => {
+      if (heartbeatRequired) scheduleHeartbeat();
+    };
+    const setHeartbeatRequired = (required: boolean) => {
+      if (heartbeatRequired === required) return;
+      heartbeatRequired = required;
+      if (!required) {
+        clearHeartbeat();
+        return;
+      }
+      if (socket?.readyState === WebSocket.OPEN) {
+        sendRealtimeMessage(socket, { type: "heartbeat" });
+      }
+      scheduleHeartbeat();
+    };
+    setHeartbeatRequiredRef.current = setHeartbeatRequired;
     const sendSnapshot = (snapshot: RoomSnapshot) => {
       postRpcNotification(bridgePort.current, "game.state", {
         phase: "playing",
@@ -435,7 +530,9 @@ export default function RoomHost({
 
     const connect = () => {
       window.clearTimeout(reconnectTimer);
-      window.clearInterval(heartbeatTimer);
+      clearHeartbeat();
+      clearLatencyProbe();
+      nextLatencySampleAt = 0;
       rejectLiveActions(
         "REALTIME_CONNECTION_INTERRUPTED",
         tRef.current("liveConnectionNotReady"),
@@ -445,18 +542,18 @@ export default function RoomHost({
       let receivedServerSignal = false;
       socket = nextSocket;
       nextSocket.onopen = () => {
-        const heartbeat = () => {
-          if (nextSocket.readyState === WebSocket.OPEN)
-            nextSocket.send(JSON.stringify({ type: "heartbeat" }));
-        };
-        heartbeat();
-        heartbeatTimer = window.setInterval(heartbeat, 15_000);
+        // The first message gives every connected game a latency sample.
+        // Subsequent heartbeats are only needed while this player can become
+        // (or remain) the room host.
+        sendRealtimeMessage(nextSocket, { type: "heartbeat" });
+        scheduleHeartbeat();
       };
       nextSocket.onmessage = (event) => {
         const payload = JSON.parse(event.data as string) as
           | RoomSnapshot
           | RoomPresence
           | RoomActionResult
+          | PlatformLatencyAck
           | { type: "game_changed"; manifestUrl: string }
           | { type: "room_dissolved"; error: string }
           | { type: "error"; error: string; requestId?: string };
@@ -464,6 +561,14 @@ export default function RoomHost({
           closed = true;
           socket?.close();
           onBack();
+          return;
+        }
+        if (payload.type === "platform.ack") {
+          if (payload.ackId !== latencyProbe?.ackId) return;
+          const rttMs = Math.round(performance.now() - latencyProbe.sentAt);
+          clearLatencyProbe();
+          nextLatencySampleAt = performance.now() + LATENCY_SAMPLE_INTERVAL_MS;
+          publishLatency(rttMs);
           return;
         }
         if (payload.type === "action-result") {
@@ -520,7 +625,7 @@ export default function RoomHost({
         );
       };
       nextSocket.onclose = (event) => {
-        window.clearInterval(heartbeatTimer);
+        clearHeartbeat();
         if (closed || socket !== nextSocket) return;
         rejectLiveActions(
           "REALTIME_CONNECTION_INTERRUPTED",
@@ -568,7 +673,7 @@ export default function RoomHost({
           true,
         );
       }
-      applyMembership(membership, applyPresence, setSelfId);
+      applyRoomMembership(membership);
       syncedNickname.current = nicknameRef.current;
       joined = true;
       joinedPlayerId = membership.selfId;
@@ -604,6 +709,11 @@ export default function RoomHost({
       },
       onPortChange(port) {
         bridgePort.current = port;
+        if (port && latestLatencyRttMs !== undefined) {
+          postRpcNotification(port, "platform.latency", {
+            rttMs: latestLatencyRttMs,
+          });
+        }
       },
       handlers: {
         "game.initialize": {
@@ -674,16 +784,16 @@ export default function RoomHost({
               const result = new Promise<JsonValue>((resolve, reject) => {
                 liveActionRequests.set(requestId, { resolve, reject });
               });
-              socket.send(
-                JSON.stringify({
-                  type: "action",
-                  requestId,
-                  action,
-                }),
-              );
+              noteClientActivity();
+              sendRealtimeMessage(socket, {
+                type: "action",
+                requestId,
+                action,
+              });
               return result;
             }
             try {
+              noteClientActivity();
               const response = await sendAction(roomId, requestId, action);
               if (response.update) publish(response.update);
               return actionResultForRpc(response.result);
@@ -782,13 +892,17 @@ export default function RoomHost({
       closed = true;
       window.clearTimeout(reconnectTimer);
       window.clearTimeout(connectionErrorSuppressTimer);
-      window.clearInterval(heartbeatTimer);
+      clearHeartbeat();
+      clearLatencyProbe();
       socket?.close();
       rejectLiveActions("BRIDGE_CLOSED", "The game bridge was closed");
       clipboard.cancelPending();
       userProfile.cancelPending();
       windowDialogs.cancelPending();
       detachBridge();
+      if (setHeartbeatRequiredRef.current === setHeartbeatRequired) {
+        setHeartbeatRequiredRef.current = undefined;
+      }
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [

@@ -217,6 +217,7 @@ The platform sends:
 | Method | Params |
 | --- | --- |
 | `game.state` | `{ phase, state, events, matchId, version, serverTime }`; state and events have already been projected for this player. |
+| `platform.latency` | `{ rttMs }`; the latest platform-to-room round-trip time in whole milliseconds. It is emitted when the platform receives a probe acknowledgement, and may be absent until the first measurement. |
 | `platform.error` | `{ error: { code, message, retryable } }` for a failure not tied to an outstanding request. |
 
 ```js
@@ -242,6 +243,10 @@ function onRpcMessage(event) {
     if (update.version <= latestVersion) return;
     latestVersion = update.version;
     render(update.state, update.events);
+  }
+
+  if (message.method === "platform.latency") {
+    updateConnectionIndicator(message.params.rttMs);
   }
 }
 

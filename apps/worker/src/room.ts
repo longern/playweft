@@ -25,6 +25,8 @@ import {
 } from "./runtime-registry";
 
 const MAX_ACTION_BYTES = 8 * 1024;
+const MAX_LATENCY_ACK_ID_LENGTH = 64;
+const MIN_LATENCY_ACK_INTERVAL_MS = 3_000;
 const MAX_RECENT_ACTIONS = 256;
 const MAX_PLAYER_ID_LENGTH = 64;
 const MAX_PLAYER_NAME_LENGTH = 100;
@@ -126,6 +128,8 @@ interface SocketAttachment {
   playerId: string;
   actorId: string;
   lastSeenAt: number;
+  /** Last platform latency acknowledgement sent on this socket. */
+  lastLatencyAckAt?: number;
   isOwner: boolean;
 }
 
@@ -287,7 +291,14 @@ export class GameRoom extends DurableObject<Env> {
       const attachment = this.socketAttachment(webSocket);
       if (!attachment) throw new RoomHttpError(401, "socket has no identity");
       if (isRecord(input) && input.type === "heartbeat") {
-        await this.enqueue(() => this.noteSocketSeen(webSocket, attachment));
+        const acknowledgedAttachment = this.acknowledgeLatencyProbe(
+          webSocket,
+          attachment,
+          latencyAckId(input),
+        );
+        await this.enqueue(() =>
+          this.noteSocketSeen(webSocket, acknowledgedAttachment),
+        );
         return;
       }
       if (!isRecord(input) || input.type !== "action") {
@@ -298,16 +309,22 @@ export class GameRoom extends DurableObject<Env> {
       }
       const actionId = validateActionId(input.requestId);
       requestId = actionId;
+      const acknowledgedAttachment = this.acknowledgeLatencyProbe(
+        webSocket,
+        attachment,
+        latencyAckId(input),
+      );
       const receivedAt = Date.now();
-      const response = await this.enqueue(() =>
-        this.applyActionInput({
+      const response = await this.enqueue(async () => {
+        await this.noteSocketSeen(webSocket, acknowledgedAttachment);
+        return this.applyActionInput({
           playerId: attachment.playerId,
           actorId: attachment.actorId,
           requestId: actionId,
           action: input.action,
           receivedAt,
-        }),
-      );
+        });
+      });
       webSocket.send(JSON.stringify(response.result));
     } catch (error) {
       webSocket.send(
@@ -970,10 +987,12 @@ export class GameRoom extends DurableObject<Env> {
       throw new RoomHttpError(400, "expected { requestId, action }");
     }
     const playerId = this.playerId(request);
+    const actorId = await this.memberActorId(playerId);
+    await this.notePlayerSeen(playerId);
     const receivedAt = Date.now();
     return this.applyActionInput({
       playerId,
-      actorId: await this.memberActorId(playerId),
+      actorId,
       requestId: validateActionId(input.requestId),
       action: input.action,
       receivedAt,
@@ -1598,11 +1617,53 @@ export class GameRoom extends DurableObject<Env> {
     attachment: SocketAttachment,
   ): Promise<void> {
     const now = Date.now();
-    this.saveSocketAttachment(webSocket, { ...attachment, lastSeenAt: now });
-    if (attachment.isOwner) {
+    const currentAttachment = this.socketAttachment(webSocket) ?? attachment;
+    const updatedAttachment = { ...currentAttachment, lastSeenAt: now };
+    this.saveSocketAttachment(webSocket, updatedAttachment);
+    if (currentAttachment.isOwner) {
       await this.recordOwnerSeen(now);
       await this.scheduleAlarm(undefined, now, true);
     }
+  }
+
+  /**
+   * HTTP game actions prove that their authenticated player is still present,
+   * even though durable rooms deliver the action over HTTP rather than the
+   * room WebSocket. Refresh every socket for that player so an active tab can
+   * still take over from an offline host.
+   */
+  private async notePlayerSeen(playerId: string): Promise<void> {
+    const now = Date.now();
+    for (const socket of this.sockets()) {
+      const attachment = this.socketAttachment(socket);
+      if (attachment?.playerId !== playerId) continue;
+      this.saveSocketAttachment(socket, { ...attachment, lastSeenAt: now });
+    }
+    if (playerId === (await this.ownerPlayerId())) {
+      await this.recordOwnerSeen(now);
+      await this.scheduleAlarm(undefined, now, true);
+    }
+  }
+
+  private acknowledgeLatencyProbe(
+    webSocket: WebSocket,
+    attachment: SocketAttachment,
+    ackId: string | undefined,
+  ): SocketAttachment {
+    if (!ackId) return attachment;
+    const now = Date.now();
+    if (
+      attachment.lastLatencyAckAt !== undefined &&
+      now - attachment.lastLatencyAckAt < MIN_LATENCY_ACK_INTERVAL_MS
+    )
+      return attachment;
+    const updatedAttachment = {
+      ...attachment,
+      lastLatencyAckAt: now,
+    };
+    webSocket.send(JSON.stringify({ type: "platform.ack", ackId }));
+    this.saveSocketAttachment(webSocket, updatedAttachment);
+    return updatedAttachment;
   }
 
   private async transferOfflineHost(
@@ -2207,6 +2268,21 @@ function validateActionId(value: unknown): string {
     throw new RoomHttpError(400, "requestId must be a 1-128 character string");
   }
   return value;
+}
+
+function latencyAckId(input: Record<string, unknown>): string | undefined {
+  if (!("ackId" in input)) return undefined;
+  if (
+    typeof input.ackId !== "string" ||
+    input.ackId.length === 0 ||
+    input.ackId.length > MAX_LATENCY_ACK_ID_LENGTH
+  ) {
+    throw new RoomHttpError(
+      400,
+      `ackId must be a 1-${MAX_LATENCY_ACK_ID_LENGTH} character string`,
+    );
+  }
+  return input.ackId;
 }
 
 function randomAvatarToken(): string {
