@@ -23,14 +23,21 @@ interface LockableScreenOrientation extends ScreenOrientation {
 }
 
 export interface GameViewportController {
-  orientationAction?: "enter" | "restore";
+  orientationAction?: "enter" | "restore" | "unsupported";
   showFullscreenAction: boolean;
   enterPreferredOrientation(): Promise<void>;
 }
 
-let pendingGameOrientation: Promise<boolean> | undefined;
+type OrientationLockResult =
+  | "locked"
+  | "failed"
+  | "unsupported"
+  | "requires-fullscreen";
+
+let pendingGameOrientation: Promise<OrientationLockResult> | undefined;
 let gameFullscreenOwned = false;
 let gameOrientationLockOwned = false;
+let gameOrientationLockUnsupported = false;
 
 function preferredOrientation(
   orientation: GameManifestOrientation | undefined,
@@ -101,16 +108,34 @@ function contrastingTextColor(background: RgbColor): "#000000" | "#ffffff" {
 
 async function lockGameOrientation(
   orientation: Exclude<GameManifestOrientation, "any">,
-): Promise<boolean> {
+): Promise<OrientationLockResult> {
   const screenOrientation = lockableOrientation();
-  if (!screenOrientation?.lock) return false;
+  if (!screenOrientation?.lock) return "failed";
   try {
     await screenOrientation.lock(orientation);
     gameOrientationLockOwned = true;
-    return true;
+    return "locked";
   } catch (error) {
     console.warn(`Could not lock game orientation to ${orientation}`, error);
-    return false;
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "NotSupportedError"
+    ) {
+      gameOrientationLockUnsupported = true;
+      return "unsupported";
+    }
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "SecurityError" &&
+      !document.fullscreenElement
+    ) {
+      return "requires-fullscreen";
+    }
+    return "failed";
   }
 }
 
@@ -135,15 +160,16 @@ async function enterGameFullscreen(): Promise<boolean> {
 
 export function prepareGameOrientation(
   orientation: GameManifestOrientation | undefined,
-): Promise<boolean> {
+): Promise<OrientationLockResult> {
   if (!preferredOrientation(orientation) || !supportsMobileOrientationLock()) {
-    return Promise.resolve(false);
+    return Promise.resolve("failed");
   }
+  if (gameOrientationLockUnsupported) return Promise.resolve("unsupported");
   if (pendingGameOrientation) return pendingGameOrientation;
   const attempt = (async () => {
-    // Installed applications may permit orientation locking without the
-    // Fullscreen API, so still try the lock if fullscreen is unavailable.
-    await enterGameFullscreen();
+    const initialResult = await lockGameOrientation(orientation);
+    if (initialResult !== "requires-fullscreen") return initialResult;
+    if (!(await enterGameFullscreen())) return "failed";
     return lockGameOrientation(orientation);
   })();
   const pending = attempt.finally(() => {
@@ -156,6 +182,7 @@ export function prepareGameOrientation(
 }
 
 export async function releaseGameFullscreen(): Promise<void> {
+  gameOrientationLockUnsupported = false;
   if (gameOrientationLockOwned) {
     gameOrientationLockOwned = false;
     lockableOrientation()?.unlock();
@@ -180,9 +207,11 @@ export function useGameViewport(
   preferences?: GameViewportPreferences,
 ): GameViewportController {
   const [orientationAction, setOrientationAction] = useState<
-    "enter" | "restore"
+    "enter" | "restore" | "unsupported"
   >();
   const [showFullscreenAction, setShowFullscreenAction] = useState(false);
+  const [orientationLockUnsupported, setOrientationLockUnsupported] =
+    useState(false);
   const orientationEffectGeneration = useRef(0);
   useEffect(() => {
     if (!active) return;
@@ -256,8 +285,20 @@ export function useGameViewport(
       setShowFullscreenAction(false);
       return;
     }
+    if (orientationLockUnsupported || gameOrientationLockUnsupported) {
+      setOrientationAction("unsupported");
+      setShowFullscreenAction(false);
+      return;
+    }
     if (supportsMobileOrientationLock()) {
-      await prepareGameOrientation(preference);
+      const result = await prepareGameOrientation(preference);
+      if (result === "unsupported") {
+        setOrientationLockUnsupported(true);
+        await releaseGameFullscreen();
+        setOrientationAction("unsupported");
+        setShowFullscreenAction(false);
+        return;
+      }
     } else {
       await enterGameFullscreen();
     }
@@ -273,16 +314,24 @@ export function useGameViewport(
         document.fullscreenElement !== document.documentElement &&
         supportsGameFullscreen(),
     );
-  }, [preferences?.orientation]);
+  }, [orientationLockUnsupported, preferences?.orientation]);
 
   useEffect(() => {
     const preference = preferences?.orientation;
     setOrientationAction(undefined);
     setShowFullscreenAction(false);
     if (!active || !preferredOrientation(preference)) {
+      setOrientationLockUnsupported(false);
       return;
     }
-    const canLockOrientation = supportsMobileOrientationLock();
+    if (orientationLockUnsupported || gameOrientationLockUnsupported) {
+      setOrientationLockUnsupported(true);
+      setOrientationAction("unsupported");
+      void releaseGameFullscreen();
+      return;
+    }
+    const canLockOrientation =
+      supportsMobileOrientationLock() && !orientationLockUnsupported;
     const landscapeQuery = window.matchMedia("(orientation: landscape)");
     const generation = ++orientationEffectGeneration.current;
     let effectActive = true;
@@ -312,12 +361,20 @@ export function useGameViewport(
         return;
       }
       const pendingAttempt = pendingGameOrientation;
-      const locked = pendingAttempt
+      const result = pendingAttempt
         ? await pendingAttempt
         : await lockGameOrientation(preference);
       if (!effectActive) return;
+      if (result === "unsupported") {
+        setOrientationLockUnsupported(true);
+        await releaseGameFullscreen();
+        if (!effectActive) return;
+        setOrientationAction("unsupported");
+        setShowFullscreenAction(false);
+        return;
+      }
       hasEnteredGame = true;
-      syncViewportActions(locked ? "restore" : action);
+      syncViewportActions(result === "locked" ? "restore" : action);
     };
 
     const onFullscreenChange = () => {

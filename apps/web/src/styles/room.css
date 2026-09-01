@@ -913,6 +913,26 @@ main.room-host {
   background: var(--game-background-color, #fff);
 }
 
+.game-orientation-unsupported {
+  color: var(--game-foreground-color, #1f2933);
+  text-align: center;
+}
+
+.game-orientation-unsupported-content {
+  display: grid;
+  place-items: center;
+  gap: 14px;
+}
+
+.game-orientation-unsupported-content svg {
+  width: 40px;
+  height: 40px;
+}
+
+.game-orientation-unsupported-content strong {
+  font-size: 1.15rem;
+}
+
 .game-orientation-enter {
   display: inline-flex;
   min-height: 48px;
