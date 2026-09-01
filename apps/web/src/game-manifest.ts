@@ -45,6 +45,19 @@ export interface LoadedGame {
 
 const MANIFEST_TIMEOUT_MS = 8_000;
 const MAX_MANIFEST_BYTES = 64 * 1024;
+const MANIFEST_CACHE_NAME = "playweft:manifests:v1";
+const MANIFEST_CACHED_AT_HEADER = "X-Playweft-Cached-At";
+const MAX_CACHED_MANIFESTS = 256;
+
+class ManifestNetworkError extends Error {
+  constructor(
+    url: string,
+    readonly cause: unknown,
+  ) {
+    super(`Could not connect to ${url}`);
+    this.name = "ManifestNetworkError";
+  }
+}
 
 export function manifestUrlFromInput(value: string): string {
   const url = new URL(value.trim());
@@ -61,17 +74,31 @@ export async function loadGameManifest(value: string): Promise<LoadedGame> {
   if (!manifestUrl) {
     throw new Error("Manifest URL must use HTTPS (or localhost HTTP)");
   }
-  const manifestValue = await fetchText(
-    manifestUrl,
-    "application/json",
-    MAX_MANIFEST_BYTES,
-  ).then((text) => {
+  try {
+    const text = await fetchManifestText(manifestUrl);
+    const loaded = loadedGameFromText(text, manifestUrl);
+    await cacheValidatedManifest(manifestUrl, text);
+    return loaded;
+  } catch (error) {
+    if (!(error instanceof ManifestNetworkError)) throw error;
+    const cachedText = await cachedManifestText(manifestUrl);
+    if (cachedText === undefined) throw error;
     try {
-      return JSON.parse(text) as unknown;
+      return loadedGameFromText(cachedText, manifestUrl);
     } catch {
-      throw new Error("Game Manifest is not valid JSON");
+      void deleteCachedManifest(manifestUrl);
+      throw error;
     }
-  });
+  }
+}
+
+function loadedGameFromText(text: string, manifestUrl: string): LoadedGame {
+  let manifestValue: unknown;
+  try {
+    manifestValue = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("Game Manifest is not valid JSON");
+  }
   const manifest = parseGameManifest(manifestValue);
   if (
     manifest.protocol.min > PLAYWEFT_BRIDGE_VERSION ||
@@ -260,33 +287,107 @@ function isStoredOrientation(value: unknown): value is GameManifestOrientation {
   );
 }
 
-async function fetchText(
-  url: string,
-  accept: string,
-  maxBytes: number,
-): Promise<string> {
+async function fetchManifestText(url: string): Promise<string> {
   const controller = new AbortController();
   const timeout = window.setTimeout(
     () => controller.abort(),
     MANIFEST_TIMEOUT_MS,
   );
   try {
-    const response = await fetch(url, {
-      headers: { Accept: accept },
-      mode: "cors",
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`Could not fetch ${url} (${response.status})`);
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        mode: "cors",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Could not fetch ${url} (${response.status})`);
+      }
+      const text = await response.text();
+      if (new TextEncoder().encode(text).byteLength > MAX_MANIFEST_BYTES) {
+        throw new Error(`Resource exceeds the ${MAX_MANIFEST_BYTES}-byte limit`);
+      }
+      return text;
+    } catch (error) {
+      if (isNetworkFailure(error)) throw new ManifestNetworkError(url, error);
+      throw error;
     }
-    const text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > maxBytes) {
-      throw new Error(`Resource exceeds the ${maxBytes}-byte limit`);
-    }
-    return text;
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+function isNetworkFailure(error: unknown): boolean {
+  return (
+    error instanceof TypeError ||
+    (error instanceof DOMException && error.name === "AbortError")
+  );
+}
+
+async function cacheValidatedManifest(url: string, text: string): Promise<void> {
+  if (typeof caches === "undefined") return;
+  try {
+    const cache = await caches.open(MANIFEST_CACHE_NAME);
+    await cache.put(
+      url,
+      new Response(text, {
+        headers: {
+          "Content-Type": "application/json",
+          [MANIFEST_CACHED_AT_HEADER]: String(Date.now()),
+        },
+      }),
+    );
+    await pruneManifestCache(cache);
+  } catch {
+    // Cache Storage may be disabled or out of quota. Network loading remains
+    // fully functional without an offline fallback.
+  }
+}
+
+async function cachedManifestText(url: string): Promise<string | undefined> {
+  if (typeof caches === "undefined") return undefined;
+  try {
+    const response = await (
+      await caches.open(MANIFEST_CACHE_NAME)
+    ).match(url);
+    if (!response) return undefined;
+    const text = await response.text();
+    return new TextEncoder().encode(text).byteLength <= MAX_MANIFEST_BYTES
+      ? text
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function deleteCachedManifest(url: string): Promise<void> {
+  if (typeof caches === "undefined") return;
+  try {
+    await (await caches.open(MANIFEST_CACHE_NAME)).delete(url);
+  } catch {
+    // A corrupt cache entry is harmless when storage is no longer writable.
+  }
+}
+
+async function pruneManifestCache(cache: Cache): Promise<void> {
+  const requests = await cache.keys();
+  if (requests.length <= MAX_CACHED_MANIFESTS) return;
+  const entries = await Promise.all(
+    requests.map(async (request) => {
+      const response = await cache.match(request);
+      return {
+        request,
+        cachedAt: Number(response?.headers.get(MANIFEST_CACHED_AT_HEADER)) || 0,
+      };
+    }),
+  );
+  entries.sort((left, right) => left.cachedAt - right.cachedAt);
+  await Promise.all(
+    entries
+      .slice(0, entries.length - MAX_CACHED_MANIFESTS)
+      .map(({ request }) => cache.delete(request)),
+  );
 }
 
 function webUrl(value: string): string | undefined {
