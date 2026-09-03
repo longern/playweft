@@ -163,6 +163,7 @@ export default function App() {
   const overlayStatus = entryStatus;
   const showUpdateToast =
     pwaUpdate.updateAvailable &&
+    pwaUpdate.loadPolicy === "update-prompt" &&
     path === "/" &&
     !externalGameUrl &&
     !soloGame &&

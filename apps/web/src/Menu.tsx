@@ -29,7 +29,6 @@ interface MenuProps {
   position?: MenuPosition;
   role?: "dialog" | "menu";
   style?: CSSProperties;
-  onAnchorGuardClick?: () => void;
   onMouseEnter?: MouseEventHandler<HTMLDivElement>;
   onMouseLeave?: MouseEventHandler<HTMLDivElement>;
   onClose(): void;
@@ -54,7 +53,6 @@ const Menu = forwardRef<MenuHandle, MenuProps>(function Menu(
     position,
     role = "menu",
     style,
-    onAnchorGuardClick,
     onMouseEnter,
     onMouseLeave,
     onClose,
@@ -174,8 +172,10 @@ const Menu = forwardRef<MenuHandle, MenuProps>(function Menu(
           onMouseEnter={closing ? undefined : onMouseEnter}
           onMouseLeave={closing ? undefined : onMouseLeave}
           onClick={() => {
-            onAnchorGuardClick?.();
-            close();
+            // The guard exists only to bridge the gap between an anchor and
+            // its hover-opened menu. Forward its click so the trigger remains
+            // the single owner of menu toggle semantics.
+            anchor?.click();
           }}
         />
       )}

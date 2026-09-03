@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRegisterSW } from "virtual:pwa-register/react";
+import {
+  enforceAppLoadPolicy,
+  readAppLoadPolicy,
+  subscribeToAppLoadPolicy,
+  type AppLoadPolicy,
+} from "./app-load-policy";
 
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1_000;
 
 export function usePwaUpdate() {
+  const [loadPolicy, setLoadPolicy] = useState<AppLoadPolicy>(
+    readAppLoadPolicy,
+  );
   const [registration, setRegistration] =
     useState<ServiceWorkerRegistration>();
   const [updating, setUpdating] = useState(false);
@@ -25,9 +34,26 @@ export function usePwaUpdate() {
     },
   });
 
+  useEffect(() => subscribeToAppLoadPolicy(() => setLoadPolicy(readAppLoadPolicy)), []);
+
+  useEffect(() => {
+    if (loadPolicy !== "cache-disabled" || !registration) return;
+    void enforceAppLoadPolicy(loadPolicy);
+  }, [loadPolicy, registration]);
+
+  useEffect(() => {
+    if (loadPolicy !== "update-prompt") setUpdateAvailable(false);
+  }, [loadPolicy, setUpdateAvailable]);
+
   const checkForUpdate = useCallback(
     (force = false) => {
-      if (!registration || !navigator.onLine) return;
+      if (
+        loadPolicy !== "update-prompt" ||
+        !registration ||
+        !navigator.onLine
+      ) {
+        return;
+      }
       const now = Date.now();
       if (!force && now - lastUpdateCheck.current < UPDATE_CHECK_INTERVAL_MS)
         return;
@@ -36,7 +62,7 @@ export function usePwaUpdate() {
         // Keep the cached version running when the update check cannot connect.
       });
     },
-    [registration],
+    [loadPolicy, registration],
   );
 
   useEffect(() => {
@@ -75,5 +101,11 @@ export function usePwaUpdate() {
     setUpdateAvailable(false);
   }, [setUpdateAvailable]);
 
-  return { applyUpdate, dismissUpdate, updateAvailable, updating };
+  return {
+    applyUpdate,
+    dismissUpdate,
+    loadPolicy,
+    updateAvailable,
+    updating,
+  };
 }

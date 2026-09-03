@@ -1,7 +1,8 @@
-import { CircleUserRound, LogIn, LogOut, Pencil } from "lucide-react";
+import { CircleUserRound, LogIn, LogOut, Pencil, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 import AnchoredMenu from "./AnchoredMenu";
 import Dialog from "./Dialog";
+import SettingsDialog from "./SettingsDialog";
 import { useI18n } from "./i18n";
 import {
   getPlatformSession,
@@ -23,6 +24,7 @@ export default function PlayerProfileMenu({
 }) {
   const { t } = useI18n();
   const [nicknameDialogOpen, setNicknameDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [draftNickname, setDraftNickname] = useState(nickname);
   const [session, setSession] = useState<PlatformSessionStatus>();
   const [avatarFailed, setAvatarFailed] = useState(false);
@@ -79,7 +81,7 @@ export default function PlayerProfileMenu({
         ariaLabel={t("accountMenu")}
         backdropClassName="profile-menu-backdrop"
         className="profile-menu"
-        disabled={nicknameDialogOpen}
+        disabled={nicknameDialogOpen || settingsOpen}
         openOnHover
         trigger={({
           anchorRef,
@@ -120,6 +122,15 @@ export default function PlayerProfileMenu({
                 )}
               </div>
             </div>
+            <div className="profile-menu-divider" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => closeMenu(() => setSettingsOpen(true))}
+            >
+              <Settings aria-hidden="true" />
+              <span>{t("settings")}</span>
+            </button>
             <div className="profile-menu-divider" role="separator" />
             {signedInWithX ? (
               <button
@@ -179,6 +190,7 @@ export default function PlayerProfileMenu({
           </label>
         </Dialog>
       )}
+      {settingsOpen && <SettingsDialog onBack={() => setSettingsOpen(false)} />}
     </div>
   );
 }

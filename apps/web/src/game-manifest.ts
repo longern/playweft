@@ -8,6 +8,7 @@ import {
   type GameManifestOrientation,
 } from "@playweft/game-protocol";
 import { isGameTranslations, type GameTranslations } from "./i18n";
+import { readAppLoadPolicy } from "./app-load-policy";
 
 export type GameMode = "solo" | "room";
 
@@ -74,13 +75,24 @@ export async function loadGameManifest(value: string): Promise<LoadedGame> {
   if (!manifestUrl) {
     throw new Error("Manifest URL must use HTTPS (or localhost HTTP)");
   }
+  const loadPolicy = readAppLoadPolicy();
+  if (loadPolicy === "local-only") {
+    const cachedText = await cachedManifestText(manifestUrl);
+    if (cachedText === undefined)
+      throw new ManifestNetworkError(manifestUrl, new Error("Not stored locally"));
+    return loadedGameFromText(cachedText, manifestUrl);
+  }
   try {
     const text = await fetchManifestText(manifestUrl);
     const loaded = loadedGameFromText(text, manifestUrl);
-    await cacheValidatedManifest(manifestUrl, text);
+    if (loadPolicy !== "cache-disabled") {
+      await cacheValidatedManifest(manifestUrl, text);
+    }
     return loaded;
   } catch (error) {
-    if (!(error instanceof ManifestNetworkError)) throw error;
+    if (loadPolicy === "cache-disabled" || !(error instanceof ManifestNetworkError)) {
+      throw error;
+    }
     const cachedText = await cachedManifestText(manifestUrl);
     if (cachedText === undefined) throw error;
     try {

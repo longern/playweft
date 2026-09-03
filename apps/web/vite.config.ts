@@ -94,14 +94,14 @@ export default defineConfig({
     react(),
     gameManifestSchema(),
     VitePWA({
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "service-worker.ts",
       registerType: "prompt",
       injectRegister: false,
       manifest: false,
-      workbox: {
-        cleanupOutdatedCaches: true,
+      injectManifest: {
         globPatterns: ["**/*.{html,js,css,svg,png,webmanifest}"],
-        navigateFallback: "index.html",
-        navigateFallbackDenylist: [/^\/api\//],
       },
     }),
   ],

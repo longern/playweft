@@ -40,6 +40,7 @@ export default function AnchoredMenu({
   const menu = useRef<MenuHandle>(null);
   const hoverCloseTimer = useRef<number | undefined>(undefined);
   const suppressHoverOpen = useRef(false);
+  const openedFromHover = useRef(false);
   const [open, setOpen] = useState(false);
   const [autoFocus, setAutoFocus] = useState(true);
 
@@ -55,6 +56,7 @@ export default function AnchoredMenu({
       if (menu.current) {
         menu.current.close();
       } else {
+        openedFromHover.current = false;
         setOpen(false);
       }
     }, HOVER_CLOSE_DELAY);
@@ -63,6 +65,16 @@ export default function AnchoredMenu({
   const prepareAnchorClickClose = () => {
     suppressHoverOpen.current = true;
     cancelHoverClose();
+  };
+
+  const promoteHoverMenu = () => {
+    if (openedFromHover.current) {
+      openedFromHover.current = false;
+      cancelHoverClose();
+      setAutoFocus(true);
+      return true;
+    }
+    return false;
   };
 
   const openFromHover = () => {
@@ -75,6 +87,7 @@ export default function AnchoredMenu({
       return;
     }
     cancelHoverClose();
+    if (!open) openedFromHover.current = true;
     setAutoFocus(false);
     setOpen(true);
   };
@@ -86,13 +99,17 @@ export default function AnchoredMenu({
 
   const toggleFromAnchor = () => {
     if (disabled) return;
-    setAutoFocus(true);
     if (open) {
+      // A hover-opened menu survives its first click: that click turns it
+      // into an explicit, keyboard-focused menu. A later click closes it.
+      if (promoteHoverMenu()) return;
       prepareAnchorClickClose();
       menu.current?.close();
       return;
     }
+    openedFromHover.current = false;
     cancelHoverClose();
+    setAutoFocus(true);
     setOpen(true);
   };
 
@@ -120,10 +137,12 @@ export default function AnchoredMenu({
           autoFocus={autoFocus}
           backdropClassName={backdropClassName}
           className={className}
-          onAnchorGuardClick={prepareAnchorClickClose}
           onMouseEnter={cancelHoverClose}
           onMouseLeave={scheduleHoverClose}
-          onClose={() => setOpen(false)}
+          onClose={() => {
+            openedFromHover.current = false;
+            setOpen(false);
+          }}
         >
           {children}
         </Menu>

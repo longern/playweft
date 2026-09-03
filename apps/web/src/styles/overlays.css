@@ -137,7 +137,6 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: -6px 0 0;
   padding: 14px 16px 12px;
   overflow: hidden;
 }
@@ -194,8 +193,147 @@
 
 .profile-menu-divider {
   height: 1px;
-  margin: 0 0 6px;
+  margin: 6px 0;
   background: #e7eaed;
+}
+
+.settings-dialog-layer {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: block;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: whitesmoke;
+  color: #202124;
+  overflow: hidden;
+  animation: settings-dialog-in 0.18s ease-out both;
+}
+
+.settings-dialog-layer::backdrop {
+  background: transparent;
+}
+
+.settings-dialog-closing {
+  pointer-events: none;
+  animation: settings-dialog-out 0.16s ease-in both;
+}
+
+.settings-dialog-header {
+  display: flex;
+  height: 60px;
+  align-items: center;
+  padding: 0 12px;
+}
+
+.settings-dialog-back {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  margin: 0 8px 0 -4px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #5e666d;
+}
+
+.settings-dialog-back:hover,
+.settings-dialog-back:focus-visible {
+  background: #ededed;
+  color: #202124;
+  outline: 0;
+}
+
+.settings-dialog-back svg {
+  width: 22px;
+  height: 22px;
+}
+
+.settings-dialog-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+.settings-dialog-scroll {
+  height: calc(100dvh - 60px);
+  overflow-y: auto;
+}
+
+.settings-dialog-content {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 12px 16px;
+}
+
+.settings-card {
+  overflow: hidden;
+  border: 1px solid #e5e7e9;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(32, 38, 34, 0.04);
+}
+
+.settings-list-item {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px;
+  color: #202124;
+  font-size: 0.94rem;
+}
+
+.settings-list-item select {
+  max-width: 10em;
+  min-height: 36px;
+  padding: 0 26px 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background-color: transparent;
+  color: #5e666d;
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: right;
+}
+
+.settings-list-item select:hover,
+.settings-list-item select:focus-visible {
+  background-color: #f1f3f4;
+  color: #202124;
+  outline: 0;
+}
+
+.settings-list-item select:disabled {
+  cursor: wait;
+}
+
+@keyframes settings-dialog-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes settings-dialog-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
 .profile-menu-nickname-empty {
@@ -1036,6 +1174,7 @@
   .game-info-panel,
   .menu,
   .menu-backdrop,
+  .settings-dialog-layer,
   .game-menu,
   .game-menu-backdrop {
     animation: none;
