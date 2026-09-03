@@ -59,6 +59,7 @@ export type LandscapeCompatibilityRotation = "-90deg" | "90deg";
 const LANDSCAPE_COMPATIBILITY_SWITCH_THRESHOLD = 0.55;
 const LANDSCAPE_COMPATIBILITY_SETTLE_MS = 180;
 const LANDSCAPE_COMPATIBILITY_COOLDOWN_MS = 250;
+const FULLSCREEN_ORIENTATION_SETTLE_MS = 500;
 
 function landscapeCompatibilityRotationFromGamma(
   gamma: number | null,
@@ -115,6 +116,59 @@ function supportsMobileOrientationLock(): boolean {
   );
 }
 
+function supportsFullscreenOrientationFallback(): boolean {
+  // Mi Browser rotates a fullscreen page natively, while exposing a lock()
+  // method that consistently rejects with NotSupportedError. Do not apply this
+  // fallback broadly: some in-app browsers reject the API and mishandle the
+  // fullscreen transition itself.
+  return /XiaoMi\/MiuiBrowser\//i.test(navigator.userAgent);
+}
+
+function waitForFullscreenPreferredOrientation(
+  orientation: Exclude<GameManifestOrientation, "any">,
+): Promise<boolean> {
+  if (
+    document.fullscreenElement === document.documentElement &&
+    matchesPreferredOrientation(orientation)
+  ) {
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const query = window.matchMedia(
+      landscapeOrientation(orientation)
+        ? "(orientation: landscape)"
+        : "(orientation: portrait)",
+    );
+    let settled = false;
+    const finish = (matches: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      document.removeEventListener("fullscreenchange", check);
+      query.removeEventListener("change", check);
+      screen.orientation?.removeEventListener("change", check);
+      resolve(matches);
+    };
+    const check = () => {
+      const fullscreen =
+        document.fullscreenElement === document.documentElement;
+      if (!fullscreen || matchesPreferredOrientation(orientation)) {
+        finish(fullscreen && matchesPreferredOrientation(orientation));
+      }
+    };
+    const timeout = window.setTimeout(() => {
+      finish(
+        document.fullscreenElement === document.documentElement &&
+          matchesPreferredOrientation(orientation),
+      );
+    }, FULLSCREEN_ORIENTATION_SETTLE_MS);
+    document.addEventListener("fullscreenchange", check);
+    query.addEventListener("change", check);
+    screen.orientation?.addEventListener("change", check);
+    check();
+  });
+}
+
 function renderedColor(value: string, backdrop: RgbColor): RgbColor {
   const canvas = document.createElement("canvas");
   canvas.width = 1;
@@ -167,6 +221,15 @@ async function lockGameOrientation(
       "name" in error &&
       error.name === "NotSupportedError"
     ) {
+      if (supportsFullscreenOrientationFallback()) {
+        if (
+          document.fullscreenElement === document.documentElement &&
+          (await waitForFullscreenPreferredOrientation(orientation))
+        ) {
+          return "locked";
+        }
+        if (!document.fullscreenElement) return "requires-fullscreen";
+      }
       gameOrientationLockUnsupported = true;
       return "unsupported";
     }
