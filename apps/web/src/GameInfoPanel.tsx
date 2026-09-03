@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   Check,
   CircleHelp,
@@ -7,11 +13,13 @@ import {
   Power,
   RefreshCw,
   Share,
+  Smartphone,
   Star,
   X,
 } from "lucide-react";
 import { useI18n } from "./i18n";
 import { gameLaunchLink } from "./game-launch-link";
+import type { LandscapeCompatibilityRotation } from "./use-game-viewport";
 
 interface GameInfoExitAction {
   label: string;
@@ -27,10 +35,12 @@ interface GameInfoPanelProps {
   name: string;
   url: string;
   onClose(): void;
+  onEnableLandscapeCompatibility?(): void;
   onEnterFullscreen?(): void;
   onRefresh?(): void;
   onShowHelp?(): void;
   onToggleFavorite?(): void;
+  landscapeCompatibilityRotation?: LandscapeCompatibilityRotation;
 }
 
 export default function GameInfoPanel({
@@ -42,10 +52,12 @@ export default function GameInfoPanel({
   name,
   url,
   onClose,
+  onEnableLandscapeCompatibility,
   onEnterFullscreen,
   onRefresh,
   onShowHelp,
   onToggleFavorite,
+  landscapeCompatibilityRotation,
 }: GameInfoPanelProps) {
   const { t } = useI18n();
   const [closing, setClosing] = useState(false);
@@ -131,7 +143,14 @@ export default function GameInfoPanel({
   return (
     <dialog
       ref={dialog}
-      className="game-info-layer"
+      className={`game-info-layer${landscapeCompatibilityRotation ? " game-info-layer-landscape-compatibility" : ""}`}
+      style={
+        landscapeCompatibilityRotation
+          ? {
+              "--game-viewport-rotation": landscapeCompatibilityRotation,
+            } as CSSProperties
+          : undefined
+      }
       aria-labelledby="game-info-title"
       onCancel={(event) => {
         event.preventDefault();
@@ -212,6 +231,7 @@ export default function GameInfoPanel({
         {description && <p className="game-info-description">{description}</p>}
         {(manifestUrl ||
           onEnterFullscreen ||
+          onEnableLandscapeCompatibility ||
           onRefresh ||
           onShowHelp ||
           onToggleFavorite) && (
@@ -287,6 +307,22 @@ export default function GameInfoPanel({
                   </span>
                   <span className="game-info-quick-action-label">
                     {t("fullscreen")}
+                  </span>
+                </button>
+              )}
+              {onEnableLandscapeCompatibility && (
+                <button
+                  type="button"
+                  onClick={() => close(onEnableLandscapeCompatibility)}
+                >
+                  <span className="game-info-quick-action-icon">
+                    <Smartphone
+                      className="landscape-mode-icon"
+                      aria-hidden="true"
+                    />
+                  </span>
+                  <span className="game-info-quick-action-label">
+                    {t("landscapeMode")}
                   </span>
                 </button>
               )}

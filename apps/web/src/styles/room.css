@@ -956,6 +956,10 @@ main.room-host {
   height: 20px;
 }
 
+.landscape-mode-icon {
+  transform: rotate(90deg);
+}
+
 .game-orientation-enter:focus-visible {
   outline: 3px solid rgba(255, 255, 255, 0.9);
   outline-offset: 3px;

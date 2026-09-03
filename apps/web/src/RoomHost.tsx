@@ -1386,6 +1386,14 @@ export default function RoomHost({
           onEnterPreferredOrientation={() =>
             void gameViewport.enterPreferredOrientation()
           }
+          onEnableLandscapeCompatibility={
+            gameViewport.showLandscapeCompatibility
+              ? gameViewport.enableLandscapeCompatibility
+              : undefined
+          }
+          landscapeCompatibilityRotation={
+            gameViewport.landscapeCompatibilityRotation
+          }
           showOptions={phase === "playing"}
         >
           {phase === "playing" && gameUrl && (
@@ -1617,6 +1625,14 @@ export default function RoomHost({
             gameViewport.showFullscreenAction
               ? () => void gameViewport.enterPreferredOrientation()
               : undefined
+          }
+          onEnableLandscapeCompatibility={
+            gameViewport.showLandscapeCompatibility
+              ? gameViewport.enableLandscapeCompatibility
+              : undefined
+          }
+          landscapeCompatibilityRotation={
+            gameViewport.landscapeCompatibilityRotation
           }
           onShowHelp={gameHelpHref ? () => setGameHelpOpen(true) : undefined}
           onRefresh={

@@ -1,0 +1,67 @@
+.game-viewport-stage {
+  display: contents;
+}
+
+.game-viewport-stage-landscape-compatibility {
+  position: fixed;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  display: block;
+  width: 100dvh;
+  height: 100vw;
+  transform: translate(-50%, -50%) rotate(var(--game-viewport-rotation));
+  transform-origin: center;
+}
+
+.game-viewport-stage-landscape-compatibility .game-frame,
+.game-viewport-stage-landscape-compatibility .solo-game-surface,
+.game-viewport-stage-landscape-compatibility .solo-loading {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.game-viewport-stage-landscape-compatibility .platform-menu-button {
+  position: absolute;
+  z-index: 2;
+  top: 20px;
+  right: 20px;
+}
+
+.game-info-layer-landscape-compatibility {
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  width: 100dvh;
+  height: 100vw;
+  transform: translate(-50%, -50%) rotate(var(--game-viewport-rotation));
+  transform-origin: center;
+}
+
+@media (max-width: 620px) {
+  .game-viewport-stage-landscape-compatibility .platform-menu-button {
+    top: 12px;
+    right: 12px;
+  }
+
+  .game-info-layer-landscape-compatibility {
+    align-items: center;
+    justify-items: center;
+    padding: 20px;
+  }
+
+  .game-info-layer-landscape-compatibility .game-info-panel {
+    width: min(420px, 100%);
+    max-height: calc(100% - 40px);
+    border: 0;
+    border-radius: 18px;
+    animation: game-info-dialog-in 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .game-info-layer-landscape-compatibility .game-info-panel-closing {
+    animation: game-info-dialog-out 0.16s ease-in both;
+  }
+}

@@ -144,7 +144,11 @@ export default function Home({
     }
   };
 
-  const launchGame = (game: ShelfGame, mode?: GameMode) => {
+  const launchGame = (
+    game: ShelfGame,
+    mode?: GameMode,
+    preferSolo = false,
+  ) => {
     const recentGame = toRecentGame(game);
     const modes = supportedModes(recentGame);
     if (mode === "solo") {
@@ -153,6 +157,10 @@ export default function Home({
     }
     if (mode === "room") {
       void createRoomForGame(recentGame);
+      return;
+    }
+    if (preferSolo && modes.includes("solo")) {
+      playSolo(recentGame);
       return;
     }
     if (modes.includes("solo") && modes.includes("room")) {
@@ -167,7 +175,7 @@ export default function Home({
     void createRoomForGame(recentGame);
   };
 
-  const launchInput = async (url = gameUrl) => {
+  const launchInput = async (url = gameUrl, preferSolo = false) => {
     const trimmed = url.trim();
     const roomId = roomIdFromInput(trimmed);
     if (roomId) {
@@ -181,7 +189,7 @@ export default function Home({
       const game = await probeGame(trimmed, onEntryStatus, t);
       if (cancelled()) return;
       onEntryStatus(undefined);
-      launchGame(game);
+      launchGame(game, undefined, preferSolo);
     } catch (reason) {
       if (cancelled()) return;
       onEntryStatus(undefined);
@@ -196,7 +204,7 @@ export default function Home({
   useEffect(() => {
     if (!externalGameUrl || !onClaimExternalGameUrl(externalGameUrl)) return;
     setGameUrl(externalGameUrl);
-    void launchInput(externalGameUrl);
+    void launchInput(externalGameUrl, true);
   }, [externalGameUrl, onClaimExternalGameUrl]);
 
   const openGameMenu = (

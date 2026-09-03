@@ -207,6 +207,14 @@ export default function SoloHost({
         onEnterPreferredOrientation={() =>
           void gameViewport.enterPreferredOrientation()
         }
+        onEnableLandscapeCompatibility={
+          gameViewport.showLandscapeCompatibility
+            ? gameViewport.enableLandscapeCompatibility
+            : undefined
+        }
+        landscapeCompatibilityRotation={
+          gameViewport.landscapeCompatibilityRotation
+        }
       >
         {!frameReady && !loadError && (
           <div
@@ -291,6 +299,14 @@ export default function SoloHost({
             gameViewport.showFullscreenAction
               ? () => void gameViewport.enterPreferredOrientation()
               : undefined
+          }
+          onEnableLandscapeCompatibility={
+            gameViewport.showLandscapeCompatibility
+              ? gameViewport.enableLandscapeCompatibility
+              : undefined
+          }
+          landscapeCompatibilityRotation={
+            gameViewport.landscapeCompatibilityRotation
           }
           onRefresh={
             loaded
