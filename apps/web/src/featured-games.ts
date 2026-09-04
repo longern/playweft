@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
-import {
-  loadGameManifest,
-  type DiscoveredGame,
-} from "./game-manifest";
+import { loadGameManifest, type DiscoveredGame } from "./game-manifest";
+import { readAppLoadPolicy } from "./app-load-policy";
 
 export type FeaturedGame = DiscoveredGame;
 
@@ -12,6 +10,8 @@ const MAX_LIST_DEPTH = 4;
 const MAX_REMOTE_LISTS = 16;
 const MAX_REMOTE_LIST_BYTES = 256 * 1024;
 const REMOTE_LIST_TIMEOUT_MS = 8_000;
+const FEATURED_LIST_CACHE_NAME = "playweft:featured-lists:v1";
+const FEATURED_LIST_CACHED_AT_HEADER = "X-Playweft-Cached-At";
 
 const DEFAULT_FEATURED_GAME_SOURCES: unknown[] = [
   { manifestUrl: "/games/rps/playweft.json" },
@@ -65,10 +65,7 @@ async function resolveSources(
         try {
           return [(await loadGameManifest(parsed.url)).game];
         } catch (error) {
-          console.warn(
-            `Could not discover featured game ${parsed.url}`,
-            error,
-          );
+          console.warn(`Could not discover featured game ${parsed.url}`, error);
           return [];
         }
       }
@@ -84,10 +81,7 @@ async function resolveSources(
         const nested = await fetchList(new URL(parsed.url));
         return resolveSources(nested, parsed.url, visited, depth + 1);
       } catch (error) {
-        console.warn(
-          `Could not load featured-game list ${parsed.url}`,
-          error,
-        );
+        console.warn(`Could not load featured-game list ${parsed.url}`, error);
         return [];
       }
     }),
@@ -112,27 +106,135 @@ function parseSource(
 }
 
 async function fetchList(url: URL): Promise<unknown[]> {
+  const loadPolicy = readAppLoadPolicy();
+  if (loadPolicy === "local-only") {
+    const cached = await cachedList(url);
+    if (cached === undefined) {
+      throw new FeaturedListNetworkError(url, new Error("Not stored locally"));
+    }
+    return cached;
+  }
+
+  try {
+    const list = await fetchListFromNetwork(url);
+    if (loadPolicy !== "cache-disabled") await cacheList(url, list);
+    return JSON.parse(list) as unknown[];
+  } catch (error) {
+    if (
+      loadPolicy === "cache-disabled" ||
+      !(error instanceof FeaturedListNetworkError)
+    ) {
+      throw error;
+    }
+    const cached = await cachedList(url);
+    if (cached !== undefined) return cached;
+    throw error;
+  }
+}
+
+class FeaturedListNetworkError extends Error {
+  constructor(
+    readonly url: URL,
+    readonly cause: unknown,
+  ) {
+    super(`Could not connect to ${url}`);
+  }
+}
+
+async function fetchListFromNetwork(url: URL): Promise<string> {
   const controller = new AbortController();
   const timeout = window.setTimeout(
     () => controller.abort(),
     REMOTE_LIST_TIMEOUT_MS,
   );
   try {
-    const response = await fetch(url, {
-      headers: { Accept: "application/json" },
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`request failed (${response.status})`);
-    const text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > MAX_REMOTE_LIST_BYTES) {
-      throw new Error(`list exceeds the ${MAX_REMOTE_LIST_BYTES}-byte limit`);
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`request failed (${response.status})`);
+      const text = await response.text();
+      if (new TextEncoder().encode(text).byteLength > MAX_REMOTE_LIST_BYTES) {
+        throw new Error(`list exceeds the ${MAX_REMOTE_LIST_BYTES}-byte limit`);
+      }
+      const value = JSON.parse(text) as unknown;
+      if (!Array.isArray(value)) throw new Error("list must be a JSON array");
+      return text;
+    } catch (error) {
+      if (isNetworkFailure(error))
+        throw new FeaturedListNetworkError(url, error);
+      throw error;
     }
-    const value = JSON.parse(text) as unknown;
-    if (!Array.isArray(value)) throw new Error("list must be a JSON array");
-    return value;
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+async function cachedList(url: URL): Promise<unknown[] | undefined> {
+  if (typeof caches === "undefined") return undefined;
+  try {
+    const response = await (
+      await caches.open(FEATURED_LIST_CACHE_NAME)
+    ).match(url);
+    if (!response) return undefined;
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > MAX_REMOTE_LIST_BYTES) {
+      return undefined;
+    }
+    const value = JSON.parse(text) as unknown;
+    return Array.isArray(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function cacheList(url: URL, text: string): Promise<void> {
+  if (typeof caches === "undefined") return;
+  try {
+    const cache = await caches.open(FEATURED_LIST_CACHE_NAME);
+    await cache.put(
+      url,
+      new Response(text, {
+        headers: {
+          "Content-Type": "application/json",
+          [FEATURED_LIST_CACHED_AT_HEADER]: String(Date.now()),
+        },
+      }),
+    );
+    await pruneListCache(cache);
+  } catch {
+    // The list can still load from the network when Cache Storage is unavailable.
+  }
+}
+
+async function pruneListCache(cache: Cache): Promise<void> {
+  const requests = await cache.keys();
+  if (requests.length <= MAX_REMOTE_LISTS) return;
+  const entries = await Promise.all(
+    requests.map(async (request) => {
+      const response = await cache.match(request);
+      return {
+        request,
+        cachedAt:
+          Number(response?.headers.get(FEATURED_LIST_CACHED_AT_HEADER)) || 0,
+      };
+    }),
+  );
+  entries.sort((left, right) => left.cachedAt - right.cachedAt);
+  await Promise.all(
+    entries
+      .slice(0, entries.length - MAX_REMOTE_LISTS)
+      .map(({ request }) => cache.delete(request)),
+  );
+}
+
+function isNetworkFailure(error: unknown): boolean {
+  return (
+    error instanceof TypeError ||
+    (error instanceof DOMException && error.name === "AbortError")
+  );
 }
 
 function webUrl(value: string, baseUrl: string): string | undefined {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRegisterSW } from "virtual:pwa-register/react";
+import { registerSW } from "virtual:pwa-register";
 import {
   enforceAppLoadPolicy,
   readAppLoadPolicy,
@@ -10,40 +10,68 @@ import {
 const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1_000;
 
 export function usePwaUpdate() {
-  const [loadPolicy, setLoadPolicy] = useState<AppLoadPolicy>(
-    readAppLoadPolicy,
-  );
-  const [registration, setRegistration] =
-    useState<ServiceWorkerRegistration>();
+  const [loadPolicy, setLoadPolicy] =
+    useState<AppLoadPolicy>(readAppLoadPolicy);
+  const [registration, setRegistration] = useState<ServiceWorkerRegistration>();
   const [updating, setUpdating] = useState(false);
   const lastUpdateCheck = useRef(0);
   const reloadRequested = useRef(false);
-  const {
-    needRefresh: [updateAvailable, setUpdateAvailable],
-    updateServiceWorker,
-  } = useRegisterSW({
-    immediate: true,
-    onNeedReload() {
-      if (reloadRequested.current) window.location.reload();
-    },
-    onRegisteredSW(_scriptUrl, nextRegistration) {
-      setRegistration(nextRegistration);
-    },
-    onRegisterError(error) {
-      console.error("Could not register the Playweft service worker", error);
-    },
-  });
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const updateServiceWorker = useRef<(() => Promise<void>) | undefined>(
+    undefined,
+  );
+  const registrationGeneration = useRef(0);
+  const cleanupPromise = useRef<Promise<void>>(Promise.resolve());
+  const shouldRegisterServiceWorker = loadPolicy !== "cache-disabled";
 
-  useEffect(() => subscribeToAppLoadPolicy(() => setLoadPolicy(readAppLoadPolicy)), []);
+  useEffect(
+    () => subscribeToAppLoadPolicy(() => setLoadPolicy(readAppLoadPolicy)),
+    [],
+  );
 
   useEffect(() => {
-    if (loadPolicy !== "cache-disabled" || !registration) return;
-    void enforceAppLoadPolicy(loadPolicy);
-  }, [loadPolicy, registration]);
+    const generation = ++registrationGeneration.current;
+    if (!shouldRegisterServiceWorker) {
+      updateServiceWorker.current = undefined;
+      setRegistration(undefined);
+      setUpdateAvailable(false);
+      cleanupPromise.current = enforceAppLoadPolicy(loadPolicy);
+      return;
+    }
+
+    void cleanupPromise.current.then(() => {
+      if (generation !== registrationGeneration.current) return;
+      updateServiceWorker.current = registerSW({
+        immediate: true,
+        onNeedReload() {
+          if (reloadRequested.current) window.location.reload();
+        },
+        onNeedRefresh() {
+          if (generation === registrationGeneration.current) {
+            setUpdateAvailable(true);
+          }
+        },
+        onRegisteredSW(_scriptUrl, nextRegistration) {
+          if (generation === registrationGeneration.current) {
+            setRegistration(nextRegistration);
+            // The policy may have been selected immediately before this
+            // registration existed, so persist and deliver it again now.
+            void enforceAppLoadPolicy(readAppLoadPolicy());
+          }
+        },
+        onRegisterError(error) {
+          console.error(
+            "Could not register the Playweft service worker",
+            error,
+          );
+        },
+      });
+    });
+  }, [shouldRegisterServiceWorker]);
 
   useEffect(() => {
     if (loadPolicy !== "update-prompt") setUpdateAvailable(false);
-  }, [loadPolicy, setUpdateAvailable]);
+  }, [loadPolicy]);
 
   const checkForUpdate = useCallback(
     (force = false) => {
@@ -86,16 +114,18 @@ export function usePwaUpdate() {
 
   const applyUpdate = useCallback(async () => {
     if (updating) return;
+    const update = updateServiceWorker.current;
+    if (!update) return;
     reloadRequested.current = true;
     setUpdating(true);
     try {
-      await updateServiceWorker();
+      await update();
     } catch (error) {
       reloadRequested.current = false;
       setUpdating(false);
       console.error("Could not activate the Playweft update", error);
     }
-  }, [updateServiceWorker, updating]);
+  }, [updating]);
 
   const dismissUpdate = useCallback(() => {
     setUpdateAvailable(false);

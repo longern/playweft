@@ -2,6 +2,7 @@ const SETTINGS_STORAGE_KEY = "playweft:settings:v1";
 const SETTINGS_CACHE = "playweft:settings:v1";
 const SETTINGS_REQUEST = "/.playweft/settings";
 const APP_MANIFEST_CACHE = "playweft:manifests:v1";
+const FEATURED_LIST_CACHE = "playweft:featured-lists:v1";
 
 export const appLoadPolicies = [
   "cache-disabled",
@@ -53,7 +54,10 @@ export async function enforceAppLoadPolicy(
 }
 
 export function isAppLoadPolicy(value: unknown): value is AppLoadPolicy {
-  return typeof value === "string" && appLoadPolicies.includes(value as AppLoadPolicy);
+  return (
+    typeof value === "string" &&
+    appLoadPolicies.includes(value as AppLoadPolicy)
+  );
 }
 
 function readSettings(): StoredSettings {
@@ -64,7 +68,11 @@ function parseSettings(value: string | null): StoredSettings {
   if (!value) return {};
   try {
     const parsed: unknown = JSON.parse(value);
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
       return {};
     }
     const appLoadPolicy = (parsed as Record<string, unknown>).appLoadPolicy;
@@ -78,11 +86,13 @@ function writeSettings(settings: StoredSettings): void {
   window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
 }
 
-async function savePolicyForServiceWorker(policy: AppLoadPolicy): Promise<void> {
+async function savePolicyForServiceWorker(
+  policy: AppLoadPolicy,
+): Promise<void> {
   if (typeof caches !== "undefined") {
     try {
       await (
-      await caches.open(SETTINGS_CACHE)
+        await caches.open(SETTINGS_CACHE)
       ).put(
         SETTINGS_REQUEST,
         new Response(JSON.stringify({ appLoadPolicy: policy })),
@@ -125,7 +135,9 @@ async function disablePlatformCaching(): Promise<void> {
       names
         .filter(
           (name) =>
-            name === APP_MANIFEST_CACHE || name.startsWith("workbox-precache"),
+            name === APP_MANIFEST_CACHE ||
+            name === FEATURED_LIST_CACHE ||
+            name.startsWith("workbox-precache"),
         )
         .map((name) => caches.delete(name)),
     );
