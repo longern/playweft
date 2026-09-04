@@ -21,6 +21,7 @@ interface DialogProps {
   actions?: DialogAction[];
   contentLayout?: "padded" | "flush";
   size?: "default" | "wide" | "large";
+  fullscreen?: boolean;
 }
 
 export default function Dialog({
@@ -30,6 +31,7 @@ export default function Dialog({
   actions,
   contentLayout = "padded",
   size = "default",
+  fullscreen = false,
 }: DialogProps) {
   const { t } = useI18n();
   const [closing, setClosing] = useState(false);
@@ -65,7 +67,7 @@ export default function Dialog({
   return (
     <dialog
       ref={dialog}
-      className={`dialog-layer ${closing ? "dialog-closing" : ""}`}
+      className={`dialog-layer${fullscreen ? " dialog-layer-fullscreen" : ""} ${closing ? "dialog-closing" : ""}`}
       aria-labelledby="dialog-title"
       onCancel={(event) => {
         event.preventDefault();
@@ -79,7 +81,7 @@ export default function Dialog({
         aria-label={t("closeDialog", { title })}
         onClick={() => close()}
       />
-      <section className={`dialog dialog-${size}`}>
+      <section className={`dialog dialog-${size}${fullscreen ? " dialog-fullscreen" : ""}`}>
         <header className="dialog-header">
           <h2 id="dialog-title">{title}</h2>
           <button

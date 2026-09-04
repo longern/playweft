@@ -15,7 +15,12 @@ export default function GameHelpDialog({
   const { t } = useI18n();
 
   return (
-    <Dialog title={t("gameHelp")} size="large" onDismiss={onClose}>
+    <Dialog
+      title={t("gameHelp")}
+      contentLayout="flush"
+      fullscreen
+      onDismiss={onClose}
+    >
       <iframe
         className="game-help-frame"
         title={t("gameHelpTitle", { name })}

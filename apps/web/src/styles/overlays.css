@@ -399,6 +399,10 @@
   background: transparent;
 }
 
+.dialog-layer-fullscreen {
+  padding: 0;
+}
+
 .dialog-backdrop {
   position: absolute;
   inset: 0;
@@ -427,6 +431,15 @@
   width: min(860px, 100%);
 }
 
+.dialog-fullscreen {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .dialog-wide {
   width: min(600px, calc(100vw - 32px));
 }
@@ -441,6 +454,16 @@
   height: min(65dvh, 560px);
   border: 0;
   overscroll-behavior: contain;
+}
+
+.dialog-fullscreen .dialog-content {
+  display: flex;
+}
+
+.dialog-fullscreen .game-help-frame {
+  height: auto;
+  min-height: 0;
+  flex: 1;
 }
 
 .dialog-header {

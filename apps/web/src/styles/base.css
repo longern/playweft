@@ -32,6 +32,10 @@ html:has(dialog:modal) {
   overflow: hidden;
 }
 
+html:has(.dialog-layer-fullscreen:modal) {
+  scrollbar-gutter: auto;
+}
+
 body {
   min-width: 320px;
   margin: 0;
